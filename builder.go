@@ -3,7 +3,6 @@ package mcp
 // Parameter types
 const (
 	String  = "string"
-	Integer = "integer"
 	Number  = "number"
 	Boolean = "boolean"
 	Array   = "array"

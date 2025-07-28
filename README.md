@@ -58,7 +58,6 @@ func main() {
 
 ```go
 mcp.String   // "string"
-mcp.Integer  // "integer" 
 mcp.Number   // "number"
 mcp.Boolean  // "boolean"
 mcp.Array    // "array"
@@ -70,7 +69,7 @@ mcp.Object   // "object"
 ```go
 tool := mcp.NewTool("example", "Example tool").
     AddParam("required_param", mcp.String, "A required parameter", true).
-    AddParam("optional_param", mcp.Integer, "An optional parameter", false).
+    AddParam("optional_param", mcp.Number, "An optional parameter", false).
     AddOutputParam("result", mcp.String, "The result")
 ```
 
