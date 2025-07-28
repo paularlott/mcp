@@ -45,7 +45,9 @@ func main() {
 				return nil, err
 			}
 			greeting := req.StringOr("greeting", "Hello")
-			return mcp.NewToolResponseText(fmt.Sprintf("From da tool: %s, %s!", greeting, name)), nil
+			return mcp.NewToolResponseMulti(
+				mcp.NewToolResponseText(fmt.Sprintf("From da tool: %s, %s!", greeting, name)),
+				mcp.NewToolResponseText("A fixed line of text")), nil
 		},
 	)
 
