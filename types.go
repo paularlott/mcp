@@ -1,0 +1,80 @@
+package mcp
+
+// MCP Protocol types
+type mcpRequest struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      interface{} `json:"id"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params,omitempty"`
+}
+
+type mcpResponse struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      interface{} `json:"id,omitempty"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   *mcpError   `json:"error,omitempty"`
+}
+
+type mcpError struct {
+	Code    int         `json:"code"`
+	Message string      `json:"message"`
+	Data    interface{} `json:"data,omitempty"`
+}
+
+type initializeParams struct {
+	ProtocolVersion string                 `json:"protocolVersion"`
+	Capabilities    map[string]interface{} `json:"capabilities"`
+	ClientInfo      clientInfo             `json:"clientInfo"`
+}
+
+type clientInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type initializeResult struct {
+	ProtocolVersion string       `json:"protocolVersion"`
+	Capabilities    capabilities `json:"capabilities"`
+	ServerInfo      serverInfo   `json:"serverInfo"`
+}
+
+type capabilities struct {
+	Tools map[string]interface{} `json:"tools"`
+}
+
+type serverInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+type mcpTool struct {
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	InputSchema  interface{} `json:"inputSchema"`
+	OutputSchema interface{} `json:"outputSchema,omitempty"`
+}
+
+type toolCallParams struct {
+	Name      string                 `json:"name"`
+	Arguments map[string]interface{} `json:"arguments,omitempty"`
+}
+
+type ToolResult struct {
+	Content           []ToolContent `json:"content,omitempty"`
+	StructuredContent interface{}   `json:"structuredContent,omitempty"`
+	IsError           bool          `json:"isError,omitempty"`
+}
+
+type ToolContent struct {
+	Type     string           `json:"type"`
+	Text     string           `json:"text,omitempty"`
+	Data     string           `json:"data,omitempty"`
+	MimeType string           `json:"mimeType,omitempty"`
+	Resource *ResourceContent `json:"resource,omitempty"`
+}
+
+type ResourceContent struct {
+	URI      string `json:"uri"`
+	Text     string `json:"text,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+}
