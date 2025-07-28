@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -27,7 +28,7 @@ func main() {
 			// return mcp.NewToolResponseText(fmt.Sprintf("%s, %s!", greeting, name)), nil
 
 			out := interface{}(map[string]interface{}{
-				"message": fmt.Sprintf("%s, %s!", greeting, name),
+				"message": fmt.Sprintf("From da tool: %s, %s!", greeting, name),
 			})
 
 			return mcp.NewToolResponseStructured(out), nil
@@ -44,7 +45,34 @@ func main() {
 				return nil, err
 			}
 			greeting := req.StringOr("greeting", "Hello")
-			return mcp.NewToolResponseText(fmt.Sprintf("%s, %s!", greeting, name)), nil
+			return mcp.NewToolResponseText(fmt.Sprintf("From da tool: %s, %s!", greeting, name)), nil
+		},
+	)
+
+	// Add this after registering tools
+	server.RegisterResource(
+		"file://example.txt",
+		"Example Text File",
+		"A simple example text file",
+		"text/plain",
+		func(uri string) (*mcp.ResourceResponse, error) {
+			return mcp.NewResourceResponseText(uri, "Hello from resource!", "text/plain"), nil
+		},
+	)
+
+	server.RegisterResource(
+		"config://app-settings",
+		"Application Settings",
+		"Current application configuration",
+		"application/json",
+		func(uri string) (*mcp.ResourceResponse, error) {
+			config := map[string]interface{}{
+				"version": "1.0.0",
+				"debug":   true,
+				"port":    8000,
+			}
+			configJSON, _ := json.Marshal(config)
+			return mcp.NewResourceResponseText(uri, string(configJSON), "application/json"), nil
 		},
 	)
 

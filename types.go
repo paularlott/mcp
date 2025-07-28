@@ -39,7 +39,8 @@ type initializeResult struct {
 }
 
 type capabilities struct {
-	Tools map[string]interface{} `json:"tools"`
+	Tools     map[string]interface{} `json:"tools"`
+	Resources map[string]interface{} `json:"resources,omitempty"`
 }
 
 type serverInfo struct {
@@ -73,8 +74,28 @@ type ToolContent struct {
 	Resource *ResourceContent `json:"resource,omitempty"`
 }
 
+type ResourceResponse struct {
+	Contents []ResourceContent `json:"contents"`
+}
+
 type ResourceContent struct {
 	URI      string `json:"uri"`
-	Text     string `json:"text,omitempty"`
 	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"` // base64 encoded
+}
+
+type mcpResource struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+type resourceListParams struct {
+	Cursor string `json:"cursor,omitempty"`
+}
+
+type resourceReadParams struct {
+	URI string `json:"uri"`
 }

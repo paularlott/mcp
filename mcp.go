@@ -28,20 +28,32 @@ type registeredTool struct {
 	Handler      ToolHandler
 }
 
+type ResourceHandler func(uri string) (*ResourceResponse, error)
+
+type registeredResource struct {
+	URI         string
+	Name        string
+	Description string
+	MimeType    string
+	Handler     ResourceHandler
+}
+
 // Server represents an MCP server instance
 type Server struct {
-	name    string
-	version string
-	tools   map[string]*registeredTool
-	mu      sync.RWMutex
+	name      string
+	version   string
+	tools     map[string]*registeredTool
+	resources map[string]*registeredResource
+	mu        sync.RWMutex
 }
 
 // NewServer creates a new MCP server instance
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:    name,
-		version: version,
-		tools:   make(map[string]*registeredTool),
+		name:      name,
+		version:   version,
+		tools:     make(map[string]*registeredTool),
+		resources: make(map[string]*registeredResource),
 	}
 }
 
@@ -62,6 +74,18 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
 		Handler:      handler,
+	}
+	s.mu.Unlock()
+}
+
+func (s *Server) RegisterResource(uri, name, description, mimeType string, handler ResourceHandler) {
+	s.mu.Lock()
+	s.resources[uri] = &registeredResource{
+		URI:         uri,
+		Name:        name,
+		Description: description,
+		MimeType:    mimeType,
+		Handler:     handler,
 	}
 	s.mu.Unlock()
 }
@@ -120,7 +144,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		req.ID = ""
 	}
 
-	fmt.Println("MCP Rqequest:", req.Method)
+	fmt.Println("MCP Request:", req.Method)
 
 	switch req.Method {
 	case "initialize":
@@ -131,6 +155,10 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleToolsList(w, r, &req)
 	case "tools/call":
 		s.handleToolsCall(w, r, &req)
+	case "resources/list":
+		s.handleResourcesList(w, r, &req)
+	case "resources/read":
+		s.handleResourcesRead(w, r, &req)
 	default:
 		s.sendMCPError(w, req.ID, -32601, "Method not found", map[string]interface{}{
 			"method": req.Method,
@@ -203,9 +231,14 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	case "2024-11-05":
 		// Basic capabilities for 2024-11-05
 		caps.Tools = map[string]interface{}{}
+		caps.Resources = map[string]interface{}{}
 	default: // 2025-03-26, 2025-06-18 and use latest if unknown
 		// Default to latest
 		caps.Tools = map[string]interface{}{
+			"listChanged": false,
+		}
+		caps.Resources = map[string]interface{}{
+			"subscribe":   false,
 			"listChanged": false,
 		}
 	}
@@ -223,7 +256,6 @@ func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *mc
 			InputSchema: tool.Schema,
 		}
 		if tool.OutputSchema != nil {
-			fmt.Println(tool.OutputSchema)
 			mcpToolItem.OutputSchema = tool.OutputSchema
 		}
 		tools = append(tools, mcpToolItem)
@@ -271,6 +303,57 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		StructuredContent: response.StructuredContent,
 		IsError:           false,
 	})
+}
+
+func (s *Server) handleResourcesList(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+	s.mu.RLock()
+	var resources []mcpResource
+	for _, resource := range s.resources {
+		resources = append(resources, mcpResource{
+			URI:         resource.URI,
+			Name:        resource.Name,
+			Description: resource.Description,
+			MimeType:    resource.MimeType,
+		})
+	}
+	s.mu.RUnlock()
+
+	result := map[string]interface{}{
+		"resources": resources,
+	}
+
+	s.sendMCPResponse(w, req.ID, result)
+}
+
+func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+	var params resourceReadParams
+	paramsBytes, err := json.Marshal(req.Params)
+	if err != nil {
+		s.sendMCPError(w, req.ID, -32602, "Invalid params", nil)
+		return
+	}
+
+	if err := json.Unmarshal(paramsBytes, &params); err != nil {
+		s.sendMCPError(w, req.ID, -32602, "Invalid params", nil)
+		return
+	}
+
+	s.mu.RLock()
+	resource, exists := s.resources[params.URI]
+	s.mu.RUnlock()
+
+	if !exists {
+		s.sendMCPError(w, req.ID, -32601, "Resource not found", nil)
+		return
+	}
+
+	response, err := resource.Handler(params.URI)
+	if err != nil {
+		s.sendMCPError(w, req.ID, -32603, fmt.Sprintf("Resource read failed: %v", err), nil)
+		return
+	}
+
+	s.sendMCPResponse(w, req.ID, response)
 }
 
 func (s *Server) sendMCPResponse(w http.ResponseWriter, id interface{}, result interface{}) {
