@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,7 +20,7 @@ func main() {
 			AddParam("name", mcp.String, "The name to greet", true).
 			AddParam("greeting", mcp.String, "Custom greeting", false).
 			AddOutputParam("message", mcp.String, "The greeting message", true),
-		func(req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			name, err := req.String("name")
 			if err != nil {
 				return nil, err
@@ -39,7 +40,7 @@ func main() {
 		mcp.NewTool("hello2", "Say hello to someone again").
 			AddParam("name", mcp.String, "The name to greet", true).
 			AddParam("greeting", mcp.String, "Custom greeting", false),
-		func(req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			name, err := req.String("name")
 			if err != nil {
 				return nil, err
@@ -57,7 +58,7 @@ func main() {
 		"Example Text File",
 		"A simple example text file",
 		"text/plain",
-		func(uri string) (*mcp.ResourceResponse, error) {
+		func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
 			return mcp.NewResourceResponseText(uri, "Hello from resource!", "text/plain"), nil
 		},
 	)
@@ -67,7 +68,7 @@ func main() {
 		"Application Settings",
 		"Current application configuration",
 		"application/json",
-		func(uri string) (*mcp.ResourceResponse, error) {
+		func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
 			config := map[string]interface{}{
 				"version": "1.0.0",
 				"debug":   true,

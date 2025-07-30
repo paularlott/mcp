@@ -1,9 +1,12 @@
 package mcp
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // ToolHandler represents a function that handles tool calls
-type ToolHandler func(req *ToolRequest) (*ToolResponse, error)
+type ToolHandler func(ctx context.Context, req *ToolRequest) (*ToolResponse, error)
 
 // ToolRequest provides typed access to tool arguments
 type ToolRequest struct {

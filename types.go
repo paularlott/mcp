@@ -48,7 +48,7 @@ type serverInfo struct {
 	Version string `json:"version"`
 }
 
-type mcpTool struct {
+type MCPTool struct {
 	Name         string      `json:"name"`
 	Description  string      `json:"description"`
 	InputSchema  interface{} `json:"inputSchema"`

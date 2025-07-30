@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,7 +29,7 @@ type registeredTool struct {
 	Handler      ToolHandler
 }
 
-type ResourceHandler func(uri string) (*ResourceResponse, error)
+type ResourceHandler func(ctx context.Context, uri string) (*ResourceResponse, error)
 
 type registeredResource struct {
 	URI         string
@@ -246,27 +247,46 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	return caps
 }
 
-func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+// ListTools returns all registered tools (direct API)
+func (s *Server) ListTools() []MCPTool {
 	s.mu.RLock()
-	var tools []mcpTool
+	defer s.mu.RUnlock()
+
+	var tools []MCPTool
 	for _, tool := range s.tools {
-		mcpToolItem := mcpTool{
+		toolItem := MCPTool{
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.Schema,
 		}
 		if tool.OutputSchema != nil {
-			mcpToolItem.OutputSchema = tool.OutputSchema
+			toolItem.OutputSchema = tool.OutputSchema
 		}
-		tools = append(tools, mcpToolItem)
+		tools = append(tools, toolItem)
 	}
-	s.mu.RUnlock()
+	return tools
+}
 
+func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+	tools := s.ListTools()
 	result := map[string]interface{}{
 		"tools": tools,
 	}
-
 	s.sendMCPResponse(w, req.ID, result)
+}
+
+// CallTool executes a tool directly (direct API)
+func (s *Server) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
+	s.mu.RLock()
+	tool, exists := s.tools[name]
+	s.mu.RUnlock()
+
+	if !exists {
+		return nil, fmt.Errorf("tool '%s' not found", name)
+	}
+
+	toolReq := &ToolRequest{args: args}
+	return tool.Handler(ctx, toolReq)
 }
 
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
@@ -282,17 +302,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 		return
 	}
 
-	s.mu.RLock()
-	tool, exists := s.tools[params.Name]
-	s.mu.RUnlock()
-
-	if !exists {
-		s.sendMCPError(w, req.ID, -32601, "Tool not found", nil)
-		return
-	}
-
-	toolReq := &ToolRequest{args: params.Arguments}
-	response, err := tool.Handler(toolReq)
+	response, err := s.CallTool(r.Context(), params.Name, params.Arguments)
 	if err != nil {
 		s.sendMCPError(w, req.ID, -32603, fmt.Sprintf("Tool execution failed: %v", err), nil)
 		return
@@ -347,7 +357,7 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 
-	response, err := resource.Handler(params.URI)
+	response, err := resource.Handler(r.Context(), params.URI)
 	if err != nil {
 		s.sendMCPError(w, req.ID, -32603, fmt.Sprintf("Resource read failed: %v", err), nil)
 		return
