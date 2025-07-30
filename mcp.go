@@ -304,7 +304,12 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 
 	response, err := s.CallTool(r.Context(), params.Name, params.Arguments)
 	if err != nil {
-		s.sendMCPError(w, req.ID, -32603, fmt.Sprintf("Tool execution failed: %v", err), nil)
+		// Check if it's a ToolError with specific MCP error code
+		if toolErr, ok := err.(*ToolError); ok {
+			s.sendMCPError(w, req.ID, toolErr.Code, toolErr.Message, toolErr.Data)
+		} else {
+			s.sendMCPError(w, req.ID, -32603, fmt.Sprintf("Tool execution failed: %v", err), nil)
+		}
 		return
 	}
 

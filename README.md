@@ -141,6 +141,24 @@ return mcp.NewToolResponseMulti(
 )
 ```
 
+### Error Responses
+```go
+// Invalid parameter error
+if name == "" {
+    return nil, mcp.NewToolErrorInvalidParams("name parameter is required")
+}
+
+// Internal server error
+if err := someOperation(); err != nil {
+    return nil, mcp.NewToolErrorInternal("failed to process request")
+}
+
+// Custom error with specific code
+return nil, mcp.NewToolError(-32000, "Custom server error", map[string]interface{}{
+    "details": "Additional error information",
+})
+```
+
 ## Server Configuration
 
 ```go
