@@ -54,40 +54,21 @@ func (t *ToolBuilder) AddOutputParam(name, paramType, description string, requir
 }
 
 func (t *ToolBuilder) buildSchema() map[string]interface{} {
-	properties := make(map[string]interface{})
-	var required []string
-
-	for _, param := range t.params {
-		prop := map[string]interface{}{"type": param.paramType}
-		if param.description != "" {
-			prop["description"] = param.description
-		}
-		properties[param.name] = prop
-		if param.required {
-			required = append(required, param.name)
-		}
-	}
-
-	schema := map[string]interface{}{
-		"type":                 "object",
-		"properties":           properties,
-		"additionalProperties": false,
-	}
-	if len(required) > 0 {
-		schema["required"] = required
-	}
-	return schema
+	return t.buildSchemaFromParams(t.params)
 }
 
 func (t *ToolBuilder) buildOutputSchema() map[string]interface{} {
 	if len(t.outputParams) == 0 {
 		return nil
 	}
+	return t.buildSchemaFromParams(t.outputParams)
+}
 
+func (t *ToolBuilder) buildSchemaFromParams(params []paramDef) map[string]interface{} {
 	properties := make(map[string]interface{})
 	var required []string
 
-	for _, param := range t.outputParams {
+	for _, param := range params {
 		prop := map[string]interface{}{"type": param.paramType}
 		if param.description != "" {
 			prop["description"] = param.description
