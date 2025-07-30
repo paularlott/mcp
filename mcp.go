@@ -111,7 +111,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers for actual requests
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	var req mcpRequest
+	var req MCPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendMCPError(w, nil, ErrorCodeParseError, "Parse error", map[string]interface{}{
 			"details": err.Error(),
@@ -131,8 +131,6 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	if req.ID == nil {
 		req.ID = ""
 	}
-
-
 
 	switch req.Method {
 	case "initialize":
@@ -163,7 +161,7 @@ func isSupportedProtocolVersion(version string) bool {
 	return false
 }
 
-func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	var params initializeParams
 	if err := s.parseParams(req, &params); err != nil {
 		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
@@ -183,8 +181,6 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *m
 		protocolVersion = params.ProtocolVersion
 	}
 
-
-
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    s.buildCapabilities(protocolVersion),
@@ -197,7 +193,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *m
 	s.sendMCPResponse(w, req.ID, result)
 }
 
-func (s *Server) handlePing(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	s.sendMCPResponse(w, req.ID, map[string]interface{}{})
 }
 
@@ -246,7 +242,7 @@ func (s *Server) ListTools() []MCPTool {
 	return tools
 }
 
-func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	tools := s.ListTools()
 	result := map[string]interface{}{
 		"tools": tools,
@@ -268,8 +264,8 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 	return tool.Handler(ctx, toolReq)
 }
 
-func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
-	var params toolCallParams
+func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	var params ToolCallParams
 	if err := s.parseParams(req, &params); err != nil {
 		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
 		return
@@ -293,7 +289,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *mc
 	})
 }
 
-func (s *Server) handleResourcesList(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+func (s *Server) handleResourcesList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	s.mu.RLock()
 	var resources []mcpResource
 	for _, resource := range s.resources {
@@ -313,7 +309,7 @@ func (s *Server) handleResourcesList(w http.ResponseWriter, r *http.Request, req
 	s.sendMCPResponse(w, req.ID, result)
 }
 
-func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req *mcpRequest) {
+func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	var params resourceReadParams
 	if err := s.parseParams(req, &params); err != nil {
 		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
@@ -339,7 +335,7 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 }
 
 func (s *Server) sendMCPResponse(w http.ResponseWriter, id interface{}, result interface{}) {
-	response := mcpResponse{
+	response := MCPResponse{
 		JSONRPC: "2.0",
 		ID:      id,
 		Result:  result,
@@ -351,7 +347,7 @@ func (s *Server) sendMCPResponse(w http.ResponseWriter, id interface{}, result i
 	json.NewEncoder(w).Encode(response)
 }
 
-func (s *Server) parseParams(req *mcpRequest, target interface{}) error {
+func (s *Server) parseParams(req *MCPRequest, target interface{}) error {
 	if req.Params == nil {
 		return nil
 	}
@@ -363,10 +359,10 @@ func (s *Server) parseParams(req *mcpRequest, target interface{}) error {
 }
 
 func (s *Server) sendMCPError(w http.ResponseWriter, id interface{}, code int, message string, data interface{}) {
-	response := mcpResponse{
+	response := MCPResponse{
 		JSONRPC: "2.0",
 		ID:      id,
-		Error: &mcpError{
+		Error: &MCPError{
 			Code:    code,
 			Message: message,
 			Data:    data,

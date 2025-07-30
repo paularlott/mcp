@@ -1,21 +1,21 @@
 package mcp
 
 // MCP Protocol types
-type mcpRequest struct {
+type MCPRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
 	ID      interface{} `json:"id"`
 	Method  string      `json:"method"`
 	Params  interface{} `json:"params,omitempty"`
 }
 
-type mcpResponse struct {
+type MCPResponse struct {
 	JSONRPC string      `json:"jsonrpc"`
 	ID      interface{} `json:"id,omitempty"`
 	Result  interface{} `json:"result,omitempty"`
-	Error   *mcpError   `json:"error,omitempty"`
+	Error   *MCPError   `json:"error,omitempty"`
 }
 
-type mcpError struct {
+type MCPError struct {
 	Code    int         `json:"code"`
 	Message string      `json:"message"`
 	Data    interface{} `json:"data,omitempty"`
@@ -55,7 +55,7 @@ type MCPTool struct {
 	OutputSchema interface{} `json:"outputSchema,omitempty"`
 }
 
-type toolCallParams struct {
+type ToolCallParams struct {
 	Name      string                 `json:"name"`
 	Arguments map[string]interface{} `json:"arguments,omitempty"`
 }
