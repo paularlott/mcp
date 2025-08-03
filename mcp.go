@@ -20,6 +20,10 @@ var supportedProtocolVersions = []string{
 	"2025-06-18",
 }
 
+var (
+	ErrUnknownTool = fmt.Errorf("unknown tool")
+)
+
 // registeredTool represents a registered tool
 type registeredTool struct {
 	Name         string
@@ -257,7 +261,7 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 	s.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("tool '%s' not found", name)
+		return nil, ErrUnknownTool
 	}
 
 	toolReq := &ToolRequest{args: args}
