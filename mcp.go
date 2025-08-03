@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -33,58 +34,166 @@ type registeredTool struct {
 	Handler      ToolHandler
 }
 
-type ResourceHandler func(ctx context.Context, uri string) (*ResourceResponse, error)
-
-type registeredResource struct {
-	URI         string
-	Name        string
-	Description string
-	MimeType    string
-	Handler     ResourceHandler
-}
-
 // Server represents an MCP server instance
 type Server struct {
-	name      string
-	version   string
-	tools     map[string]*registeredTool
-	resources map[string]*registeredResource
-	mu        sync.RWMutex
+	name          string
+	version       string
+	tools         map[string]*registeredTool
+	remoteClients map[string]*registeredClient
+	toolToServer  map[string]*registeredClient
+	toolCache     []MCPTool
+	mu            sync.RWMutex
+}
+
+// registeredClient holds a remote client with its configuration
+type registeredClient struct {
+	client    *Client
+	namespace string
 }
 
 // NewServer creates a new MCP server instance
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:      name,
-		version:   version,
-		tools:     make(map[string]*registeredTool),
-		resources: make(map[string]*registeredResource),
+		name:          name,
+		version:       version,
+		tools:         make(map[string]*registeredTool),
+		remoteClients: make(map[string]*registeredClient),
+		toolToServer:  make(map[string]*registeredClient),
+		toolCache:     make([]MCPTool, 0),
 	}
 }
 
 // RegisterTool registers a new tool with the server
 func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 	s.mu.Lock()
-	s.tools[tool.name] = &registeredTool{
+	defer s.mu.Unlock()
+
+	regTool := &registeredTool{
 		Name:         tool.name,
 		Description:  tool.description,
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
 		Handler:      handler,
 	}
-	s.mu.Unlock()
+	s.tools[tool.name] = regTool
+
+	newTool := MCPTool{
+		Name:        tool.name,
+		Description: tool.description,
+		InputSchema: regTool.Schema,
+	}
+	if regTool.OutputSchema != nil {
+		newTool.OutputSchema = regTool.OutputSchema
+	}
+
+	s.toolCache = append(s.toolCache, newTool)
+
+	// Sort to maintain consistent ordering
+	sort.Slice(s.toolCache, func(i, j int) bool {
+		return s.toolCache[i].Name < s.toolCache[j].Name
+	})
 }
 
-func (s *Server) RegisterResource(uri, name, description, mimeType string, handler ResourceHandler) {
+// RegisterRemoteServer registers a remote MCP server
+func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) error {
+	client := NewClient(url, auth)
+
 	s.mu.Lock()
-	s.resources[uri] = &registeredResource{
-		URI:         uri,
-		Name:        name,
-		Description: description,
-		MimeType:    mimeType,
-		Handler:     handler,
+	defer s.mu.Unlock()
+
+	regClient := &registeredClient{
+		client:    client,
+		namespace: namespace,
 	}
-	s.mu.Unlock()
+	s.remoteClients[url] = regClient
+
+	// Fetch tools from the new server and add to cache/lookup
+	ctx := context.Background()
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		// Server registration succeeded, but we couldn't fetch tools
+		// This is not a fatal error - tools can be fetched later via RefreshTools
+		return nil
+	}
+
+	// Add tools to cache and lookup if they exist
+	for _, tool := range tools {
+		toolName := tool.Name
+		if namespace != "" {
+			toolName = namespace + "/" + tool.Name
+		}
+
+		// Add to lookup
+		s.toolToServer[toolName] = regClient
+
+		// Add to cache with namespaced name
+		tool.Name = toolName
+		s.toolCache = append(s.toolCache, tool)
+	}
+
+	// Sort to maintain consistent ordering
+	sort.Slice(s.toolCache, func(i, j int) bool {
+		return s.toolCache[i].Name < s.toolCache[j].Name
+	})
+
+	return nil
+}
+
+// RefreshTools manually refreshes the tool cache and lookup from all remote servers
+func (s *Server) RefreshTools() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Build new maps
+	newToolCache := []MCPTool{}
+	newToolToServer := make(map[string]*registeredClient)
+
+	// Add local tools to new cache
+	for _, tool := range s.tools {
+		toolItem := MCPTool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.Schema,
+		}
+		if tool.OutputSchema != nil {
+			toolItem.OutputSchema = tool.OutputSchema
+		}
+		newToolCache = append(newToolCache, toolItem)
+	}
+
+	// Add remote tools to new cache and lookup
+	for _, regClient := range s.remoteClients {
+		ctx := context.Background()
+		tools, err := regClient.client.ListTools(ctx)
+		if err != nil {
+			continue // Skip failed remote servers
+		}
+
+		for _, tool := range tools {
+			toolName := tool.Name
+			if regClient.namespace != "" {
+				toolName = regClient.namespace + "/" + tool.Name
+			}
+
+			// Add to new lookup
+			newToolToServer[toolName] = regClient
+
+			// Add to new cache with namespaced name
+			tool.Name = toolName
+			newToolCache = append(newToolCache, tool)
+		}
+	}
+
+	// Sort to maintain consistent ordering
+	sort.Slice(newToolCache, func(i, j int) bool {
+		return newToolCache[i].Name < newToolCache[j].Name
+	})
+
+	// Swap in new maps
+	s.toolCache = newToolCache
+	s.toolToServer = newToolToServer
+
+	return nil
 }
 
 // HandleRequest handles MCP protocol requests
@@ -145,10 +254,6 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleToolsList(w, r, &req)
 	case "tools/call":
 		s.handleToolsCall(w, r, &req)
-	case "resources/list":
-		s.handleResourcesList(w, r, &req)
-	case "resources/read":
-		s.handleResourcesRead(w, r, &req)
 	default:
 		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]interface{}{
 			"method": req.Method,
@@ -226,24 +331,14 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	return caps
 }
 
-// ListTools returns all registered tools (direct API)
+// ListTools returns all registered tools including remote ones (direct API)
 func (s *Server) ListTools() []MCPTool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var tools []MCPTool
-	for _, tool := range s.tools {
-		toolItem := MCPTool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.Schema,
-		}
-		if tool.OutputSchema != nil {
-			toolItem.OutputSchema = tool.OutputSchema
-		}
-		tools = append(tools, toolItem)
-	}
-	return tools
+	result := make([]MCPTool, len(s.toolCache))
+	copy(result, s.toolCache)
+	return result
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
@@ -254,18 +349,28 @@ func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MC
 	s.sendMCPResponse(w, req.ID, result)
 }
 
-// CallTool executes a tool directly (direct API)
+// CallTool executes a tool directly with namespace support (direct API)
 func (s *Server) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
 	s.mu.RLock()
-	tool, exists := s.tools[name]
-	s.mu.RUnlock()
+	defer s.mu.RUnlock()
 
-	if !exists {
-		return nil, ErrUnknownTool
+	// Try local tools first
+	if tool, exists := s.tools[name]; exists {
+		toolReq := &ToolRequest{args: args}
+		return tool.Handler(ctx, toolReq)
 	}
 
-	toolReq := &ToolRequest{args: args}
-	return tool.Handler(ctx, toolReq)
+	// Fast lookup for remote tools
+	if regClient, exists := s.toolToServer[name]; exists {
+		// Extract original tool name (remove namespace if present)
+		toolName := name
+		if regClient.namespace != "" {
+			toolName = strings.TrimPrefix(name, regClient.namespace+"/")
+		}
+		return regClient.client.CallTool(ctx, toolName, args)
+	}
+
+	return nil, ErrUnknownTool
 }
 
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
@@ -291,51 +396,6 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 		StructuredContent: response.StructuredContent,
 		IsError:           false,
 	})
-}
-
-func (s *Server) handleResourcesList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
-	s.mu.RLock()
-	var resources []mcpResource
-	for _, resource := range s.resources {
-		resources = append(resources, mcpResource{
-			URI:         resource.URI,
-			Name:        resource.Name,
-			Description: resource.Description,
-			MimeType:    resource.MimeType,
-		})
-	}
-	s.mu.RUnlock()
-
-	result := map[string]interface{}{
-		"resources": resources,
-	}
-
-	s.sendMCPResponse(w, req.ID, result)
-}
-
-func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
-	var params resourceReadParams
-	if err := s.parseParams(req, &params); err != nil {
-		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
-		return
-	}
-
-	s.mu.RLock()
-	resource, exists := s.resources[params.URI]
-	s.mu.RUnlock()
-
-	if !exists {
-		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Resource not found", nil)
-		return
-	}
-
-	response, err := resource.Handler(r.Context(), params.URI)
-	if err != nil {
-		s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Resource read failed: %v", err), nil)
-		return
-	}
-
-	s.sendMCPResponse(w, req.ID, response)
 }
 
 func (s *Server) sendMCPResponse(w http.ResponseWriter, id interface{}, result interface{}) {
