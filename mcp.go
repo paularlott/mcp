@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -22,7 +23,8 @@ var supportedProtocolVersions = []string{
 }
 
 var (
-	ErrUnknownTool = fmt.Errorf("unknown tool")
+	ErrUnknownTool      = errors.New("unknown tool")
+	ErrUnknownParameter = errors.New("parameter not found")
 )
 
 // registeredTool represents a registered tool

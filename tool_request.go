@@ -16,7 +16,7 @@ type ToolRequest struct {
 func (r *ToolRequest) String(name string) (string, error) {
 	val, ok := r.args[name]
 	if !ok {
-		return "", fmt.Errorf("parameter '%s' not found", name)
+		return "", ErrUnknownParameter
 	}
 	if str, ok := val.(string); ok {
 		return str, nil
@@ -34,7 +34,7 @@ func (r *ToolRequest) StringOr(name, defaultValue string) string {
 func (r *ToolRequest) Int(name string) (int, error) {
 	val, ok := r.args[name]
 	if !ok {
-		return 0, fmt.Errorf("parameter '%s' not found", name)
+		return 0, ErrUnknownParameter
 	}
 	switch v := val.(type) {
 	case int:
@@ -56,7 +56,7 @@ func (r *ToolRequest) IntOr(name string, defaultValue int) int {
 func (r *ToolRequest) Float(name string) (float64, error) {
 	val, ok := r.args[name]
 	if !ok {
-		return 0, fmt.Errorf("parameter '%s' not found", name)
+		return 0, ErrUnknownParameter
 	}
 	if num, ok := val.(float64); ok {
 		return num, nil
@@ -74,7 +74,7 @@ func (r *ToolRequest) FloatOr(name string, defaultValue float64) float64 {
 func (r *ToolRequest) Bool(name string) (bool, error) {
 	val, ok := r.args[name]
 	if !ok {
-		return false, fmt.Errorf("parameter '%s' not found", name)
+		return false, ErrUnknownParameter
 	}
 	if b, ok := val.(bool); ok {
 		return b, nil
