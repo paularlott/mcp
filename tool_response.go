@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 )
 
 // ToolResponse represents the response from a tool
@@ -31,6 +33,14 @@ func NewToolResponseMulti(responses ...*ToolResponse) *ToolResponse {
 
 func NewToolResponseText(text string) *ToolResponse {
 	return &ToolResponse{Content: []ToolContent{{Type: "text", Text: text}}}
+}
+
+func NewToolResponseJSON(data interface{}) *ToolResponse {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return &ToolResponse{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Error marshaling data: %v", err)}}}
+	}
+	return NewToolResponseText(string(jsonData))
 }
 
 func NewToolResponseImage(data []byte, mimeType string) *ToolResponse {
