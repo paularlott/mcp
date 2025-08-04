@@ -88,3 +88,84 @@ func (r *ToolRequest) BoolOr(name string, defaultValue bool) bool {
 	}
 	return defaultValue
 }
+
+func (r *ToolRequest) StringSlice(name string) ([]string, error) {
+	val, ok := r.args[name]
+	if !ok {
+		return nil, ErrUnknownParameter
+	}
+	if arr, ok := val.([]interface{}); ok {
+		result := make([]string, len(arr))
+		for i, item := range arr {
+			if str, ok := item.(string); ok {
+				result[i] = str
+			} else {
+				return nil, fmt.Errorf("parameter '%s' contains non-string element at index %d", name, i)
+			}
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("parameter '%s' is not an array", name)
+}
+
+func (r *ToolRequest) StringSliceOr(name string, defaultValue []string) []string {
+	if val, err := r.StringSlice(name); err == nil {
+		return val
+	}
+	return defaultValue
+}
+
+func (r *ToolRequest) IntSlice(name string) ([]int, error) {
+	val, ok := r.args[name]
+	if !ok {
+		return nil, ErrUnknownParameter
+	}
+	if arr, ok := val.([]interface{}); ok {
+		result := make([]int, len(arr))
+		for i, item := range arr {
+			switch v := item.(type) {
+			case int:
+				result[i] = v
+			case float64:
+				result[i] = int(v)
+			default:
+				return nil, fmt.Errorf("parameter '%s' contains non-number element at index %d", name, i)
+			}
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("parameter '%s' is not an array", name)
+}
+
+func (r *ToolRequest) IntSliceOr(name string, defaultValue []int) []int {
+	if val, err := r.IntSlice(name); err == nil {
+		return val
+	}
+	return defaultValue
+}
+
+func (r *ToolRequest) FloatSlice(name string) ([]float64, error) {
+	val, ok := r.args[name]
+	if !ok {
+		return nil, ErrUnknownParameter
+	}
+	if arr, ok := val.([]interface{}); ok {
+		result := make([]float64, len(arr))
+		for i, item := range arr {
+			if num, ok := item.(float64); ok {
+				result[i] = num
+			} else {
+				return nil, fmt.Errorf("parameter '%s' contains non-number element at index %d", name, i)
+			}
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("parameter '%s' is not an array", name)
+}
+
+func (r *ToolRequest) FloatSliceOr(name string, defaultValue []float64) []float64 {
+	if val, err := r.FloatSlice(name); err == nil {
+		return val
+	}
+	return defaultValue
+}
