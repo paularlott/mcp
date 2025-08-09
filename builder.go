@@ -1,13 +1,23 @@
 package mcp
 
+import "strings"
+
 // Parameter types
 const (
-	String  = "string"
-	Number  = "number"
-	Boolean = "boolean"
-	Array   = "array"
-	Object  = "object"
+	String       = "string"
+	Number       = "number"
+	Boolean      = "boolean"
+	Object       = "object"
+	ArrayString  = "array:string"
+	ArrayNumber  = "array:number"
+	ArrayBoolean = "array:boolean"
+	ArrayObject  = "array:object"
 )
+
+// ArrayOf creates an array type for the given item type
+func ArrayOf(itemType string) string {
+	return "array:" + itemType
+}
 
 // ToolBuilder provides fluent API for building tools
 type ToolBuilder struct {
@@ -69,7 +79,20 @@ func (t *ToolBuilder) buildSchemaFromParams(params []paramDef) map[string]interf
 	var required []string
 
 	for _, param := range params {
-		prop := map[string]interface{}{"type": param.paramType}
+		var prop map[string]interface{}
+		
+		if strings.HasPrefix(param.paramType, "array:") {
+			itemType := strings.TrimPrefix(param.paramType, "array:")
+			prop = map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": itemType,
+				},
+			}
+		} else {
+			prop = map[string]interface{}{"type": param.paramType}
+		}
+		
 		if param.description != "" {
 			prop["description"] = param.description
 		}
