@@ -40,6 +40,7 @@ type registeredTool struct {
 type Server struct {
 	name          string
 	version       string
+	instructions  string
 	tools         map[string]*registeredTool
 	remoteClients map[string]*registeredClient
 	toolToServer  map[string]*registeredClient
@@ -58,11 +59,16 @@ func NewServer(name, version string) *Server {
 	return &Server{
 		name:          name,
 		version:       version,
+		instructions:  "",
 		tools:         make(map[string]*registeredTool),
 		remoteClients: make(map[string]*registeredClient),
 		toolToServer:  make(map[string]*registeredClient),
 		toolCache:     make([]MCPTool, 0),
 	}
+}
+
+func (s *Server) SetInstructions(instructions string) {
+	s.instructions = instructions
 }
 
 // RegisterTool registers a new tool with the server
@@ -299,6 +305,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 			Name:    s.name,
 			Version: s.version,
 		},
+		Instructions: s.instructions,
 	}
 
 	s.sendMCPResponse(w, req.ID, result)
