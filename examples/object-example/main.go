@@ -15,37 +15,47 @@ func main() {
 
 	// Register a tool that accepts an object parameter
 	server.RegisterTool(
-		mcp.NewTool("create_user", "Create a new user with profile information").
-			AddObjectParam("user", "User information", true).
-			AddProperty("name", mcp.String, "User's full name", true).
-			AddProperty("email", mcp.String, "User's email address", true).
-			AddProperty("age", mcp.Number, "User's age", false).
-			AddProperty("active", mcp.Boolean, "Whether user is active", false).
-			Done().
-			AddParam("notify", mcp.Boolean, "Send notification email", false),
+		mcp.NewTool("create_user", "Create a new user with profile information",
+			mcp.Object("user", "User information",
+				mcp.String("name", "User's full name", mcp.Required()),
+				mcp.String("email", "User's email address", mcp.Required()),
+				mcp.Number("age", "User's age"),
+				mcp.Boolean("active", "Whether user is active"),
+				mcp.Required(),
+			),
+			mcp.Boolean("notify", "Send notification email"),
+		),
 		handleCreateUser,
 	)
 
 	// Register a tool that accepts an array of objects
 	server.RegisterTool(
-		mcp.NewTool("process_orders", "Process multiple orders").
-			AddArrayObjectParam("orders", "List of orders to process", true).
-			AddProperty("id", mcp.String, "Order ID", true).
-			AddProperty("amount", mcp.Number, "Order amount", true).
-			AddProperty("currency", mcp.String, "Currency code", false).
-			AddObjectProperty("customer", "Customer information", true).
-			Done(),
+		mcp.NewTool("process_orders", "Process multiple orders",
+			mcp.ObjectArray("orders", "List of orders to process",
+				mcp.String("id", "Order ID", mcp.Required()),
+				mcp.Number("amount", "Order amount", mcp.Required()),
+				mcp.String("currency", "Currency code"),
+				mcp.Object("customer", "Customer information",
+					mcp.String("name", "Customer name", mcp.Required()),
+					mcp.String("email", "Customer email"),
+					mcp.Required(),
+				),
+				mcp.Required(),
+			),
+		),
 		handleProcessOrders,
 	)
 
 	// Register a tool with nested objects
 	server.RegisterTool(
-		mcp.NewTool("create_product", "Create a product with detailed specifications").
-			AddObjectParam("product", "Product information", true).
-			AddProperty("name", mcp.String, "Product name", true).
-			AddProperty("price", mcp.Number, "Product price", true).
-			AddObjectProperty("specifications", "Product specifications", false).
-			Done(),
+		mcp.NewTool("create_product", "Create a product with detailed specifications",
+			mcp.Object("product", "Product information",
+				mcp.String("name", "Product name", mcp.Required()),
+				mcp.Number("price", "Product price", mcp.Required()),
+				mcp.Object("specifications", "Product specifications"),
+				mcp.Required(),
+			),
+		),
 		handleCreateProduct,
 	)
 

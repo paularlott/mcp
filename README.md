@@ -37,9 +37,10 @@ func main() {
 
     // Register a tool
     server.RegisterTool(
-        mcp.NewTool("greet", "Greet someone").
-            AddParam("name", mcp.String, "Name to greet", true).
-            AddParam("greeting", mcp.String, "Custom greeting", false),
+        mcp.NewTool("greet", "Greet someone",
+            mcp.String("name", "Name to greet", mcp.Required()),
+            mcp.String("greeting", "Custom greeting"),
+        ),
         func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
             name, _ := req.String("name")
             greeting := req.StringOr("greeting", "Hello")
@@ -57,20 +58,30 @@ func main() {
 
 ### Parameter Types
 
+The library provides a clean, declarative API for defining tools:
+
 ```go
-mcp.String       // "string"
-mcp.Number       // "number"
-mcp.Boolean      // "boolean"
-mcp.Object       // "object"
-mcp.ArrayString  // "array:string"
-mcp.ArrayNumber  // "array:number"
-mcp.ArrayBoolean // "array:boolean"
-mcp.ArrayObject  // "array:object"
+// Basic types
+mcp.String(name, description, options...)
+mcp.Number(name, description, options...)
+mcp.Boolean(name, description, options...)
+
+// Array types
+mcp.StringArray(name, description, options...)
+mcp.NumberArray(name, description, options...)
+
+// Object types
+mcp.Object(name, description, properties...)
+mcp.ObjectArray(name, description, properties...)
+
+// Options
+mcp.Required()  // Makes parameter required
+mcp.Output(...) // Defines structured output
 ```
 
 ### Object Support
 
-The library provides comprehensive support for objects and arrays of objects, following the JSON Schema specification used by the Model Context Protocol.
+The library provides comprehensive support for objects and arrays of objects with a clean, declarative syntax:
 
 #### Basic Object Parameters
 
@@ -78,13 +89,22 @@ Define structured object parameters with typed properties:
 
 ```go
 server.RegisterTool(
-    mcp.NewTool("create_user", "Create a new user").
-        AddObjectParam("user", "User information", true).
-        AddProperty("name", mcp.String, "User's full name", true).
-        AddProperty("email", mcp.String, "User's email address", true).
-        AddProperty("age", mcp.Number, "User's age", false).
-        AddProperty("active", mcp.Boolean, "Whether user is active", false).
-        Done(),
+    mcp.NewTool("create_user", "Create a new user",
+        mcp.Object("user", "User information",
+            mcp.String("name", "User's full name", mcp.Required()),
+            mcp.String("email", "User's email address", mcp.Required()),
+            mcp.Number("age", "User's age"),
+            mcp.Boolean("active", "Whether user is active"),
+            mcp.StringArray("tags", "User tags"),
+            mcp.Required(),
+        ),
+        mcp.Output(
+            mcp.Object("result", "Creation result",
+                mcp.String("id", "User ID"),
+                mcp.StringArray("permissions", "User permissions"),
+            ),
+        ),
+    ),
     handleCreateUser,
 )
 ```
@@ -98,18 +118,18 @@ func handleCreateUser(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolRespo
     if err != nil {
         return nil, err
     }
-    
+
     // Extract specific properties with type safety
     name, err := req.GetObjectStringProperty("user", "name")
     if err != nil {
         return nil, err
     }
-    
+
     email, err := req.GetObjectStringProperty("user", "email")
     if err != nil {
         return nil, err
     }
-    
+
     // Optional properties with manual checking
     age := 0
     if ageVal, exists := user["age"]; exists {
@@ -117,7 +137,7 @@ func handleCreateUser(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolRespo
             age = int(ageFloat)
         }
     }
-    
+
     return mcp.NewToolResponseText(fmt.Sprintf("Created user: %s (%s)", name, email)), nil
 }
 ```
@@ -128,12 +148,18 @@ Define and handle arrays of objects:
 
 ```go
 server.RegisterTool(
-    mcp.NewTool("process_orders", "Process multiple orders").
-        AddArrayObjectParam("orders", "List of orders to process", true).
-        AddProperty("id", mcp.String, "Order ID", true).
-        AddProperty("amount", mcp.Number, "Order amount", true).
-        AddProperty("currency", mcp.String, "Currency code", false).
-        Done(),
+    mcp.NewTool("process_orders", "Process multiple orders",
+        mcp.ObjectArray("orders", "List of orders to process",
+            mcp.String("id", "Order ID", mcp.Required()),
+            mcp.Number("amount", "Order amount", mcp.Required()),
+            mcp.String("currency", "Currency code"),
+            mcp.Required(),
+        ),
+        mcp.Output(
+            mcp.StringArray("processed_ids", "List of processed order IDs"),
+            mcp.NumberArray("totals", "List of order totals"),
+        ),
+    ),
     handleProcessOrders,
 )
 
@@ -142,37 +168,47 @@ func handleProcessOrders(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolRe
     if err != nil {
         return nil, err
     }
-    
+
     for i, order := range orders {
         id, ok := order["id"].(string)
         if !ok {
             return nil, fmt.Errorf("order %d missing or invalid id", i)
         }
-        
+
         amount, ok := order["amount"].(float64)
         if !ok {
             return nil, fmt.Errorf("order %d missing or invalid amount", i)
         }
-        
+
         // Process order...
     }
-    
+
     return mcp.NewToolResponseText("Orders processed"), nil
 }
 ```
 
 #### Nested Objects
 
-Objects can contain other objects as properties:
+Objects can contain other objects and arrays:
 
 ```go
 server.RegisterTool(
-    mcp.NewTool("create_order", "Create an order with customer info").
-        AddObjectParam("order", "Order information", true).
-        AddProperty("id", mcp.String, "Order ID", true).
-        AddProperty("total", mcp.Number, "Order total", true).
-        AddObjectProperty("customer", "Customer information", true).
-        Done(),
+    mcp.NewTool("create_order", "Create an order with customer info",
+        mcp.Object("order", "Order information",
+            mcp.String("id", "Order ID", mcp.Required()),
+            mcp.Number("total", "Order total", mcp.Required()),
+            mcp.Object("customer", "Customer information",
+                mcp.String("name", "Customer name", mcp.Required()),
+                mcp.String("email", "Customer email"),
+                mcp.Required(),
+            ),
+            mcp.ObjectArray("items", "Order items",
+                mcp.String("sku", "Item SKU", mcp.Required()),
+                mcp.Number("quantity", "Item quantity", mcp.Required()),
+            ),
+            mcp.Required(),
+        ),
+    ),
     handleCreateOrder,
 )
 ```
@@ -183,26 +219,29 @@ For cases where you need to accept arbitrary object structures:
 
 ```go
 server.RegisterTool(
-    mcp.NewTool("configure", "Configure with arbitrary settings").
-        AddParam("config", mcp.Object, "Configuration object", true),
+    mcp.NewTool("configure", "Configure with arbitrary settings",
+        mcp.Object("config", "Configuration object", mcp.Required()),
+    ),
     handleConfigure,
 )
 ```
 
 Generic objects allow any properties and generate a schema with `"additionalProperties": true`.
 
-#### Object Parameter Methods
+#### API Reference
 
-**ToolBuilder Methods:**
-- `AddObjectParam(name, description, required)` - Add a structured object parameter
-- `AddArrayObjectParam(name, description, required)` - Add an array of objects parameter
-- `AddOutputObjectParam(name, description, required)` - Add a structured object output parameter
-- `AddOutputArrayObjectParam(name, description, required)` - Add an array of objects output parameter
+**Parameter Functions:**
+- `String(name, description, options...)` - String parameter
+- `Number(name, description, options...)` - Number parameter  
+- `Boolean(name, description, options...)` - Boolean parameter
+- `StringArray(name, description, options...)` - Array of strings
+- `NumberArray(name, description, options...)` - Array of numbers
+- `Object(name, description, properties...)` - Object with properties (use mcp.Required() to make required)
+- `ObjectArray(name, description, properties...)` - Array of objects (use mcp.Required() to make required)
 
-**ObjectParamBuilder Methods:**
-- `AddProperty(name, type, description, required)` - Add a property to the object
-- `AddObjectProperty(name, description, required)` - Add a nested object property
-- `Done()` - Return to the main ToolBuilder
+**Options:**
+- `Required()` - Makes any parameter required
+- `Output(parameters...)` - Defines structured output schema
 
 **ToolRequest Methods:**
 - `Object(name)` - Extract an object parameter as `map[string]interface{}`
@@ -231,7 +270,7 @@ The library generates proper JSON Schema for object parameters:
           "description": "User's full name"
         },
         "email": {
-          "type": "string", 
+          "type": "string",
           "description": "User's email address"
         },
         "age": {
@@ -248,14 +287,29 @@ The library generates proper JSON Schema for object parameters:
 }
 ```
 
-### Adding Parameters
+### Complete Example
 
 ```go
-tool := mcp.NewTool("example", "Example tool").
-    AddParam("required_param", mcp.String, "A required parameter", true).
-    AddParam("optional_param", mcp.Number, "An optional parameter", false).
-    AddOutputParam("result", mcp.String, "The result", false)
-```
+tool := mcp.NewTool("example", "Comprehensive example tool",
+    // Input parameters
+    mcp.String("name", "User name", mcp.Required()),
+    mcp.Number("age", "User age"),
+    mcp.StringArray("tags", "User tags"),
+    mcp.Object("address", "User address",
+        mcp.String("street", "Street address", mcp.Required()),
+        mcp.String("city", "City", mcp.Required()),
+    ),
+    
+    // Structured output
+    mcp.Output(
+        mcp.String("user_id", "Created user ID"),
+        mcp.StringArray("permissions", "User permissions"),
+        mcp.Object("profile", "User profile",
+            mcp.String("display_name", "Display name"),
+            mcp.Boolean("verified", "Is verified"),
+        ),
+    ),
+)```
 
 ## Request Handling
 
@@ -282,7 +336,7 @@ func handler(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, erro
     // Object parameters
     user, err := req.Object("user")
     orders, err := req.ObjectSlice("orders")
-    
+
     // Extract object properties with type safety
     userName, err := req.GetObjectStringProperty("user", "name")
     userAge, err := req.GetObjectIntProperty("user", "age")

@@ -7,13 +7,15 @@ import (
 
 func TestObjectSchemaGeneration(t *testing.T) {
 	// Test simple object parameter
-	tool := NewTool("test_tool", "Test tool with object parameter").
-		AddObjectParam("user", "User information", true).
-		AddProperty("name", String, "User's name", true).
-		AddProperty("age", Number, "User's age", false).
-		Done()
+	tool := NewTool("test_tool", "Test tool with object parameter",
+		Object("user", "User information",
+			String("name", "User's name", Required()),
+			Number("age", "User's age"),
+			Required(),
+		),
+	)
 
-	schema := tool.buildSchema()
+	schema := tool.BuildSchema()
 
 	// Verify the schema structure
 	properties, ok := schema["properties"].(map[string]interface{})
@@ -65,13 +67,15 @@ func TestObjectSchemaGeneration(t *testing.T) {
 
 func TestArrayObjectSchemaGeneration(t *testing.T) {
 	// Test array of objects parameter
-	tool := NewTool("test_tool", "Test tool with array of objects").
-		AddArrayObjectParam("items", "List of items", true).
-		AddProperty("id", String, "Item ID", true).
-		AddProperty("quantity", Number, "Item quantity", true).
-		Done()
+	tool := NewTool("test_tool", "Test tool with array of objects",
+		ObjectArray("items", "List of items",
+			String("id", "Item ID", Required()),
+			Number("quantity", "Item quantity", Required()),
+			Required(),
+		),
+	)
 
-	schema := tool.buildSchema()
+	schema := tool.BuildSchema()
 
 	properties, ok := schema["properties"].(map[string]interface{})
 	if !ok {
@@ -113,10 +117,11 @@ func TestArrayObjectSchemaGeneration(t *testing.T) {
 
 func TestGenericObjectSchema(t *testing.T) {
 	// Test generic object (no properties defined)
-	tool := NewTool("test_tool", "Test tool with generic object").
-		AddParam("config", Object, "Configuration object", true)
+	tool := NewTool("test_tool", "Test tool with generic object",
+		Object("config", "Configuration object", Required()),
+	)
 
-	schema := tool.buildSchema()
+	schema := tool.BuildSchema()
 
 	properties, ok := schema["properties"].(map[string]interface{})
 	if !ok {
@@ -140,14 +145,19 @@ func TestGenericObjectSchema(t *testing.T) {
 
 func TestComplexNestedObjectSchema(t *testing.T) {
 	// Test complex nested object structure
-	tool := NewTool("test_tool", "Test tool with nested objects").
-		AddObjectParam("order", "Order information", true).
-		AddProperty("id", String, "Order ID", true).
-		AddProperty("total", Number, "Order total", true).
-		AddObjectProperty("customer", "Customer information", true).
-		Done()
+	tool := NewTool("test_tool", "Test tool with nested objects",
+		Object("order", "Order information",
+			String("id", "Order ID", Required()),
+			Number("total", "Order total", Required()),
+			Object("customer", "Customer information",
+				String("name", "Customer name", Required()),
+				Required(),
+			),
+			Required(),
+		),
+	)
 
-	schema := tool.buildSchema()
+	schema := tool.BuildSchema()
 
 	// Convert to JSON and back to verify it's valid JSON Schema
 	jsonBytes, err := json.Marshal(schema)

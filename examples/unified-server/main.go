@@ -15,8 +15,9 @@ func main() {
 
 	// Register a local tool
 	server.RegisterTool(
-		mcp.NewTool("local-greet", "Local greeting tool").
-			AddParam("name", mcp.String, "Name to greet", true),
+		mcp.NewTool("local-greet", "Local greeting tool",
+			mcp.String("name", "Name to greet", mcp.Required()),
+		),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			name, _ := req.String("name")
 			return mcp.NewToolResponseText(fmt.Sprintf("Local: Hello, %s!", name)), nil
