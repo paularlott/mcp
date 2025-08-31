@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -250,7 +251,7 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 	}
 
 	// Check if it's an event stream
-	if httpResp.Header.Get("Content-Type") == "text/event-stream" {
+	if strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream") {
 		// Handle Server-Sent Events format
 		return c.parseEventStream(bodyBytes, resp)
 	}
@@ -269,8 +270,13 @@ func (c *Client) parseEventStream(data []byte, resp *MCPResponse) error {
 
 	for _, line := range lines {
 		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("data: ")) {
-			jsonData = bytes.TrimPrefix(line, []byte("data: "))
+		if bytes.HasPrefix(line, []byte("data:")) {
+			// Tolerate optional space after colon and skip empty data lines
+			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if len(payload) == 0 {
+				continue
+			}
+			jsonData = payload
 			break
 		}
 	}

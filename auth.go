@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 // BearerTokenAuth implements simple bearer token authentication
@@ -29,34 +30,23 @@ func (b *BearerTokenAuth) Refresh() error {
 
 // OAuth2Auth implements OAuth2 authentication with token refresh
 type OAuth2Auth struct {
-	clientID     string
-	clientSecret string
-	tokenURL     string
-	scopes       []string
-	username     string
-	password     string
-	token        *oauth2.Token
-	config       *oauth2.Config
-	mu           sync.RWMutex
+	token  *oauth2.Token
+	config *clientcredentials.Config
+	mu     sync.RWMutex
 }
 
 // NewOAuth2Auth creates a new OAuth2 auth provider
 func NewOAuth2Auth(clientID, clientSecret, tokenURL string, scopes []string) *OAuth2Auth {
-	config := &oauth2.Config{
+	cfg := &clientcredentials.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
-		Endpoint: oauth2.Endpoint{
-			TokenURL: tokenURL,
-		},
-		Scopes: scopes,
+		TokenURL:     tokenURL,
+		Scopes:       scopes,
+		AuthStyle:    oauth2.AuthStyleInHeader,
 	}
 
 	return &OAuth2Auth{
-		clientID:     clientID,
-		clientSecret: clientSecret,
-		tokenURL:     tokenURL,
-		scopes:       scopes,
-		config:       config,
+		config: cfg,
 	}
 }
 
@@ -84,7 +74,7 @@ func (o *OAuth2Auth) Refresh() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	token, err := o.config.PasswordCredentialsToken(ctx, o.username, o.password)
+	token, err := o.config.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to refresh token: %w", err)
 	}

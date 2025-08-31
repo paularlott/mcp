@@ -94,7 +94,15 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 		newTool.OutputSchema = regTool.OutputSchema
 	}
 
-	s.toolCache = append(s.toolCache, newTool)
+	// Replace any existing cache entries with the same name to avoid duplicates
+	filtered := make([]MCPTool, 0, len(s.toolCache))
+	for _, t := range s.toolCache {
+		if t.Name != tool.name {
+			filtered = append(filtered, t)
+		}
+	}
+	filtered = append(filtered, newTool)
+	s.toolCache = filtered
 
 	// Sort to maintain consistent ordering
 	sort.Slice(s.toolCache, func(i, j int) bool {
@@ -134,9 +142,17 @@ func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) 
 		// Add to lookup
 		s.toolToServer[toolName] = regClient
 
-		// Add to cache with namespaced name
+		// Add to cache with namespaced name, replacing any existing entry with same name
 		tool.Name = toolName
-		s.toolCache = append(s.toolCache, tool)
+		// filter existing
+		filtered := make([]MCPTool, 0, len(s.toolCache))
+		for _, t := range s.toolCache {
+			if t.Name != toolName {
+				filtered = append(filtered, t)
+			}
+		}
+		filtered = append(filtered, tool)
+		s.toolCache = filtered
 	}
 
 	// Sort to maintain consistent ordering
@@ -154,6 +170,7 @@ func (s *Server) RefreshTools() error {
 
 	// Build new maps
 	newToolCache := []MCPTool{}
+	newToolIndex := make(map[string]MCPTool)
 	newToolToServer := make(map[string]*registeredClient)
 
 	// Add local tools to new cache
@@ -166,7 +183,7 @@ func (s *Server) RefreshTools() error {
 		if tool.OutputSchema != nil {
 			toolItem.OutputSchema = tool.OutputSchema
 		}
-		newToolCache = append(newToolCache, toolItem)
+		newToolIndex[toolItem.Name] = toolItem
 	}
 
 	// Add remote tools to new cache and lookup
@@ -186,16 +203,18 @@ func (s *Server) RefreshTools() error {
 			// Add to new lookup
 			newToolToServer[toolName] = regClient
 
-			// Add to new cache with namespaced name
+			// Add/update in new cache with namespaced name (dedup by name)
 			tool.Name = toolName
-			newToolCache = append(newToolCache, tool)
+			newToolIndex[toolName] = tool
 		}
 	}
 
-	// Sort to maintain consistent ordering
-	sort.Slice(newToolCache, func(i, j int) bool {
-		return newToolCache[i].Name < newToolCache[j].Name
-	})
+	// Move from map to slice and sort for consistent ordering
+	newToolCache = newToolCache[:0]
+	for _, v := range newToolIndex {
+		newToolCache = append(newToolCache, v)
+	}
+	sort.Slice(newToolCache, func(i, j int) bool { return newToolCache[i].Name < newToolCache[j].Name })
 
 	// Swap in new maps
 	s.toolCache = newToolCache
