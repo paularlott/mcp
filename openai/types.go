@@ -94,6 +94,7 @@ type Choice struct {
 
 // Delta represents a streaming delta
 type Delta struct {
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
 	Role      string          `json:"role,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	Refusal   string          `json:"refusal,omitempty"`
@@ -151,6 +152,7 @@ type ToolFunction struct {
 
 // ToolCall represents a tool call from the assistant
 type ToolCall struct {
+	Index    int              `json:"index,omitempty"`
 	ID       string           `json:"id"`
 	Type     string           `json:"type"`
 	Function ToolCallFunction `json:"function"`
