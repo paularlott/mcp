@@ -232,7 +232,7 @@ Generic objects allow any properties and generate a schema with `"additionalProp
 
 **Parameter Functions:**
 - `String(name, description, options...)` - String parameter
-- `Number(name, description, options...)` - Number parameter  
+- `Number(name, description, options...)` - Number parameter
 - `Boolean(name, description, options...)` - Boolean parameter
 - `StringArray(name, description, options...)` - Array of strings
 - `NumberArray(name, description, options...)` - Array of numbers
@@ -299,7 +299,7 @@ tool := mcp.NewTool("example", "Comprehensive example tool",
         mcp.String("street", "Street address", mcp.Required()),
         mcp.String("city", "City", mcp.Required()),
     ),
-    
+
     // Structured output
     mcp.Output(
         mcp.String("user_id", "Created user ID"),
@@ -562,6 +562,27 @@ See the `examples/` directory for complete working examples:
 - `examples/client/` - MCP client connecting to remote server
 - `examples/unified-server/` - Server with both local and remote tools
 - `examples/object-example/` - Comprehensive object and array handling examples
+
+## OpenAI Compatibility
+
+The `openai` subpackage provides types and utilities for building OpenAI-compatible APIs that use MCP tools:
+
+```go
+import "github.com/paularlott/mcp/openai"
+
+// Convert MCP tools to OpenAI function format
+mcpTools := server.ListTools()
+openAITools := openai.MCPToolsToOpenAI(mcpTools)
+
+// Extract results from MCP tool responses for OpenAI
+result, err := openai.ExtractToolResult(mcpResponse)
+
+// Stream handling utilities
+stream := openai.NewChatStream(ctx, responseChan, errorChan)
+acc := &openai.CompletionAccumulator{}
+```
+
+See [openai/README.md](openai/README.md) for complete documentation.
 
 ## License
 
