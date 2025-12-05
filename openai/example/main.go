@@ -61,7 +61,6 @@ func handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Forward to upstream LLM
 	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet,
 		openAIBaseURL+"/models", nil)
 	if err != nil {
@@ -106,6 +105,18 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, mcpServer *mc
 	const maxIterations = 10
 	currentMessages := req.Messages
 
+	// Create a tool executor that calls MCP tools
+	executor := func(name string, arguments map[string]any) (string, error) {
+		log.Printf("Executing tool: %s", name)
+		mcpResponse, err := mcpServer.CallTool(r.Context(), name, arguments)
+		if err != nil {
+			return "", err
+		}
+		result, _ := openai.ExtractToolResult(mcpResponse)
+		log.Printf("Tool result: %s", result)
+		return result, nil
+	}
+
 	for iteration := 0; iteration < maxIterations; iteration++ {
 		req.Messages = currentMessages
 
@@ -115,38 +126,34 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, mcpServer *mc
 			return
 		}
 
-		if len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
+		if len(response.Choices) == 0 || !openai.HasToolCalls(response.Choices[0].Message) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(response)
 			return
 		}
 
-		currentMessages = append(currentMessages, response.Choices[0].Message)
+		// Add assistant message with tool calls
+		currentMessages = append(currentMessages,
+			openai.BuildAssistantToolCallMessage(
+				response.Choices[0].Message.GetContentAsString(),
+				response.Choices[0].Message.ToolCalls,
+			))
 
-		for _, toolCall := range response.Choices[0].Message.ToolCalls {
-			log.Printf("Executing tool: %s", toolCall.Function.Name)
-
-			mcpResponse, err := mcpServer.CallTool(r.Context(), toolCall.Function.Name, toolCall.Function.Arguments)
-
-			var resultContent string
-			if err != nil {
-				resultContent = fmt.Sprintf("Error: %v", err)
-			} else {
-				resultContent, _ = openai.ExtractToolResult(mcpResponse)
-			}
-
-			log.Printf("Tool result: %s", resultContent)
-
-			toolResultMsg := openai.Message{
-				Role:       "tool",
-				ToolCallID: toolCall.ID,
-			}
-			toolResultMsg.SetContentAsString(resultContent)
-			currentMessages = append(currentMessages, toolResultMsg)
+		// Execute all tool calls and get result messages
+		toolResultMsgs, err := openai.ExecuteToolCalls(
+			response.Choices[0].Message.ToolCalls,
+			executor,
+			false, // continue on error
+		)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Tool execution error: %v", err), http.StatusInternalServerError)
+			return
 		}
+
+		currentMessages = append(currentMessages, toolResultMsgs...)
 	}
 
-	http.Error(w, "Maximum tool iterations reached", http.StatusInternalServerError)
+	http.Error(w, openai.NewMaxToolIterationsError(maxIterations).Error(), http.StatusInternalServerError)
 }
 
 func callUpstreamLLM(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
