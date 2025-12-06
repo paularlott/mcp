@@ -370,3 +370,40 @@ func handleChatCompletion(w http.ResponseWriter, r *http.Request) {
 ## License
 
 This package is part of the MCP library and is licensed under the same terms.
+
+## Token Estimation
+
+When the upstream LLM doesn't provide token usage in its response, you can use the `TokenCounter` to estimate tokens:
+
+```go
+// Initialize counter and estimate prompt tokens from initial messages
+tokenCounter := openai.NewTokenCounter()
+tokenCounter.AddPromptTokensFromMessages(req.Messages)
+
+// After receiving streaming deltas, track completion tokens
+tokenCounter.AddCompletionTokensFromDelta(&delta)
+
+// Or for non-streaming, track from the full message
+tokenCounter.AddCompletionTokensFromMessage(&response.Choices[0].Message)
+
+// When tools are used, track tool result tokens (they become prompt tokens for next iteration)
+toolResultMsg := openai.BuildToolResultMessage(toolCall.ID, result)
+tokenCounter.AddPromptTokensFromMessages([]openai.Message{toolResultMsg})
+
+// Get the estimated usage
+usage := tokenCounter.GetUsage()
+// usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
+
+// Or inject into a response if it's missing
+tokenCounter.InjectUsageIfMissing(response)
+```
+
+### Token Estimation Algorithm
+
+The `EstimateTokens` function provides a fast, reproducible approximation based on:
+- Word boundaries (using `strings.Fields`)
+- Punctuation counting (each punctuation mark = 1 token)
+- Chat template overhead (~4 tokens for conversation structure)
+- Per-message overhead (~3 tokens for role markers and special tokens)
+
+This is suitable for billing estimates and UI display, but not for exact token limit calculations.
