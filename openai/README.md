@@ -114,28 +114,38 @@ if refusal, ok := acc.FinishedRefusal(); ok {
 
 ### Using Tool Handlers
 
-Tool handlers receive events during tool execution, useful for sending SSE events or logging:
+Tool handlers receive events during tool execution, useful for sending SSE events or logging.
+
+**Important:** The expected call order is:
+1. `OnToolCall()` - called BEFORE executing the tool
+2. Execute the tool
+3. `OnToolResult()` - called AFTER the tool completes
 
 ```go
 type MyToolHandler struct{}
 
 func (h *MyToolHandler) OnToolCall(toolCall openai.ToolCall) error {
-    log.Printf("Executing tool: %s", toolCall.Function.Name)
+    log.Printf("Starting tool: %s", toolCall.Function.Name)
     return nil
 }
 
 func (h *MyToolHandler) OnToolResult(toolCallID, toolName, result string) error {
-    log.Printf("Tool %s completed", toolName)
+    log.Printf("Tool %s completed with result: %s", toolName, result)
     return nil
 }
 
 // Attach handler to context
 ctx = openai.WithToolHandler(ctx, &MyToolHandler{})
 
-// Later, retrieve and use it
+// Later, retrieve and use it during tool processing
 if handler := openai.ToolHandlerFromContext(ctx); handler != nil {
+    // 1. Notify BEFORE execution
     handler.OnToolCall(toolCall)
-    // ... execute tool ...
+
+    // 2. Execute the tool
+    result, err := mcpServer.CallTool(ctx, toolCall.Function.Name, toolCall.Function.Arguments)
+
+    // 3. Notify AFTER execution with result
     handler.OnToolResult(toolCall.ID, toolCall.Function.Name, result)
 }
 ```
@@ -212,6 +222,107 @@ When streaming, some LLMs don't provide tool call IDs. Generate one:
 ```go
 id := openai.GenerateToolCallID(index)
 // Returns something like "call_a1b2c3d4e5f6..."
+```
+
+## SSE Tool Status Events
+
+When streaming chat completions with server-side tool processing, you can send tool execution status events to clients. These events are sent as SSE comments (prefixed with `:`) so standard SSE clients ignore them, but custom clients can parse them to show tool execution progress in the UI.
+
+### Event Format
+
+Tool events are sent as SSE comments in the format `:eventType:jsonData`:
+
+```
+:tool_start:{"tool_call_id":"call_abc123","tool_name":"search","status":"running"}
+
+:tool_end:{"tool_call_id":"call_abc123","tool_name":"search","status":"complete","result":"Search found 5 results..."}
+```
+
+The `tool_end` event includes the tool's result, allowing clients to display what the tool returned.
+
+### Using SSEToolHandler
+
+The `SSEToolHandler` implements `ToolHandler` to automatically send tool events during execution:
+
+```go
+// Create an SSE event writer (adapt to your HTTP framework)
+sseWriter := openai.NewSimpleSSEWriter(responseWriter, func() {
+    if f, ok := responseWriter.(http.Flusher); ok {
+        f.Flush()
+    }
+})
+
+// Create the tool handler with optional error logging
+toolHandler := openai.NewSSEToolHandler(sseWriter, func(err error, eventType, toolName string) {
+    log.Printf("Failed to write %s event for %s: %v", eventType, toolName, err)
+})
+
+// Attach to context for use during tool execution
+ctx = openai.WithToolHandler(ctx, toolHandler)
+
+// During tool processing, call in order:
+// 1. toolHandler.OnToolCall(toolCall)  <- sends :tool_start: event
+// 2. Execute the tool
+// 3. toolHandler.OnToolResult(...)     <- sends :tool_end: event with result
+```
+
+### Custom SSEEventWriter
+
+For production use with your HTTP framework, implement the `SSEEventWriter` interface:
+
+```go
+type SSEEventWriter interface {
+    WriteEvent(eventType string, data any) error
+}
+```
+
+### Complete Stream Example
+
+A streaming response with tool execution looks like:
+
+```
+data: {"id":"chatcmpl-xxx","choices":[{"delta":{"role":"assistant","content":"Let me look that up..."}}]}
+
+:tool_start:{"tool_call_id":"call_abc","tool_name":"search","status":"running"}
+
+:tool_end:{"tool_call_id":"call_abc","tool_name":"search","status":"complete","result":"Found 3 results for your query..."}
+
+data: {"id":"chatcmpl-xxx","choices":[{"delta":{"content":"Based on the search results..."}}]}
+
+data: {"id":"chatcmpl-xxx","choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+```
+
+### Parsing Tool Events (JavaScript)
+
+```javascript
+const response = await fetch(url, options);
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+
+  const text = decoder.decode(value);
+  for (const line of text.split('\n')) {
+    if (line.startsWith(':tool_start:')) {
+      const event = JSON.parse(line.slice(':tool_start:'.length));
+      showSpinner(`Running ${event.tool_name}...`);
+    } else if (line.startsWith(':tool_end:')) {
+      const event = JSON.parse(line.slice(':tool_end:'.length));
+      hideSpinner(event.tool_name);
+      // Optionally display the result
+      if (event.result) {
+        showToolResult(event.tool_name, event.result);
+      }
+    } else if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+      const chunk = JSON.parse(line.slice(6));
+      // Handle OpenAI chunk...
+    }
+  }
+}
 ```
 
 ## Complete Example
