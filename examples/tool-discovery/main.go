@@ -1,0 +1,370 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+
+	"github.com/paularlott/mcp"
+	"github.com/paularlott/mcp/discovery"
+)
+
+func main() {
+	server := mcp.NewServer("deferred-tools-example", "1.0.0")
+
+	// Set helpful instructions for the LLM
+	server.SetInstructions(`This server has many specialized tools available.
+Use tool_search to discover tools for specific tasks.
+The search results include full schemas, then use execute_tool to call the tool.`)
+
+	// =========================================================================
+	// 1. Register regular tools (always visible in ListTools)
+	// =========================================================================
+
+	server.RegisterTool(
+		mcp.NewTool("help", "Get help and guidance on using this server"),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			return mcp.NewToolResponseText(`Welcome! This server uses tool discovery to reduce context usage.
+
+To find and use tools:
+1. Use 'tool_search' with keywords like "database", "email", "pdf", etc.
+   The results include full schemas with parameter information.
+2. Use 'execute_tool' to call the discovered tool
+
+Example workflow:
+- tool_search(query="send email") -> finds "send_email" tool with its schema
+- execute_tool(name="send_email", arguments={"to":"user@example.com", "subject":"Hello", "body":"..."})`), nil
+		},
+	)
+
+	// =========================================================================
+	// 2. Create a ToolRegistry and register searchable tools
+	// =========================================================================
+
+	registry := discovery.NewToolRegistry()
+
+	// Database tools
+	registry.RegisterTool(
+		mcp.NewTool("sql_query", "Execute SQL queries against the database",
+			mcp.String("query", "SQL query to execute", mcp.Required()),
+			mcp.String("database", "Database name (default: main)"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			query, _ := req.String("query")
+			db := req.StringOr("database", "main")
+			return mcp.NewToolResponseText(fmt.Sprintf("Executed on %s: %s\n(simulated result)", db, query)), nil
+		},
+		"database", "sql", "query", "select", "insert", "update", "delete",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("database_backup", "Create a backup of the database",
+			mcp.String("database", "Database to backup", mcp.Required()),
+			mcp.String("destination", "Backup destination path"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			db, _ := req.String("database")
+			dest := req.StringOr("destination", "/backups")
+			return mcp.NewToolResponseText(fmt.Sprintf("Backup of %s created at %s", db, dest)), nil
+		},
+		"database", "backup", "export", "save",
+	)
+
+	// Email tools
+	registry.RegisterTool(
+		mcp.NewTool("send_email", "Send an email message",
+			mcp.String("to", "Recipient email address", mcp.Required()),
+			mcp.String("subject", "Email subject", mcp.Required()),
+			mcp.String("body", "Email body content", mcp.Required()),
+			mcp.StringArray("cc", "CC recipients"),
+			mcp.Boolean("html", "Send as HTML email"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			to, _ := req.String("to")
+			subject, _ := req.String("subject")
+			return mcp.NewToolResponseText(fmt.Sprintf("Email sent to %s: %s", to, subject)), nil
+		},
+		"email", "mail", "send", "notification", "smtp", "message",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("list_emails", "List emails from inbox",
+			mcp.Number("limit", "Maximum number of emails to return"),
+			mcp.String("folder", "Folder to list (inbox, sent, drafts)"),
+			mcp.Boolean("unread_only", "Only show unread emails"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			folder := req.StringOr("folder", "inbox")
+			limit := req.IntOr("limit", 10)
+			return mcp.NewToolResponseText(fmt.Sprintf("Listing %d emails from %s (simulated)", limit, folder)), nil
+		},
+		"email", "mail", "inbox", "list", "read",
+	)
+
+	// Document tools
+	registry.RegisterTool(
+		mcp.NewTool("create_pdf", "Generate a PDF document",
+			mcp.String("title", "Document title", mcp.Required()),
+			mcp.String("content", "Document content (markdown supported)", mcp.Required()),
+			mcp.String("output", "Output filename"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			title, _ := req.String("title")
+			output := req.StringOr("output", "document.pdf")
+			return mcp.NewToolResponseText(fmt.Sprintf("PDF '%s' created: %s", title, output)), nil
+		},
+		"pdf", "document", "export", "generate", "report",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("convert_document", "Convert documents between formats",
+			mcp.String("input", "Input file path", mcp.Required()),
+			mcp.String("output_format", "Output format (pdf, docx, html, md)", mcp.Required()),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			input, _ := req.String("input")
+			format, _ := req.String("output_format")
+			return mcp.NewToolResponseText(fmt.Sprintf("Converted %s to %s format", input, format)), nil
+		},
+		"convert", "document", "pdf", "docx", "html", "markdown", "transform",
+	)
+
+	// DevOps tools
+	registry.RegisterTool(
+		mcp.NewTool("kubernetes_deploy", "Deploy application to Kubernetes",
+			mcp.String("manifest", "Kubernetes manifest YAML", mcp.Required()),
+			mcp.String("namespace", "Target namespace"),
+			mcp.Boolean("dry_run", "Perform a dry run without applying"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			ns := req.StringOr("namespace", "default")
+			dryRun := req.BoolOr("dry_run", false)
+			action := "Deployed"
+			if dryRun {
+				action = "Dry run completed"
+			}
+			return mcp.NewToolResponseText(fmt.Sprintf("%s to namespace: %s", action, ns)), nil
+		},
+		"kubernetes", "k8s", "deploy", "container", "orchestration", "devops",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("docker_build", "Build a Docker image",
+			mcp.String("dockerfile", "Path to Dockerfile", mcp.Required()),
+			mcp.String("tag", "Image tag", mcp.Required()),
+			mcp.Boolean("push", "Push to registry after build"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			tag, _ := req.String("tag")
+			push := req.BoolOr("push", false)
+			result := fmt.Sprintf("Built image: %s", tag)
+			if push {
+				result += " (pushed to registry)"
+			}
+			return mcp.NewToolResponseText(result), nil
+		},
+		"docker", "container", "build", "image", "devops",
+	)
+
+	// Analytics tools
+	registry.RegisterTool(
+		mcp.NewTool("analyze_data", "Perform statistical analysis on data",
+			mcp.String("dataset", "Dataset name or path", mcp.Required()),
+			mcp.StringArray("columns", "Columns to analyze"),
+			mcp.String("operation", "Analysis type (mean, median, std, correlation)"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			dataset, _ := req.String("dataset")
+			op := req.StringOr("operation", "summary")
+			return mcp.NewToolResponseText(fmt.Sprintf("Analysis (%s) of %s: (simulated results)", op, dataset)), nil
+		},
+		"analytics", "statistics", "data", "analysis", "pandas", "numpy",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("create_chart", "Generate charts and visualizations",
+			mcp.String("type", "Chart type (bar, line, pie, scatter)", mcp.Required()),
+			mcp.String("data", "Data in JSON format", mcp.Required()),
+			mcp.String("title", "Chart title"),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			chartType, _ := req.String("type")
+			title := req.StringOr("title", "Chart")
+			return mcp.NewToolResponseText(fmt.Sprintf("Created %s chart: %s", chartType, title)), nil
+		},
+		"chart", "graph", "visualization", "plot", "matplotlib",
+	)
+
+	// =========================================================================
+	// 3. Register script-based tools (also deferred)
+	// =========================================================================
+
+	registry.RegisterTool(
+		mcp.NewTool("run_backup_script", "Run the nightly backup script to create database and file backups",
+			mcp.String("target", "What to backup: database, files, or all (default: all)"),
+			mcp.Boolean("compress", "Compress the backup (default: true)"),
+		),
+		handleRunBackupScript,
+		"backup", "script", "automation", "database", "files", "archive", "save", "export", "snapshot",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("cleanup_logs", "Delete old log files to free disk space",
+			mcp.Number("days", "Delete logs older than this many days (default: 30)"),
+			mcp.String("log_type", "Type of logs: application, access, error, or all (default: all)"),
+			mcp.Boolean("dry_run", "Preview what would be deleted without actually deleting"),
+		),
+		handleCleanupLogs,
+		"logs", "cleanup", "maintenance", "delete", "remove", "old", "older", "clean", "free", "disk", "space",
+	)
+
+	registry.RegisterTool(
+		mcp.NewTool("health_check", "Run system health checks and return status report",
+			mcp.StringArray("checks", "Specific checks to run (disk, memory, cpu, network). Omit for all."),
+			mcp.Boolean("verbose", "Include detailed metrics in the output"),
+		),
+		handleHealthCheck,
+		"health", "monitoring", "status", "check", "disk", "memory", "cpu", "network", "system", "diagnostics",
+	)
+
+	// =========================================================================
+	// 4. Attach registry to server (registers tool_search, execute_tool)
+	// =========================================================================
+
+	registry.Attach(server)
+
+	// =========================================================================
+	// 5. Set up HTTP handler with middleware for request-scoped providers
+	// =========================================================================
+
+	// Middleware that adds user-specific tools based on X-User-ID header
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check for user authentication
+		userID := r.Header.Get("X-User-ID")
+		if userID != "" {
+			// Create a user-specific registry for this request
+			// ToolRegistry implements ToolProvider, so it can be used directly
+			userRegistry := discovery.NewToolRegistry()
+
+			// Register user-specific tools
+			userRegistry.RegisterTool(
+				mcp.NewTool("my_saved_queries", fmt.Sprintf("Access saved queries for user %s", userID),
+					mcp.String("action", "Action: list, get, or run", mcp.Required()),
+					mcp.String("query_name", "Name of the saved query (for get/run)"),
+				),
+				func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+					action, _ := req.String("action")
+					switch action {
+					case "list":
+						return mcp.NewToolResponseText(fmt.Sprintf("Saved queries for %s:\n- monthly_report\n- daily_summary\n- error_analysis", userID)), nil
+					case "get", "run":
+						queryName := req.StringOr("query_name", "unknown")
+						return mcp.NewToolResponseText(fmt.Sprintf("Query '%s' for %s: SELECT * FROM ...", queryName, userID)), nil
+					}
+					return mcp.NewToolResponseText("Unknown action"), nil
+				},
+				"saved", "queries", "user", "personal",
+			)
+
+			userRegistry.RegisterTool(
+				mcp.NewTool("my_preferences", fmt.Sprintf("Get/set preferences for user %s", userID),
+					mcp.String("action", "Action: get or set", mcp.Required()),
+					mcp.String("key", "Preference key"),
+					mcp.String("value", "Value to set (for set action)"),
+				),
+				func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+					action, _ := req.String("action")
+					key := req.StringOr("key", "")
+					switch action {
+					case "get":
+						return mcp.NewToolResponseText(fmt.Sprintf("Preference '%s' for %s: default_value", key, userID)), nil
+					case "set":
+						value := req.StringOr("value", "")
+						return mcp.NewToolResponseText(fmt.Sprintf("Set preference '%s' = '%s' for %s", key, value, userID)), nil
+					}
+					return mcp.NewToolResponseText("Unknown action"), nil
+				},
+				"preferences", "settings", "user", "config",
+			)
+
+			// Add the user registry as a request-scoped provider
+			ctx := discovery.WithRequestProviders(r.Context(), userRegistry)
+			r = r.WithContext(ctx)
+		}
+
+		// Handle the request
+		server.HandleRequest(w, r)
+	})
+
+	http.Handle("/mcp", handler)
+
+	// Print info about registered tools
+	tools := server.ListTools()
+	fmt.Printf("Server starting with %d visible tools:\n", len(tools))
+	for _, t := range tools {
+		fmt.Printf("  - %s: %s\n", t.Name, t.Description)
+	}
+	fmt.Println("\nSearchable tools are discoverable via tool_search")
+	fmt.Println("Listening on http://localhost:8088/mcp")
+
+	log.Fatal(http.ListenAndServe(":8088", nil))
+}
+
+// =============================================================================
+// Script tool handlers
+// =============================================================================
+
+func handleRunBackupScript(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+	target := req.StringOr("target", "all")
+	compress := req.BoolOr("compress", true)
+
+	result := fmt.Sprintf("Running backup script...\nTarget: %s\nCompress: %v\n\n", target, compress)
+	result += "Backup completed successfully!\n"
+	result += "- Database: backed up (12.3 GB)\n"
+	result += "- Files: backed up (45.6 GB)\n"
+	result += "- Location: /backups/2024-12-10/"
+
+	return mcp.NewToolResponseText(result), nil
+}
+
+func handleCleanupLogs(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+	days := req.IntOr("days", 30)
+	logType := req.StringOr("log_type", "all")
+	dryRun := req.BoolOr("dry_run", false)
+
+	action := "Deleted"
+	if dryRun {
+		action = "Would delete"
+	}
+
+	result := fmt.Sprintf("Cleaning up %s logs older than %d days...\n\n", logType, days)
+	result += fmt.Sprintf("%s:\n", action)
+	result += "- application.log.1-5 (234 MB)\n"
+	result += "- access.log.1-10 (1.2 GB)\n"
+	result += "- error.log.1-3 (45 MB)\n\n"
+	result += "Total space freed: 1.48 GB"
+
+	return mcp.NewToolResponseText(result), nil
+}
+
+func handleHealthCheck(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+	verbose := req.BoolOr("verbose", false)
+	checks := req.StringSliceOr("checks", []string{"disk", "memory", "cpu", "network"})
+
+	result := fmt.Sprintf("Running health checks: %v\n\n", checks)
+	result += "✓ Disk: OK (45%% used, 234 GB free)\n"
+	result += "✓ Memory: OK (62%% used, 12.4 GB free)\n"
+	result += "✓ CPU: OK (avg load 0.45)\n"
+	result += "✓ Network: OK (latency 2ms)\n"
+
+	if verbose {
+		result += "\nDetailed metrics:\n"
+		result += "- Disk I/O: 45 MB/s read, 23 MB/s write\n"
+		result += "- Memory: 8.2 GB cached, 2.1 GB buffers\n"
+		result += "- CPU: 4 cores, 8 threads\n"
+		result += "- Network: 1 Gbps link, 0 errors"
+	}
+
+	return mcp.NewToolResponseText(result), nil
+}

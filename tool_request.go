@@ -13,6 +13,11 @@ type ToolRequest struct {
 	args map[string]interface{}
 }
 
+// NewToolRequest creates a new ToolRequest with the given arguments
+func NewToolRequest(args map[string]interface{}) *ToolRequest {
+	return &ToolRequest{args: args}
+}
+
 func (r *ToolRequest) String(name string) (string, error) {
 	val, ok := r.args[name]
 	if !ok {

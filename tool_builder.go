@@ -30,12 +30,22 @@ func (t *ToolBuilder) buildOutputSchema() map[string]interface{} {
 	return t.buildSchemaFromParams(t.outputParams)
 }
 
-// BuildSchema is a public method for testing
+// Name returns the tool's name
+func (t *ToolBuilder) Name() string {
+	return t.name
+}
+
+// Description returns the tool's description
+func (t *ToolBuilder) Description() string {
+	return t.description
+}
+
+// BuildSchema is a public method for building the input schema
 func (t *ToolBuilder) BuildSchema() map[string]interface{} {
 	return t.buildSchema()
 }
 
-// BuildOutputSchema is a public method for testing
+// BuildOutputSchema is a public method for building the output schema
 func (t *ToolBuilder) BuildOutputSchema() map[string]interface{} {
 	return t.buildOutputSchema()
 }

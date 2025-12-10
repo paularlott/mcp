@@ -10,6 +10,8 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Thread Safe**: Concurrent request handling with mutex protection
 - **Remote Servers**: Connect to and proxy remote MCP servers with authentication
 - **Unified Interface**: Combine local and remote tools in a single server
+- **Searchable Tools**: Reduce context window usage with on-demand tool discovery
+- **Dynamic Tool Providers**: Load tools from external sources (scripts, databases, APIs)
 
 ## Installation
 
@@ -562,6 +564,53 @@ See the `examples/` directory for complete working examples:
 - `examples/client/` - MCP client connecting to remote server
 - `examples/unified-server/` - Server with both local and remote tools
 - `examples/object-example/` - Comprehensive object and array handling examples
+- `examples/tool-discovery/` - Searchable tools and dynamic providers for reduced context usage
+
+## Searchable Tools and Tool Discovery
+
+When working with many tools, the context window can become bloated with tool definitions. The `discovery` package provides searchable tools - tools that are hidden from `tools/list` but can be discovered via search and executed on-demand.
+
+This approach is inspired by [Anthropic's Tool Search Tool](https://www.anthropic.com/engineering/advanced-tool-use) pattern, which can reduce token usage by up to 85% while maintaining access to your full tool library.
+
+For full documentation, see the [discovery package README](discovery/README.md).
+
+### Quick Example
+
+```go
+import (
+    "github.com/paularlott/mcp"
+    "github.com/paularlott/mcp/discovery"
+)
+
+func main() {
+    server := mcp.NewServer("my-server", "1.0.0")
+
+    // Create a tool registry for searchable tools
+    registry := discovery.NewToolRegistry()
+
+    // Register searchable tools (hidden from tools/list, but discoverable)
+    registry.RegisterTool(
+        mcp.NewTool("send_email", "Send an email",
+            mcp.String("to", "Recipient", mcp.Required()),
+            mcp.String("subject", "Subject", mcp.Required()),
+        ),
+        handleSendEmail,
+        "email", "notification", "smtp", // keywords for search
+    )
+
+    // Attach to server - registers tool_search, execute_tool
+    registry.Attach(server)
+
+    // Start server - only shows tool_search, execute_tool
+    // but send_email is discoverable and callable!
+    http.HandleFunc("/mcp", server.HandleRequest)
+    log.Fatal(http.ListenAndServe(":8000", nil))
+}
+```
+
+The workflow for LLMs becomes:
+1. `tool_search(query="email")` → finds "send_email" with full schema
+2. `execute_tool(name="send_email", arguments={...})` → executes the tool
 
 ## OpenAI Compatibility
 

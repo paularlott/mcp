@@ -378,25 +378,32 @@ func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MC
 }
 
 // CallTool executes a tool directly with namespace support (direct API)
+// It checks local tools first, then remote tools, then deferred/dynamic tools from the registry
 func (s *Server) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	// Try local tools first
 	if tool, exists := s.tools[name]; exists {
+		handler := tool.Handler
+		s.mu.RUnlock()
 		toolReq := &ToolRequest{args: args}
-		return tool.Handler(ctx, toolReq)
+		return handler(ctx, toolReq)
 	}
 
 	// Fast lookup for remote tools
 	if regClient, exists := s.toolToServer[name]; exists {
+		client := regClient.client
+		namespace := regClient.namespace
+		s.mu.RUnlock()
 		// Extract original tool name (remove namespace if present)
 		toolName := name
-		if regClient.namespace != "" {
-			toolName = strings.TrimPrefix(name, regClient.namespace+"/")
+		if namespace != "" {
+			toolName = strings.TrimPrefix(name, namespace+"/")
 		}
-		return regClient.client.CallTool(ctx, toolName, args)
+		return client.CallTool(ctx, toolName, args)
 	}
+
+	s.mu.RUnlock()
 
 	return nil, ErrUnknownTool
 }
