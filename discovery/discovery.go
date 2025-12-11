@@ -15,7 +15,6 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -387,16 +386,7 @@ func (r *ToolRegistry) Attach(server *mcp.Server) {
 				return mcp.NewToolResponseText("No tools found. Try different keywords or a broader search term."), nil
 			}
 
-			resultJSON, err := json.MarshalIndent(results, "", "  ")
-			if err != nil {
-				return nil, mcp.NewToolErrorInternal("failed to format results")
-			}
-
-			// Add important reminder about execute_tool usage
-			responseText := "Tools found below. IMPORTANT: To use any of these tools, you MUST call execute_tool with the tool name and arguments.\n\n"
-			responseText += string(resultJSON)
-
-			return mcp.NewToolResponseText(responseText), nil
+			return mcp.NewToolResponseJSON(results), nil
 		},
 	)
 
