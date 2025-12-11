@@ -365,7 +365,7 @@ func (r *ToolRegistry) CallTool(ctx context.Context, name string, args map[strin
 func (r *ToolRegistry) Attach(server *mcp.Server) {
 	// Register tool_search
 	server.RegisterTool(
-		mcp.NewTool("tool_search", "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores. Use this to discover the available tools, then use execute_tool to call them. Omit query to list all available tools.",
+		mcp.NewTool("tool_search", "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores. IMPORTANT: After finding tools with this search, you MUST use execute_tool to call them - discovered tools cannot be called directly. Omit query to list all available tools.",
 			mcp.String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
 			mcp.Number("max_results", "Maximum number of results to return (default: 10, max: 50)"),
 		),
@@ -392,15 +392,19 @@ func (r *ToolRegistry) Attach(server *mcp.Server) {
 				return nil, mcp.NewToolErrorInternal("failed to format results")
 			}
 
-			return mcp.NewToolResponseText(string(resultJSON)), nil
+			// Add important reminder about execute_tool usage
+			responseText := "Tools found below. IMPORTANT: To use any of these tools, you MUST call execute_tool with the tool name and arguments.\n\n"
+			responseText += string(resultJSON)
+
+			return mcp.NewToolResponseText(responseText), nil
 		},
 	)
 
 	// Register execute_tool
 	server.RegisterTool(
-		mcp.NewTool("execute_tool", "Execute a tool by name with the given arguments. Use this to call tools discovered via tool_search.",
-			mcp.String("name", "The exact name of the tool to execute", mcp.Required()),
-			mcp.Object("arguments", "The arguments to pass to the tool"),
+		mcp.NewTool("execute_tool", "Execute a tool by name with the given arguments. This is the ONLY way to call tools discovered via tool_search. Discovered tools cannot be called directly - you must use this execute_tool function.",
+			mcp.String("name", "The exact name of the tool to execute (must be a tool found via tool_search)", mcp.Required()),
+			mcp.Object("arguments", "The arguments to pass to the tool (matching the schema from tool_search results)"),
 		),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			name, err := req.String("name")
