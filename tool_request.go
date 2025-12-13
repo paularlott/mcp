@@ -275,3 +275,8 @@ func (r *ToolRequest) GetObjectBoolProperty(objectName, propertyName string) (bo
 	}
 	return false, fmt.Errorf("property '%s' in object '%s' is not a boolean", propertyName, objectName)
 }
+
+// Args returns all arguments as a map
+func (r *ToolRequest) Args() map[string]interface{} {
+	return r.args
+}
