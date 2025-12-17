@@ -19,11 +19,12 @@ const (
 // This is sent as an SSE comment (prefixed with ":") so standard SSE clients ignore it,
 // but custom clients can parse it to show tool execution progress.
 type ToolStatusEvent struct {
-	ToolCallID string `json:"tool_call_id"`
-	ToolName   string `json:"tool_name"`
-	Status     string `json:"status"` // "running" or "complete"
-	Result     string `json:"result,omitempty"`
-	Error      string `json:"error,omitempty"`
+	ToolCallID string         `json:"tool_call_id"`
+	ToolName   string         `json:"tool_name"`
+	Status     string         `json:"status"` // "running" or "complete"
+	Arguments  map[string]any `json:"arguments,omitempty"`
+	Result     string         `json:"result,omitempty"`
+	Error      string         `json:"error,omitempty"`
 }
 
 // SSEEventWriter is an interface for writing SSE events.
@@ -70,6 +71,7 @@ func (h *SSEToolHandler) OnToolCall(toolCall ToolCall) error {
 		ToolCallID: toolCall.ID,
 		ToolName:   toolCall.Function.Name,
 		Status:     "running",
+		Arguments:  toolCall.Function.Arguments,
 	}
 	if err := h.writer.WriteEvent(EventToolStart, event); err != nil {
 		if h.errorLogger != nil {
