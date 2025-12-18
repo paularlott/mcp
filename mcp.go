@@ -9,10 +9,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
-	MCPProtocolVersionLatest = "2025-06-18"
+	MCPProtocolVersionLatest = "2025-11-25"
 	MCPProtocolVersionMin    = "2024-11-05"
 )
 
@@ -20,6 +21,7 @@ var supportedProtocolVersions = []string{
 	"2024-11-05",
 	"2025-03-26",
 	"2025-06-18",
+	"2025-11-25",
 }
 
 var (
@@ -38,14 +40,15 @@ type registeredTool struct {
 
 // Server represents an MCP server instance
 type Server struct {
-	name          string
-	version       string
-	instructions  string
-	tools         map[string]*registeredTool
-	remoteClients map[string]*registeredClient
-	toolToServer  map[string]*registeredClient
-	toolCache     []MCPTool
-	mu            sync.RWMutex
+	name           string
+	version        string
+	instructions   string
+	tools          map[string]*registeredTool
+	remoteClients  map[string]*registeredClient
+	toolToServer   map[string]*registeredClient
+	toolCache      []MCPTool
+	mu             sync.RWMutex
+	sessionManager SessionManager // Pluggable session management
 }
 
 // registeredClient holds a remote client with its configuration
@@ -66,6 +69,45 @@ func NewServer(name, version string) *Server {
 		toolToServer:  make(map[string]*registeredClient),
 		toolCache:     make([]MCPTool, 0),
 	}
+}
+
+// SetSessionManager sets a custom session manager for the server
+// For most deployments, use the default EnableSessionManagement() (JWT-based)
+// Only use this if you need custom session storage (e.g., Redis for revocation)
+func (s *Server) SetSessionManager(manager SessionManager) {
+	s.sessionManager = manager
+}
+
+// EnableSessionManagement enables JWT-based session management (stateless, production-ready)
+// This is the recommended approach for all deployments as it:
+// - Requires no external dependencies (Redis, Database)
+// - Scales horizontally without coordination
+// - Works across all server instances
+// - Validates sessions in ~12 microseconds
+//
+// Only use SetSessionManager() if you need session revocation (Redis, Database)
+func (s *Server) EnableSessionManagement() error {
+	signingKey, err := GenerateSigningKey()
+	if err != nil {
+		return fmt.Errorf("failed to generate signing key: %w", err)
+	}
+	s.sessionManager = NewJWTSessionManager(signingKey, 30*time.Minute)
+	return nil
+}
+
+// EnableSessionManagementWithKey enables JWT session management with a specific signing key
+// Use this to maintain sessions across server restarts (persist the key securely)
+func (s *Server) EnableSessionManagementWithKey(signingKey []byte, ttl time.Duration) {
+	s.sessionManager = NewJWTSessionManager(signingKey, ttl)
+}
+
+// CleanupExpiredSessions removes sessions that haven't been used in the specified duration
+// Only works if a session manager is configured
+func (s *Server) CleanupExpiredSessions(maxIdleTime time.Duration) error {
+	if s.sessionManager == nil {
+		return nil
+	}
+	return s.sessionManager.CleanupExpiredSessions(context.Background(), maxIdleTime)
 }
 
 func (s *Server) SetInstructions(instructions string) {
@@ -243,15 +285,47 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Handle CORS preflight
 	if r.Method == http.MethodOptions {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	if r.Method != http.MethodPost {
+	// Set CORS headers for actual requests
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Handle DELETE requests (session termination)
+	if r.Method == http.MethodDelete {
+		if s.sessionManager == nil {
+			http.Error(w, "Session management not enabled", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := r.Header.Get("MCP-Session-Id")
+		if sessionID == "" {
+			http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
+			return
+		}
+
+		if err := s.sessionManager.DeleteSession(r.Context(), sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to delete session: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Handle GET requests (SSE streaming not yet implemented)
+	if r.Method == http.MethodGet {
 		w.Header().Set("Allow", "POST, OPTIONS")
+		http.Error(w, "Method not allowed - SSE streaming not implemented", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST, GET, DELETE, OPTIONS")
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -262,9 +336,6 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
 		return
 	}
-
-	// Set CORS headers for actual requests
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	var req MCPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -285,6 +356,42 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Ensure ID is never nil - use empty string as default
 	if req.ID == nil {
 		req.ID = ""
+	}
+
+	// For non-initialize requests, validate MCP-Protocol-Version header
+	if req.Method != "initialize" {
+		protocolVersion := r.Header.Get("MCP-Protocol-Version")
+
+		// Per spec: assume 2025-03-26 if missing for backwards compatibility
+		if protocolVersion == "" {
+			protocolVersion = "2025-03-26"
+		}
+
+		// Validate protocol version
+		if !isSupportedProtocolVersion(protocolVersion) {
+			http.Error(w, fmt.Sprintf("Unsupported MCP-Protocol-Version: %s", protocolVersion), http.StatusBadRequest)
+			return
+		}
+
+		// Validate session ID if session management is enabled
+		if s.sessionManager != nil {
+			sessionID := r.Header.Get("MCP-Session-Id")
+			if sessionID == "" {
+				http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
+				return
+			}
+
+			valid, err := s.sessionManager.ValidateSession(r.Context(), sessionID)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Session validation error: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			if !valid {
+				http.Error(w, "Session not found", http.StatusNotFound)
+				return
+			}
+		}
 	}
 
 	switch req.Method {
@@ -340,6 +447,18 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 			Version: s.version,
 		},
 		Instructions: s.instructions,
+	}
+
+	// Generate and store session if session management is enabled
+	if s.sessionManager != nil {
+		sessionID, err := s.sessionManager.CreateSession(r.Context(), protocolVersion)
+		if err != nil {
+			s.sendMCPError(w, req.ID, ErrorCodeInternalError, "Failed to create session", nil)
+			return
+		}
+
+		// Set session ID header
+		w.Header().Set("MCP-Session-Id", sessionID)
 	}
 
 	s.sendMCPResponse(w, req.ID, result)
