@@ -52,6 +52,7 @@ type Server struct {
 type registeredClient struct {
 	client    *Client
 	namespace string
+	hidden    bool
 }
 
 // NewServer creates a new MCP server instance
@@ -112,6 +113,15 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 
 // RegisterRemoteServer registers a remote MCP server
 func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) error {
+	return s.registerRemoteServer(url, namespace, auth, false)
+}
+
+// RegisterRemoteServerHidden registers a remote MCP server with hidden tools
+func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProvider) error {
+	return s.registerRemoteServer(url, namespace, auth, true)
+}
+
+func (s *Server) registerRemoteServer(url, namespace string, auth AuthProvider, hidden bool) error {
 	client := NewClient(url, auth)
 
 	s.mu.Lock()
@@ -120,6 +130,7 @@ func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) 
 	regClient := &registeredClient{
 		client:    client,
 		namespace: namespace,
+		hidden:    hidden,
 	}
 	s.remoteClients[url] = regClient
 
@@ -142,17 +153,19 @@ func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) 
 		// Add to lookup
 		s.toolToServer[toolName] = regClient
 
-		// Add to cache with namespaced name, replacing any existing entry with same name
-		tool.Name = toolName
-		// filter existing
-		filtered := make([]MCPTool, 0, len(s.toolCache))
-		for _, t := range s.toolCache {
-			if t.Name != toolName {
-				filtered = append(filtered, t)
+		// Add to cache only if not hidden
+		if !hidden {
+			tool.Name = toolName
+			// filter existing
+			filtered := make([]MCPTool, 0, len(s.toolCache))
+			for _, t := range s.toolCache {
+				if t.Name != toolName {
+					filtered = append(filtered, t)
+				}
 			}
+			filtered = append(filtered, tool)
+			s.toolCache = filtered
 		}
-		filtered = append(filtered, tool)
-		s.toolCache = filtered
 	}
 
 	// Sort to maintain consistent ordering
@@ -203,9 +216,11 @@ func (s *Server) RefreshTools() error {
 			// Add to new lookup
 			newToolToServer[toolName] = regClient
 
-			// Add/update in new cache with namespaced name (dedup by name)
-			tool.Name = toolName
-			newToolIndex[toolName] = tool
+			// Add/update in new cache only if not hidden
+			if !regClient.hidden {
+				tool.Name = toolName
+				newToolIndex[toolName] = tool
+			}
 		}
 	}
 
