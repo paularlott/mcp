@@ -21,13 +21,14 @@ type Model struct {
 
 // ChatCompletionRequest represents an OpenAI chat completion request
 type ChatCompletionRequest struct {
-	Model           string    `json:"model"`
-	Messages        []Message `json:"messages"`
-	Tools           []Tool    `json:"tools,omitempty"`
-	MaxTokens       int       `json:"max_tokens,omitempty"`
-	Temperature     float32   `json:"temperature,omitempty"`
-	ReasoningEffort string    `json:"reasoning_effort,omitempty"`
-	Stream          bool      `json:"stream"`
+	Model               string    `json:"model"`
+	Messages            []Message `json:"messages"`
+	Tools               []Tool    `json:"tools,omitempty"`
+	MaxTokens           int       `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int       `json:"max_completion_tokens,omitempty"`
+	Temperature         float32   `json:"temperature,omitempty"`
+	ReasoningEffort     string    `json:"reasoning_effort,omitempty"`
+	Stream              bool      `json:"stream"`
 }
 
 // ChatCompletionResponse represents an OpenAI chat completion response
@@ -95,10 +96,10 @@ type Choice struct {
 // Delta represents a streaming delta
 type Delta struct {
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	Role      string          `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	Refusal   string          `json:"refusal,omitempty"`
-	ToolCalls []DeltaToolCall `json:"tool_calls,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	Refusal          string          `json:"refusal,omitempty"`
+	ToolCalls        []DeltaToolCall `json:"tool_calls,omitempty"`
 }
 
 // Usage represents token usage
