@@ -218,3 +218,27 @@ type DeltaFunction struct {
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
 }
+
+// EmbeddingRequest represents an OpenAI embedding request
+type EmbeddingRequest struct {
+	Model          string      `json:"model"`
+	Input          interface{} `json:"input"`
+	EncodingFormat string      `json:"encoding_format,omitempty"`
+	Dimensions     int         `json:"dimensions,omitempty"`
+	User           string      `json:"user,omitempty"`
+}
+
+// EmbeddingResponse represents an OpenAI embedding response
+type EmbeddingResponse struct {
+	Object string      `json:"object"`
+	Data   []Embedding `json:"data"`
+	Model  string      `json:"model"`
+	Usage  Usage       `json:"usage"`
+}
+
+// Embedding represents a single embedding
+type Embedding struct {
+	Object    string    `json:"object"`
+	Embedding []float64 `json:"embedding"`
+	Index     int       `json:"index"`
+}
