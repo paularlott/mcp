@@ -17,6 +17,20 @@ const (
 	MCPProtocolVersionMin    = "2024-11-05"
 )
 
+// ToolVisibility defines how tools are exposed to clients
+type ToolVisibility int
+
+const (
+	// ToolVisibilityVisible - Tools appear in ListTools() and are searchable via tool_search
+	ToolVisibilityVisible ToolVisibility = iota
+
+	// ToolVisibilityHidden - Tools don't appear in ListTools() and are NOT searchable
+	ToolVisibilityHidden
+
+	// ToolVisibilityOnDemand - Tools don't appear in ListTools() but ARE searchable via tool_search
+	ToolVisibilityOnDemand
+)
+
 var supportedProtocolVersions = []string{
 	"2024-11-05",
 	"2025-03-26",
@@ -38,6 +52,13 @@ type registeredTool struct {
 	Handler      ToolHandler
 }
 
+// ToolRegistry is an interface for registering tools that are discoverable but not in ListTools.
+// This avoids circular imports with the discovery package.
+type ToolRegistry interface {
+	// RegisterMCPTool registers a tool for discovery/search
+	RegisterMCPTool(tool *MCPTool, handler ToolHandler, keywords ...string)
+}
+
 // Server represents an MCP server instance
 type Server struct {
 	name           string
@@ -49,13 +70,14 @@ type Server struct {
 	toolCache      []MCPTool
 	mu             sync.RWMutex
 	sessionManager SessionManager // Pluggable session management
+	registry       ToolRegistry   // Optional: for OnDemand tools
 }
 
 // registeredClient holds a remote client with its configuration
 type registeredClient struct {
-	client    *Client
-	namespace string
-	hidden    bool
+	client     *Client
+	namespace  string
+	visibility ToolVisibility
 }
 
 // NewServer creates a new MCP server instance
@@ -76,6 +98,14 @@ func NewServer(name, version string) *Server {
 // Only use this if you need custom session storage (e.g., Redis for revocation)
 func (s *Server) SetSessionManager(manager SessionManager) {
 	s.sessionManager = manager
+}
+
+// SetToolRegistry sets the tool registry for OnDemand tools.
+// Tools with OnDemand visibility will be registered here for discovery via tool_search.
+func (s *Server) SetToolRegistry(registry ToolRegistry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.registry = registry
 }
 
 // EnableSessionManagement enables JWT-based session management (stateless, production-ready)
@@ -155,24 +185,30 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 
 // RegisterRemoteServer registers a remote MCP server
 func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) error {
-	return s.registerRemoteServer(url, namespace, auth, false)
+	return s.RegisterRemoteServerWithVisibility(url, namespace, auth, ToolVisibilityVisible)
 }
 
 // RegisterRemoteServerHidden registers a remote MCP server with hidden tools
 func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProvider) error {
-	return s.registerRemoteServer(url, namespace, auth, true)
+	return s.RegisterRemoteServerWithVisibility(url, namespace, auth, ToolVisibilityHidden)
 }
 
-func (s *Server) registerRemoteServer(url, namespace string, auth AuthProvider, hidden bool) error {
+// RegisterRemoteServerWithVisibility registers a remote MCP server with the specified visibility.
+// - ToolVisibilityVisible: Tools appear in ListTools() and tool_search
+// - ToolVisibilityHidden: Tools don't appear in ListTools() or tool_search (but can be called directly)
+// - ToolVisibilityOnDemand: Tools don't appear in ListTools() but are in tool_search
+//
+// For OnDemand tools, a registry must be set via SetToolRegistry().
+func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth AuthProvider, visibility ToolVisibility) error {
 	client := NewClient(url, auth)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	regClient := &registeredClient{
-		client:    client,
-		namespace: namespace,
-		hidden:    hidden,
+		client:     client,
+		namespace:  namespace,
+		visibility: visibility,
 	}
 	s.remoteClients[url] = regClient
 
@@ -185,19 +221,21 @@ func (s *Server) registerRemoteServer(url, namespace string, auth AuthProvider, 
 		return nil
 	}
 
-	// Add tools to cache and lookup if they exist
+	// Add tools to cache, lookup, or registry based on visibility
 	for _, tool := range tools {
 		toolName := tool.Name
 		if namespace != "" {
 			toolName = namespace + "/" + tool.Name
 		}
 
-		// Add to lookup
+		// Add to lookup for execution
 		s.toolToServer[toolName] = regClient
 
-		// Add to cache only if not hidden
-		if !hidden {
-			tool.Name = toolName
+		switch visibility {
+		case ToolVisibilityVisible:
+			// Add to toolCache for ListTools()
+			toolWithNamespace := tool
+			toolWithNamespace.Name = toolName
 			// filter existing
 			filtered := make([]MCPTool, 0, len(s.toolCache))
 			for _, t := range s.toolCache {
@@ -205,8 +243,24 @@ func (s *Server) registerRemoteServer(url, namespace string, auth AuthProvider, 
 					filtered = append(filtered, t)
 				}
 			}
-			filtered = append(filtered, tool)
+			filtered = append(filtered, toolWithNamespace)
 			s.toolCache = filtered
+
+		case ToolVisibilityOnDemand:
+			// Register with ToolRegistry for tool_search
+			if s.registry != nil {
+				toolWithNamespace := tool
+				toolWithNamespace.Name = toolName
+				// Create a handler that delegates to the server's CallTool
+				handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+					return s.CallTool(ctx, toolName, req.args)
+				}
+				// Extract keywords from description for better search
+				// In the future, this could be enhanced to parse keywords from the tool itself
+				s.registry.RegisterMCPTool(&toolWithNamespace, handler)
+			}
+		case ToolVisibilityHidden:
+			// Only in toolToServer for direct execution, not visible elsewhere
 		}
 	}
 
@@ -258,8 +312,8 @@ func (s *Server) RefreshTools() error {
 			// Add to new lookup
 			newToolToServer[toolName] = regClient
 
-			// Add/update in new cache only if not hidden
-			if !regClient.hidden {
+			// Add/update in new cache only if visible
+			if regClient.visibility == ToolVisibilityVisible {
 				tool.Name = toolName
 				newToolIndex[toolName] = tool
 			}

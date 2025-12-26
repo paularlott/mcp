@@ -129,6 +129,24 @@ func (r *ToolRegistry) RegisterTool(tool *mcp.ToolBuilder, handler mcp.ToolHandl
 	}
 }
 
+// RegisterMCPTool registers a searchable tool from an already-built MCPTool.
+// This is useful for registering tools from remote servers where you already have the MCPTool.
+// Keywords are used for fuzzy search matching.
+func (r *ToolRegistry) RegisterMCPTool(tool *mcp.MCPTool, handler mcp.ToolHandler, keywords ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.tools[tool.Name] = &registeredTool{
+		tool: tool,
+		metadata: ToolMetadata{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Keywords:    keywords,
+		},
+		handler: handler,
+	}
+}
+
 // AddProvider adds a dynamic tool provider
 func (r *ToolRegistry) AddProvider(provider ToolProvider) {
 	r.mu.Lock()
