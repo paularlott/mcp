@@ -145,7 +145,8 @@ func (e *encoder) formatNumber(f float64) string {
 		return "0"
 	}
 
-	s := strconv.FormatFloat(f, 'f', -1, 64)
+	// Use sufficient precision to avoid scientific notation
+	s := strconv.FormatFloat(f, 'f', 15, 64)
 	if strings.Contains(s, ".") {
 		s = strings.TrimRight(s, "0")
 		s = strings.TrimRight(s, ".")
@@ -185,10 +186,14 @@ func (e *encoder) needsQuoting(s string) bool {
 		return true
 	}
 
-	// Check for special characters
+	// Check for special characters (including active delimiter)
 	for _, c := range s {
 		switch c {
-		case ':', '"', '\\', '\n', '\r', '\t', '[', ']', '{', '}', ',', '|':
+		case ':', '"', '\\', '\n', '\r', '\t', '[', ']', '{', '}':
+			return true
+		}
+		// Check if character matches the active delimiter
+		if len(e.delimiter) == 1 && c == rune(e.delimiter[0]) {
 			return true
 		}
 	}
@@ -294,10 +299,10 @@ func (e *encoder) isValidIdentifier(s string) bool {
 		return false
 	}
 
-	// Remaining characters
+	// Remaining characters: alphanumeric or underscore only
 	for i := 1; i < len(s); i++ {
 		c := s[i]
-		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.') {
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
 			return false
 		}
 	}
