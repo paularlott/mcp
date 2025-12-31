@@ -3,9 +3,35 @@
 // with explicit structure and minimal quoting.
 package toon
 
+// EncodeOptions configures TOON encoding behavior.
+type EncodeOptions struct {
+	Indent    int    // Number of spaces per indentation level (default: 2)
+	Delimiter string // Delimiter for arrays and tabular data (default: ",")
+}
+
+// DecodeOptions configures TOON decoding behavior.
+type DecodeOptions struct {
+	Strict bool // Enable strict validation (default: true)
+}
+
 // Encode converts a Go value to TOON format.
 func Encode(v interface{}) (string, error) {
-	encoder := &encoder{indentSize: 2}
+	return EncodeWithOptions(v, nil)
+}
+
+// EncodeWithOptions converts a Go value to TOON format with custom options.
+func EncodeWithOptions(v interface{}, opts *EncodeOptions) (string, error) {
+	if opts == nil {
+		opts = &EncodeOptions{Indent: 2, Delimiter: ","}
+	}
+	if opts.Indent <= 0 {
+		opts.Indent = 2
+	}
+	if opts.Delimiter == "" {
+		opts.Delimiter = ","
+	}
+	
+	encoder := &encoder{indentSize: opts.Indent, delimiter: opts.Delimiter}
 	normalized, err := normalizeValue(v)
 	if err != nil {
 		return "", err
@@ -15,6 +41,15 @@ func Encode(v interface{}) (string, error) {
 
 // Decode parses TOON format and returns the decoded value.
 func Decode(data string) (interface{}, error) {
-	decoder := &decoder{strict: true}
+	return DecodeWithOptions(data, nil)
+}
+
+// DecodeWithOptions parses TOON format with custom options.
+func DecodeWithOptions(data string, opts *DecodeOptions) (interface{}, error) {
+	if opts == nil {
+		opts = &DecodeOptions{Strict: true}
+	}
+	
+	decoder := &decoder{strict: opts.Strict}
 	return decoder.decode(data)
 }

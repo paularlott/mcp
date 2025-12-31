@@ -12,6 +12,7 @@ import (
 
 type encoder struct {
 	indentSize   int
+	delimiter    string
 	indentCache  []string
 	keyBuffer    []string
 	escapeBuffer strings.Builder
@@ -370,7 +371,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 	b.WriteString("]{") 
 	for i, field := range e.keyBuffer {
 		if i > 0 {
-			b.WriteByte(',')
+			b.WriteString(e.delimiter)
 		}
 		b.WriteString(field)
 	}
@@ -383,7 +384,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 		obj := item.(map[string]interface{})
 		for i, field := range e.keyBuffer {
 			if i > 0 {
-				b.WriteByte(',')
+				b.WriteString(e.delimiter)
 			}
 			encoded, err := e.encode(obj[field], depth+1)
 			if err != nil {
@@ -407,7 +408,7 @@ func (e *encoder) encodePrimitiveArray(arr []interface{}, key string) (string, e
 	
 	for i, item := range arr {
 		if i > 0 {
-			b.WriteByte(',')
+			b.WriteString(e.delimiter)
 		}
 		encoded, err := e.encode(item, 0)
 		if err != nil {

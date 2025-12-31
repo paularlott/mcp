@@ -104,10 +104,58 @@ data := map[string]interface{}{
 
 #### `Encode(v interface{}) (string, error)`
 
-Converts a Go value to TOON format.
+Converts a Go value to TOON format using default options.
+
+#### `EncodeWithOptions(v interface{}, opts *EncodeOptions) (string, error)`
+
+Converts a Go value to TOON format with custom options.
+
+**EncodeOptions:**
+```go
+type EncodeOptions struct {
+    Indent    int    // Number of spaces per indentation level (default: 2)
+    Delimiter string // Delimiter for arrays and tabular data (default: ",")
+}
+```
+
+**Example:**
+```go
+// Custom 4-space indentation and pipe delimiter
+opts := &toon.EncodeOptions{
+    Indent:    4,
+    Delimiter: "|",
+}
+result, err := toon.EncodeWithOptions(data, opts)
+// Output: users[2]{id|name|role}:
+//             1|Alice|admin
+//             2|Bob|user
+```
+
+#### `Decode(data string) (interface{}, error)`
+
+Parses TOON format using default options (strict mode).
+
+#### `DecodeWithOptions(data string, opts *DecodeOptions) (interface{}, error)`
+
+Parses TOON format with custom options.
+
+**DecodeOptions:**
+```go
+type DecodeOptions struct {
+    Strict bool // Enable strict validation (default: true)
+}
+```
+
+**Example:**
+```go
+// Non-strict mode - allows array length mismatches
+opts := &toon.DecodeOptions{Strict: false}
+result, err := toon.DecodeWithOptions(data, opts)
+```
 
 **Parameters:**
 - `v`: Any Go value (will be normalized to JSON-compatible types)
+- `opts`: Configuration options (nil uses defaults)
 
 **Returns:**
 - `string`: TOON-formatted string
@@ -123,8 +171,9 @@ Converts a Go value to TOON format.
 
 Parses TOON format and returns the decoded value.
 
-**Parameters:**
+**Decode Parameters:**
 - `data`: TOON-formatted string
+- `opts`: Configuration options (nil uses defaults)
 
 **Returns:**
 - `interface{}`: Decoded Go value
