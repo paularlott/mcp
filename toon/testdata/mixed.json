@@ -1,0 +1,12 @@
+{
+  "mixed_array": [
+    "string_value",
+    42,
+    true,
+    null,
+    {
+      "nested": "object"
+    },
+    [1, 2, 3]
+  ]
+}

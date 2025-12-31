@@ -1,0 +1,7 @@
+mixed_array[6]:
+  - string_value
+  - 42
+  - true
+  - null
+  - nested: object
+  - [3]: 1,2,3

@@ -3,6 +3,7 @@ package toon
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"regexp"
 	"sort"
@@ -28,7 +29,7 @@ func normalizeValue(v interface{}) (interface{}, error) {
 	if v == nil {
 		return nil, nil
 	}
-	
+
 	val := reflect.ValueOf(v)
 	switch val.Kind() {
 	case reflect.Ptr:
@@ -101,10 +102,13 @@ func (e *encoder) formatNumber(f float64) string {
 	if f != f { // NaN
 		return "null"
 	}
+	if math.IsInf(f, 0) {
+		return "null"
+	}
 	if f == 0 {
 		return "0"
 	}
-	
+
 	s := strconv.FormatFloat(f, 'f', -1, 64)
 	if strings.Contains(s, ".") {
 		s = strings.TrimRight(s, "0")
@@ -133,18 +137,18 @@ func (e *encoder) needsQuoting(s string) bool {
 	if len(s) == 0 {
 		return true
 	}
-	
+
 	// Fast path for common cases
 	switch s {
 	case "true", "false", "null":
 		return true
 	}
-	
+
 	// Check first/last character for spaces
 	if s[0] == ' ' || s[len(s)-1] == ' ' {
 		return true
 	}
-	
+
 	// Check for special characters
 	for _, c := range s {
 		switch c {
@@ -152,12 +156,12 @@ func (e *encoder) needsQuoting(s string) bool {
 			return true
 		}
 	}
-	
+
 	// Check for leading minus
 	if s[0] == '-' {
 		return true
 	}
-	
+
 	// Use regex for numeric patterns (less frequent)
 	if numericRegex.MatchString(strings.ToLower(s)) || leadingZeroRegex.MatchString(s) {
 		return true
@@ -168,7 +172,7 @@ func (e *encoder) needsQuoting(s string) bool {
 func (e *encoder) quoteString(s string) string {
 	e.escapeBuffer.Reset()
 	e.escapeBuffer.WriteByte('"')
-	
+
 	for _, c := range s {
 		switch c {
 		case '\\':
@@ -185,7 +189,7 @@ func (e *encoder) quoteString(s string) string {
 			e.escapeBuffer.WriteRune(c)
 		}
 	}
-	
+
 	e.escapeBuffer.WriteByte('"')
 	return e.escapeBuffer.String()
 }
@@ -201,27 +205,27 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 	if len(obj) == 0 {
 		return "", nil
 	}
-	
+
 	// Reuse key buffer
 	e.keyBuffer = e.keyBuffer[:0]
 	for k := range obj {
 		e.keyBuffer = append(e.keyBuffer, k)
 	}
 	sort.Strings(e.keyBuffer)
-	
+
 	var b strings.Builder
 	indent := e.getIndent(depth)
 	first := true
-	
+
 	for _, key := range e.keyBuffer {
 		if !first {
 			b.WriteByte('\n')
 		}
 		first = false
-		
+
 		value := obj[key]
 		encodedKey := e.encodeKey(key)
-		
+
 		switch v := value.(type) {
 		case map[string]interface{}:
 			b.WriteString(indent)
@@ -255,28 +259,28 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 			b.WriteString(encoded)
 		}
 	}
-	
+
 	return b.String(), nil
 }
 
 func (e *encoder) encodeArray(arr []interface{}, depth int, key string) (string, error) {
 	length := len(arr)
-	
+
 	if length == 0 {
 		if key == "" {
 			return "[0]:", nil
 		}
 		return key + "[0]:", nil
 	}
-	
+
 	if e.isTabular(arr) {
 		return e.encodeTabular(arr, depth, key)
 	}
-	
+
 	if e.isPrimitiveArray(arr) {
 		return e.encodePrimitiveArray(arr, key)
 	}
-	
+
 	return e.encodeListArray(arr, depth, key)
 }
 
@@ -284,19 +288,19 @@ func (e *encoder) isTabular(arr []interface{}) bool {
 	if len(arr) == 0 {
 		return false
 	}
-	
+
 	firstObj, ok := arr[0].(map[string]interface{})
 	if !ok {
 		return false
 	}
-	
+
 	// Check if all values in first object are primitive
 	for _, v := range firstObj {
 		if !e.isPrimitive(v) {
 			return false
 		}
 	}
-	
+
 	// Reuse key buffer for first object keys
 	e.keyBuffer = e.keyBuffer[:0]
 	for k := range firstObj {
@@ -304,14 +308,14 @@ func (e *encoder) isTabular(arr []interface{}) bool {
 	}
 	sort.Strings(e.keyBuffer)
 	firstKeys := e.keyBuffer
-	
+
 	// Check remaining objects
 	for i := 1; i < len(arr); i++ {
 		obj, ok := arr[i].(map[string]interface{})
 		if !ok || len(obj) != len(firstKeys) {
 			return false
 		}
-		
+
 		// Check all values are primitive and keys match
 		for k, v := range obj {
 			if !e.isPrimitive(v) {
@@ -330,7 +334,7 @@ func (e *encoder) isTabular(arr []interface{}) bool {
 			}
 		}
 	}
-	
+
 	return true
 }
 
@@ -354,21 +358,21 @@ func (e *encoder) isPrimitiveArray(arr []interface{}) bool {
 
 func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (string, error) {
 	firstObj := arr[0].(map[string]interface{})
-	
+
 	// Reuse key buffer
 	e.keyBuffer = e.keyBuffer[:0]
 	for k := range firstObj {
 		e.keyBuffer = append(e.keyBuffer, k)
 	}
 	sort.Strings(e.keyBuffer)
-	
+
 	var b strings.Builder
 	if key != "" {
 		b.WriteString(key)
 	}
 	b.WriteByte('[')
 	b.WriteString(strconv.Itoa(len(arr)))
-	b.WriteString("]{") 
+	b.WriteString("]{")
 	for i, field := range e.keyBuffer {
 		if i > 0 {
 			b.WriteString(e.delimiter)
@@ -376,7 +380,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 		b.WriteString(field)
 	}
 	b.WriteString("}:")
-	
+
 	indent := e.getIndent(depth + 1)
 	for _, item := range arr {
 		b.WriteByte('\n')
@@ -393,7 +397,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 			b.WriteString(encoded)
 		}
 	}
-	
+
 	return b.String(), nil
 }
 
@@ -405,7 +409,7 @@ func (e *encoder) encodePrimitiveArray(arr []interface{}, key string) (string, e
 	b.WriteByte('[')
 	b.WriteString(strconv.Itoa(len(arr)))
 	b.WriteString("]: ")
-	
+
 	for i, item := range arr {
 		if i > 0 {
 			b.WriteString(e.delimiter)
@@ -416,7 +420,7 @@ func (e *encoder) encodePrimitiveArray(arr []interface{}, key string) (string, e
 		}
 		b.WriteString(encoded)
 	}
-	
+
 	return b.String(), nil
 }
 
@@ -428,7 +432,7 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 	b.WriteByte('[')
 	b.WriteString(strconv.Itoa(len(arr)))
 	b.WriteString("]:")
-	
+
 	indent := e.getIndent(depth + 1)
 	for _, item := range arr {
 		b.WriteByte('\n')
@@ -444,11 +448,11 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 					e.keyBuffer = append(e.keyBuffer, k)
 				}
 				sort.Strings(e.keyBuffer)
-				
+
 				firstKey := e.keyBuffer[0]
 				firstValue := v[firstKey]
 				encodedKey := e.encodeKey(firstKey)
-				
+
 				switch fv := firstValue.(type) {
 				case map[string]interface{}:
 					b.WriteString(indent)
@@ -484,11 +488,11 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 					b.WriteString(": ")
 					b.WriteString(encoded)
 				}
-				
+
 				for _, k := range e.keyBuffer[1:] {
 					value := v[k]
 					encodedKey := e.encodeKey(k)
-					
+
 					b.WriteByte('\n')
 					switch val := value.(type) {
 					case map[string]interface{}:
@@ -534,6 +538,6 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 			b.WriteString(encoded)
 		}
 	}
-	
+
 	return b.String(), nil
 }
