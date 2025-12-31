@@ -1,0 +1,27 @@
+company:
+  name: TechCorp International
+  founded: 2010
+  headquarters:
+    country: USA
+    city: San Francisco
+    address:
+      street: 456 Tech Ave
+      suite: Floor 12
+      zipCode: "94102"
+  departments[2]:
+    - id: eng
+      name: Engineering
+      head: Sarah Chen
+      teams[2]{name,members,lead}:
+        Frontend,15,Mike Wilson
+        Backend,20,Emma Davis
+    - id: sales
+      name: Sales
+      head: John Smith
+      teams[2]{name,members,lead}:
+        Enterprise,12,Lisa Brown
+        SMB,8,Tom Garcia
+  revenue:
+    "2023": 50000000
+    "2024": 75000000
+    currency: USD

@@ -1,0 +1,41 @@
+{
+  "orders": [
+    {
+      "orderId": "ORD-001",
+      "customer": {
+        "name": "Alice Chen",
+        "email": "alice@example.com"
+      },
+      "items": [
+        {
+          "sku": "WIDGET-A",
+          "quantity": 2,
+          "price": 29.99
+        },
+        {
+          "sku": "GADGET-B",
+          "quantity": 1,
+          "price": 49.99
+        }
+      ],
+      "total": 109.97,
+      "status": "shipped"
+    },
+    {
+      "orderId": "ORD-002",
+      "customer": {
+        "name": "Bob Smith",
+        "email": "bob@example.com"
+      },
+      "items": [
+        {
+          "sku": "THING-C",
+          "quantity": 3,
+          "price": 15
+        }
+      ],
+      "total": 45,
+      "status": "delivered"
+    }
+  ]
+}

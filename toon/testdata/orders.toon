@@ -1,0 +1,18 @@
+orders[2]:
+  - orderId: ORD-001
+    customer:
+      name: Alice Chen
+      email: alice@example.com
+    items[2]{sku,quantity,price}:
+      WIDGET-A,2,29.99
+      GADGET-B,1,49.99
+    total: 109.97
+    status: shipped
+  - orderId: ORD-002
+    customer:
+      name: Bob Smith
+      email: bob@example.com
+    items[1]{sku,quantity,price}:
+      THING-C,3,15
+    total: 45
+    status: delivered

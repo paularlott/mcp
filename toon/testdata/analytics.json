@@ -1,0 +1,40 @@
+{
+  "analytics": {
+    "period": "2024-11",
+    "metrics": {
+      "pageViews": 125000,
+      "uniqueVisitors": 45000,
+      "avgSessionDuration": 245,
+      "bounceRate": 42.5
+    },
+    "topPages": [
+      {
+        "url": "/products",
+        "views": 35000,
+        "avgTime": 180
+      },
+      {
+        "url": "/blog",
+        "views": 28000,
+        "avgTime": 320
+      },
+      {
+        "url": "/pricing",
+        "views": 22000,
+        "avgTime": 150
+      }
+    ],
+    "trafficSources": {
+      "organic": 55000,
+      "direct": 28000,
+      "social": 18000,
+      "referral": 12000,
+      "paid": 12000
+    },
+    "devices": {
+      "desktop": 65000,
+      "mobile": 52000,
+      "tablet": 8000
+    }
+  }
+}

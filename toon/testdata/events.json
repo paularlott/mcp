@@ -1,0 +1,40 @@
+{
+  "logs": [
+    {
+      "timestamp": "2025-01-15T10:23:45Z",
+      "level": "info",
+      "endpoint": "/api/users",
+      "statusCode": 200,
+      "responseTime": 45
+    },
+    {
+      "timestamp": "2025-01-15T10:24:12Z",
+      "level": "error",
+      "endpoint": "/api/orders",
+      "statusCode": 500,
+      "responseTime": 120,
+      "error": {
+        "message": "Database timeout",
+        "retryable": true
+      }
+    },
+    {
+      "timestamp": "2025-01-15T10:25:03Z",
+      "level": "info",
+      "endpoint": "/api/products",
+      "statusCode": 200,
+      "responseTime": 32
+    },
+    {
+      "timestamp": "2025-01-15T10:26:47Z",
+      "level": "warn",
+      "endpoint": "/api/payment",
+      "statusCode": 429,
+      "responseTime": 5,
+      "error": {
+        "message": "Rate limit exceeded",
+        "retryable": true
+      }
+    }
+  ]
+}

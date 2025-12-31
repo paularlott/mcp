@@ -1,0 +1,56 @@
+{
+  "company": {
+    "name": "TechCorp International",
+    "founded": 2010,
+    "headquarters": {
+      "country": "USA",
+      "city": "San Francisco",
+      "address": {
+        "street": "456 Tech Ave",
+        "suite": "Floor 12",
+        "zipCode": "94102"
+      }
+    },
+    "departments": [
+      {
+        "id": "eng",
+        "name": "Engineering",
+        "head": "Sarah Chen",
+        "teams": [
+          {
+            "name": "Frontend",
+            "members": 15,
+            "lead": "Mike Wilson"
+          },
+          {
+            "name": "Backend",
+            "members": 20,
+            "lead": "Emma Davis"
+          }
+        ]
+      },
+      {
+        "id": "sales",
+        "name": "Sales",
+        "head": "John Smith",
+        "teams": [
+          {
+            "name": "Enterprise",
+            "members": 12,
+            "lead": "Lisa Brown"
+          },
+          {
+            "name": "SMB",
+            "members": 8,
+            "lead": "Tom Garcia"
+          }
+        ]
+      }
+    ],
+    "revenue": {
+      "2023": 50000000,
+      "2024": 75000000,
+      "currency": "USD"
+    }
+  }
+}
