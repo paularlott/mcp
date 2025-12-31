@@ -1,0 +1,10 @@
+{
+  "user": {
+    "name": "Alice",
+    "profile": {
+      "age": 30,
+      "city": "New York"
+    }
+  },
+  "active": true
+}

@@ -1,0 +1,3 @@
+users[2]{email,id,name,role}:
+  alice@example.com,1,Alice,admin
+  bob@example.com,2,Bob,user

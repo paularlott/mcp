@@ -1,0 +1,7 @@
+numbers:
+  fraction: 0.3333333333333333
+  large: 150000000000000000000
+  negative: -42.5
+  scientific: 0.000123
+  small: 0.0000000001
+  zero: 0

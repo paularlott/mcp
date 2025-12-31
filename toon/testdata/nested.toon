@@ -1,0 +1,6 @@
+active: true
+user:
+  name: Alice
+  profile:
+    age: 30
+    city: New York

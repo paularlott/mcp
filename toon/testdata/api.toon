@@ -1,0 +1,9 @@
+response:
+  data:
+    users[2]{id,name,role}:
+      1,Alice,admin
+      2,Bob,user
+metadata:
+  timestamp: "2025-11-20T10:00:00Z"
+status:
+  code: 200

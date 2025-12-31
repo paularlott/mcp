@@ -1,0 +1,119 @@
+{
+  "users": [
+    {
+      "id": 1001,
+      "name": "Emma Wilson",
+      "email": "emma.wilson@example.com",
+      "role": "admin",
+      "status": "active",
+      "joinDate": "2022-01-15",
+      "permissions": ["read", "write", "delete", "admin"],
+      "profile": {
+        "age": 32,
+        "country": "USA",
+        "timezone": "PST"
+      }
+    },
+    {
+      "id": 1002,
+      "name": "James Brown",
+      "email": "james.brown@example.com",
+      "role": "editor",
+      "status": "active",
+      "joinDate": "2022-03-20",
+      "permissions": ["read", "write"],
+      "profile": {
+        "age": 28,
+        "country": "Canada",
+        "timezone": "EST"
+      }
+    },
+    {
+      "id": 1003,
+      "name": "Sophia Martinez",
+      "email": "sophia.m@example.com",
+      "role": "viewer",
+      "status": "active",
+      "joinDate": "2023-05-10",
+      "permissions": ["read"],
+      "profile": {
+        "age": 25,
+        "country": "Spain",
+        "timezone": "CET"
+      }
+    },
+    {
+      "id": 1004,
+      "name": "Liam Anderson",
+      "email": "liam.a@example.com",
+      "role": "editor",
+      "status": "inactive",
+      "joinDate": "2021-11-05",
+      "permissions": ["read", "write"],
+      "profile": {
+        "age": 35,
+        "country": "UK",
+        "timezone": "GMT"
+      }
+    },
+    {
+      "id": 1005,
+      "name": "Olivia Taylor",
+      "email": "olivia.t@example.com",
+      "role": "admin",
+      "status": "active",
+      "joinDate": "2022-07-12",
+      "permissions": ["read", "write", "delete", "admin"],
+      "profile": {
+        "age": 29,
+        "country": "Australia",
+        "timezone": "AEST"
+      }
+    },
+    {
+      "id": 1006,
+      "name": "Noah Johnson",
+      "email": "noah.j@example.com",
+      "role": "viewer",
+      "status": "active",
+      "joinDate": "2023-09-18",
+      "permissions": ["read"],
+      "profile": {
+        "age": 27,
+        "country": "USA",
+        "timezone": "CST"
+      }
+    },
+    {
+      "id": 1007,
+      "name": "Ava Davis",
+      "email": "ava.d@example.com",
+      "role": "editor",
+      "status": "active",
+      "joinDate": "2023-02-28",
+      "permissions": ["read", "write"],
+      "profile": {
+        "age": 31,
+        "country": "Germany",
+        "timezone": "CET"
+      }
+    },
+    {
+      "id": 1008,
+      "name": "William Garcia",
+      "email": "william.g@example.com",
+      "role": "viewer",
+      "status": "active",
+      "joinDate": "2024-01-05",
+      "permissions": ["read"],
+      "profile": {
+        "age": 24,
+        "country": "Mexico",
+        "timezone": "CST"
+      }
+    }
+  ],
+  "totalCount": 8,
+  "activeCount": 7,
+  "lastUpdated": "2024-11-28T12:00:00Z"
+}

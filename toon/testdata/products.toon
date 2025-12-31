@@ -1,0 +1,39 @@
+catalog:
+  category: Electronics
+  products[3]:
+    - id: P001
+      name: Wireless Headphones
+      brand: AudioTech
+      price: 149.99
+      stock: 45
+      specs:
+        battery: 30 hours
+        bluetooth: "5.0"
+        noiseCancellation: true
+      ratings:
+        average: 4.5
+        count: 234
+    - id: P002
+      name: Smart Watch
+      brand: WearTech
+      price: 299.99
+      stock: 23
+      specs:
+        display: 1.4 inch AMOLED
+        waterproof: true
+        heartRate: true
+      ratings:
+        average: 4.7
+        count: 567
+    - id: P003
+      name: Laptop Pro
+      brand: CompuTech
+      price: 1299.99
+      stock: 12
+      specs:
+        processor: i7-12700H
+        ram: 16GB
+        storage: 512GB SSD
+      ratings:
+        average: 4.8
+        count: 892

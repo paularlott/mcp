@@ -1,0 +1,21 @@
+analytics:
+  period: 2024-11
+  metrics:
+    pageViews: 125000
+    uniqueVisitors: 45000
+    avgSessionDuration: 245
+    bounceRate: 42.5
+  topPages[3]{url,views,avgTime}:
+    /products,35000,180
+    /blog,28000,320
+    /pricing,22000,150
+  trafficSources:
+    organic: 55000
+    direct: 28000
+    social: 18000
+    referral: 12000
+    paid: 12000
+  devices:
+    desktop: 65000
+    mobile: 52000
+    tablet: 8000

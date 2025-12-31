@@ -7,6 +7,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Simple API**: Fluent interface for defining tools and parameters
 - **Type Safety**: Strongly typed parameter access with automatic conversion
 - **Rich Responses**: Support for text, image, audio, resource, and structured content
+- **TOON Support**: Compact, human-readable JSON encoding for LLM prompts with `NewToolResponseTOON()`
 - **Thread Safe**: Concurrent request handling with mutex protection
 - **Remote Servers**: Connect to and proxy remote MCP servers with authentication
 - **Unified Interface**: Combine local and remote tools in a single server
@@ -59,6 +60,39 @@ func main() {
     log.Fatal(http.ListenAndServe(":8000", nil))
 }
 ```
+
+## TOON Support
+
+The library includes built-in support for [TOON (Token-Oriented Object Notation)](https://github.com/toon-format/spec), a compact, human-readable encoding of the JSON data model for LLM prompts.
+
+### Using TOON Responses
+
+Instead of JSON responses, you can return TOON-formatted data:
+
+```go
+return mcp.NewToolResponseTOON(map[string]interface{}{
+    "users": []interface{}{
+        map[string]interface{}{"id": 1, "name": "Alice", "role": "admin"},
+        map[string]interface{}{"id": 2, "name": "Bob", "role": "user"},
+    },
+    "total": 2,
+}), nil
+```
+
+This produces output like:
+```
+total: 2
+users[2]{id,name,role}:
+  1,Alice,admin
+  2,Bob,user
+```
+
+### TOON vs JSON
+
+- **TOON**: Compact, human-readable encoding optimized for LLM prompts
+- **JSON**: Standard machine-readable format
+
+Use `NewToolResponseTOON()` when you want structured data that's both compact and easily readable by LLMs.
 
 ## Tool Definition
 
