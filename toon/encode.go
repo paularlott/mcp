@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,12 +32,6 @@ func newEncoder(indentSize int, delimiter string) *encoder {
 		keyBuffer:    make([]string, 0, 16), // Pre-allocate key buffer
 	}
 }
-
-var (
-	numericRegex     = regexp.MustCompile(`^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$`)
-	leadingZeroRegex = regexp.MustCompile(`^0\d+$`)
-	identifierRegex  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
-)
 
 func keyToString(key interface{}) string {
 	switch k := key.(type) {
