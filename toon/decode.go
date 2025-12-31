@@ -8,7 +8,15 @@ import (
 )
 
 type decoder struct {
-	strict bool
+	strict     bool
+	indentSize int
+}
+
+func newDecoder(strict bool, indentSize int) *decoder {
+	return &decoder{
+		strict:     strict,
+		indentSize: indentSize,
+	}
 }
 
 var (
@@ -478,7 +486,12 @@ func (d *decoder) getIndentDepth(line string) int {
 			break
 		}
 	}
-	return count / 2 // Assuming 2-space indentation
+	
+	// Auto-detect indentation if not configured
+	if d.indentSize == 0 {
+		return count / 2 // Default to 2-space
+	}
+	return count / d.indentSize
 }
 
 func (d *decoder) parseKey(s string) string {
@@ -516,10 +529,35 @@ func (d *decoder) parseValue(s string) interface{} {
 }
 
 func (d *decoder) unescapeString(s string) string {
-	s = strings.ReplaceAll(s, "\\\\", "\\")
-	s = strings.ReplaceAll(s, "\\\"", "\"")
-	s = strings.ReplaceAll(s, "\\n", "\n")
-	s = strings.ReplaceAll(s, "\\r", "\r")
-	s = strings.ReplaceAll(s, "\\t", "\t")
-	return s
+	if !strings.ContainsRune(s, '\\') {
+		return s // Fast path: no escapes
+	}
+	
+	var result strings.Builder
+	result.Grow(len(s))
+	
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case '\\':
+				result.WriteByte('\\')
+			case '"':
+				result.WriteByte('"')
+			case 'n':
+				result.WriteByte('\n')
+			case 'r':
+				result.WriteByte('\r')
+			case 't':
+				result.WriteByte('\t')
+			default:
+				result.WriteByte(s[i])
+				result.WriteByte(s[i+1])
+			}
+			i++ // Skip next character
+		} else {
+			result.WriteByte(s[i])
+		}
+	}
+	
+	return result.String()
 }

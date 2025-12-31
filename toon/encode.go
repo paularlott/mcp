@@ -315,7 +315,10 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 	for k := range obj {
 		e.keyBuffer = append(e.keyBuffer, k)
 	}
-	sort.Strings(e.keyBuffer)
+	// Only sort if we have more than one key
+	if len(e.keyBuffer) > 1 {
+		sort.Strings(e.keyBuffer)
+	}
 
 	var b strings.Builder
 	indent := e.getIndent(depth)
@@ -455,7 +458,10 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 	for k := range firstObj {
 		e.keyBuffer = append(e.keyBuffer, k)
 	}
-	sort.Strings(e.keyBuffer)
+	// Only sort if we have more than one key
+	if len(e.keyBuffer) > 1 {
+		sort.Strings(e.keyBuffer)
+	}
 
 	var b strings.Builder
 	if key != "" {
@@ -538,7 +544,10 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 				for k := range v {
 					e.keyBuffer = append(e.keyBuffer, k)
 				}
-				sort.Strings(e.keyBuffer)
+				// Only sort if we have more than one key
+				if len(e.keyBuffer) > 1 {
+					sort.Strings(e.keyBuffer)
+				}
 
 				firstKey := e.keyBuffer[0]
 				firstValue := v[firstKey]

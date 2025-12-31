@@ -11,7 +11,8 @@ type EncodeOptions struct {
 
 // DecodeOptions configures TOON decoding behavior.
 type DecodeOptions struct {
-	Strict bool // Enable strict validation (default: true)
+	Strict     bool // Enable strict validation (default: true)
+	IndentSize int  // Expected indentation size (0 = auto-detect, default: 0)
 }
 
 // Encode converts a Go value to TOON format.
@@ -47,9 +48,9 @@ func Decode(data string) (interface{}, error) {
 // DecodeWithOptions parses TOON format with custom options.
 func DecodeWithOptions(data string, opts *DecodeOptions) (interface{}, error) {
 	if opts == nil {
-		opts = &DecodeOptions{Strict: true}
+		opts = &DecodeOptions{Strict: true, IndentSize: 0}
 	}
 
-	decoder := &decoder{strict: opts.Strict}
+	decoder := newDecoder(opts.Strict, opts.IndentSize)
 	return decoder.decode(data)
 }

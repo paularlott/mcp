@@ -142,15 +142,22 @@ Parses TOON format with custom options.
 **DecodeOptions:**
 ```go
 type DecodeOptions struct {
-    Strict bool // Enable strict validation (default: true)
+    Strict     bool // Enable strict validation (default: true)
+    IndentSize int  // Expected indentation size (0 = auto-detect, default: 0)
 }
 ```
 
 **Example:**
 ```go
-// Non-strict mode - allows array length mismatches
-opts := &toon.DecodeOptions{Strict: false}
+// Non-strict mode with custom indentation
+opts := &toon.DecodeOptions{
+    Strict:     false,
+    IndentSize: 4, // Expect 4-space indentation
+}
 result, err := toon.DecodeWithOptions(data, opts)
+
+// Auto-detect indentation (default)
+opts := &toon.DecodeOptions{Strict: false} // IndentSize: 0 = auto-detect
 ```
 
 **Parameters:**
