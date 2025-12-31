@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+
+	"github.com/paularlott/mcp/toon"
 )
 
 // ToolResponse represents the response from a tool
@@ -41,6 +43,14 @@ func NewToolResponseJSON(data interface{}) *ToolResponse {
 		return &ToolResponse{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Error marshaling data: %v", err)}}}
 	}
 	return NewToolResponseText(string(jsonData))
+}
+
+func NewToolResponseTOON(data interface{}) *ToolResponse {
+	toonData, err := toon.Encode(data)
+	if err != nil {
+		return &ToolResponse{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Error encoding data: %v", err)}}}
+	}
+	return NewToolResponseText(toonData)
 }
 
 func NewToolResponseImage(data []byte, mimeType string) *ToolResponse {

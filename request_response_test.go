@@ -78,6 +78,11 @@ func TestToolResponseHelpers(t *testing.T) {
 		t.Fatal("json")
 	}
 
+	r = NewToolResponseTOON(map[string]any{"a": 1})
+	if r.Content[0].Type != "text" || r.Content[0].Text == "" {
+		t.Fatal("toon")
+	}
+
 	img := NewToolResponseImage([]byte{0x01, 0x02}, "image/png")
 	if img.Content[0].Type != "image" || img.Content[0].MimeType != "image/png" {
 		t.Fatal("image type")
