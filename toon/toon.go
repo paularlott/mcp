@@ -30,8 +30,8 @@ func EncodeWithOptions(v interface{}, opts *EncodeOptions) (string, error) {
 	if opts.Delimiter == "" {
 		opts.Delimiter = ","
 	}
-	
-	encoder := &encoder{indentSize: opts.Indent, delimiter: opts.Delimiter}
+
+	encoder := newEncoder(opts.Indent, opts.Delimiter)
 	normalized, err := normalizeValue(v)
 	if err != nil {
 		return "", err
@@ -49,7 +49,7 @@ func DecodeWithOptions(data string, opts *DecodeOptions) (interface{}, error) {
 	if opts == nil {
 		opts = &DecodeOptions{Strict: true}
 	}
-	
+
 	decoder := &decoder{strict: opts.Strict}
 	return decoder.decode(data)
 }

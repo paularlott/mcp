@@ -19,11 +19,47 @@ type encoder struct {
 	escapeBuffer strings.Builder
 }
 
+func newEncoder(indentSize int, delimiter string) *encoder {
+	// Pre-allocate indent cache for common depths
+	indentCache := make([]string, 0, 8)
+	for i := 0; i < 8; i++ {
+		indentCache = append(indentCache, strings.Repeat(" ", i*indentSize))
+	}
+
+	return &encoder{
+		indentSize:   indentSize,
+		delimiter:    delimiter,
+		indentCache:  indentCache,
+		keyBuffer:    make([]string, 0, 16), // Pre-allocate key buffer
+	}
+}
+
 var (
 	numericRegex     = regexp.MustCompile(`^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$`)
 	leadingZeroRegex = regexp.MustCompile(`^0\d+$`)
 	identifierRegex  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
 )
+
+func keyToString(key interface{}) string {
+	switch k := key.(type) {
+	case string:
+		return k
+	case int:
+		return strconv.FormatInt(int64(k), 10)
+	case int64:
+		return strconv.FormatInt(k, 10)
+	case uint:
+		return strconv.FormatUint(uint64(k), 10)
+	case uint64:
+		return strconv.FormatUint(k, 10)
+	case float64:
+		return strconv.FormatFloat(k, 'g', -1, 64)
+	case bool:
+		return strconv.FormatBool(k)
+	default:
+		return fmt.Sprintf("%v", key)
+	}
+}
 
 func normalizeValue(v interface{}) (interface{}, error) {
 	if v == nil {
@@ -42,7 +78,7 @@ func normalizeValue(v interface{}) (interface{}, error) {
 	case reflect.Map:
 		result := make(map[string]interface{})
 		for _, key := range val.MapKeys() {
-			keyStr := fmt.Sprintf("%v", key.Interface())
+			keyStr := keyToString(key.Interface())
 			normVal, err := normalizeValue(val.MapIndex(key).Interface())
 			if err != nil {
 				return nil, err
@@ -162,11 +198,57 @@ func (e *encoder) needsQuoting(s string) bool {
 		return true
 	}
 
-	// Use regex for numeric patterns (less frequent)
-	if numericRegex.MatchString(strings.ToLower(s)) || leadingZeroRegex.MatchString(s) {
+	// Fast numeric checks without regex
+	if e.looksLikeNumber(s) {
 		return true
 	}
 	return false
+}
+
+func (e *encoder) looksLikeNumber(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+
+	i := 0
+	if s[0] == '-' {
+		i = 1
+	}
+
+	// Check for leading zero followed by digit
+	if i < len(s) && s[i] == '0' && i+1 < len(s) && s[i+1] >= '0' && s[i+1] <= '9' {
+		return true
+	}
+
+	// Count digits, dots, and 'e'/'E'
+	digitCount := 0
+	dotCount := 0
+	eCount := 0
+
+	for ; i < len(s); i++ {
+		c := s[i]
+		if c >= '0' && c <= '9' {
+			digitCount++
+		} else if c == '.' {
+			dotCount++
+			if dotCount > 1 {
+				return false
+			}
+		} else if c == 'e' || c == 'E' {
+			eCount++
+			if eCount > 1 {
+				return false
+			}
+			// Allow optional + or - after e
+			if i+1 < len(s) && (s[i+1] == '+' || s[i+1] == '-') {
+				i++
+			}
+		} else {
+			return false
+		}
+	}
+
+	return digitCount > 0
 }
 
 func (e *encoder) quoteString(s string) string {
@@ -195,10 +277,32 @@ func (e *encoder) quoteString(s string) string {
 }
 
 func (e *encoder) encodeKey(key string) string {
-	if identifierRegex.MatchString(key) {
+	if e.isValidIdentifier(key) {
 		return key
 	}
 	return e.quoteString(key)
+}
+
+func (e *encoder) isValidIdentifier(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+
+	// First character must be letter or underscore
+	c := s[0]
+	if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_') {
+		return false
+	}
+
+	// Remaining characters
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '.') {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, error) {
@@ -301,35 +405,22 @@ func (e *encoder) isTabular(arr []interface{}) bool {
 		}
 	}
 
-	// Reuse key buffer for first object keys
-	e.keyBuffer = e.keyBuffer[:0]
+	// Create a set of keys from first object for O(1) lookup
+	keySet := make(map[string]bool, len(firstObj))
 	for k := range firstObj {
-		e.keyBuffer = append(e.keyBuffer, k)
+		keySet[k] = true
 	}
-	sort.Strings(e.keyBuffer)
-	firstKeys := e.keyBuffer
 
 	// Check remaining objects
 	for i := 1; i < len(arr); i++ {
 		obj, ok := arr[i].(map[string]interface{})
-		if !ok || len(obj) != len(firstKeys) {
+		if !ok || len(obj) != len(keySet) {
 			return false
 		}
 
-		// Check all values are primitive and keys match
+		// Check all values are primitive and all keys exist
 		for k, v := range obj {
-			if !e.isPrimitive(v) {
-				return false
-			}
-			// Quick check if key exists in first keys
-			found := false
-			for _, fk := range firstKeys {
-				if k == fk {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !e.isPrimitive(v) || !keySet[k] {
 				return false
 			}
 		}
@@ -359,7 +450,7 @@ func (e *encoder) isPrimitiveArray(arr []interface{}) bool {
 func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (string, error) {
 	firstObj := arr[0].(map[string]interface{})
 
-	// Reuse key buffer
+	// Collect and sort keys
 	e.keyBuffer = e.keyBuffer[:0]
 	for k := range firstObj {
 		e.keyBuffer = append(e.keyBuffer, k)
