@@ -26,10 +26,10 @@ func newEncoder(indentSize int, delimiter string) *encoder {
 	}
 
 	return &encoder{
-		indentSize:   indentSize,
-		delimiter:    delimiter,
-		indentCache:  indentCache,
-		keyBuffer:    make([]string, 0, 16), // Pre-allocate key buffer
+		indentSize:  indentSize,
+		delimiter:   delimiter,
+		indentCache: indentCache,
+		keyBuffer:   make([]string, 0, 16), // Pre-allocate key buffer
 	}
 }
 
@@ -308,21 +308,21 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 		return "", nil
 	}
 
-	// Reuse key buffer
-	e.keyBuffer = e.keyBuffer[:0]
+	// Use local key buffer to avoid corruption during recursive calls
+	keyBuffer := make([]string, 0, len(obj))
 	for k := range obj {
-		e.keyBuffer = append(e.keyBuffer, k)
+		keyBuffer = append(keyBuffer, k)
 	}
 	// Only sort if we have more than one key
-	if len(e.keyBuffer) > 1 {
-		sort.Strings(e.keyBuffer)
+	if len(keyBuffer) > 1 {
+		sort.Strings(keyBuffer)
 	}
 
 	var b strings.Builder
 	indent := e.getIndent(depth)
 	first := true
 
-	for _, key := range e.keyBuffer {
+	for _, key := range keyBuffer {
 		if !first {
 			b.WriteByte('\n')
 		}
@@ -451,14 +451,14 @@ func (e *encoder) isPrimitiveArray(arr []interface{}) bool {
 func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (string, error) {
 	firstObj := arr[0].(map[string]interface{})
 
-	// Collect and sort keys
-	e.keyBuffer = e.keyBuffer[:0]
+	// Use local key buffer to avoid corruption
+	keyBuffer := make([]string, 0, len(firstObj))
 	for k := range firstObj {
-		e.keyBuffer = append(e.keyBuffer, k)
+		keyBuffer = append(keyBuffer, k)
 	}
 	// Only sort if we have more than one key
-	if len(e.keyBuffer) > 1 {
-		sort.Strings(e.keyBuffer)
+	if len(keyBuffer) > 1 {
+		sort.Strings(keyBuffer)
 	}
 
 	var b strings.Builder
@@ -468,7 +468,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 	b.WriteByte('[')
 	b.WriteString(strconv.Itoa(len(arr)))
 	b.WriteString("]{")
-	for i, field := range e.keyBuffer {
+	for i, field := range keyBuffer {
 		if i > 0 {
 			b.WriteString(e.delimiter)
 		}
@@ -481,7 +481,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 		b.WriteByte('\n')
 		b.WriteString(indent)
 		obj := item.(map[string]interface{})
-		for i, field := range e.keyBuffer {
+		for i, field := range keyBuffer {
 			if i > 0 {
 				b.WriteString(e.delimiter)
 			}
@@ -537,64 +537,33 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 				b.WriteString(indent)
 				b.WriteByte('-')
 			} else {
-				// Reuse key buffer
-				e.keyBuffer = e.keyBuffer[:0]
+				// Use local key buffer to avoid corruption
+				keyBuffer := make([]string, 0, len(v))
 				for k := range v {
-					e.keyBuffer = append(e.keyBuffer, k)
+					keyBuffer = append(keyBuffer, k)
 				}
 				// Only sort if we have more than one key
-				if len(e.keyBuffer) > 1 {
-					sort.Strings(e.keyBuffer)
+				if len(keyBuffer) > 1 {
+					sort.Strings(keyBuffer)
 				}
 
-				firstKey := e.keyBuffer[0]
-				firstValue := v[firstKey]
-				encodedKey := e.encodeKey(firstKey)
+				// Process ALL keys, not just the first one
+				for i, key := range keyBuffer {
+					value := v[key]
+					encodedKey := e.encodeKey(key)
 
-				switch fv := firstValue.(type) {
-				case map[string]interface{}:
-					b.WriteString(indent)
-					b.WriteString("- ")
-					b.WriteString(encodedKey)
-					b.WriteByte(':')
-					if len(fv) > 0 {
-						nested, err := e.encodeObject(fv, depth+2)
-						if err != nil {
-							return "", err
-						}
-						if nested != "" {
-							b.WriteByte('\n')
-							b.WriteString(nested)
-						}
+					if i > 0 {
+						b.WriteByte('\n')
 					}
-				case []interface{}:
-					arrayStr, err := e.encodeArray(fv, depth+1, encodedKey)
-					if err != nil {
-						return "", err
-					}
-					b.WriteString(indent)
-					b.WriteString("- ")
-					b.WriteString(arrayStr)
-				default:
-					encoded, err := e.encode(firstValue, depth+1)
-					if err != nil {
-						return "", err
-					}
-					b.WriteString(indent)
-					b.WriteString("- ")
-					b.WriteString(encodedKey)
-					b.WriteString(": ")
-					b.WriteString(encoded)
-				}
 
-				for _, k := range e.keyBuffer[1:] {
-					value := v[k]
-					encodedKey := e.encodeKey(k)
-
-					b.WriteByte('\n')
 					switch val := value.(type) {
 					case map[string]interface{}:
-						b.WriteString(indent)
+						if i == 0 {
+							b.WriteString(indent)
+							b.WriteString("- ")
+						} else {
+							b.WriteString(indent)
+						}
 						b.WriteString(encodedKey)
 						b.WriteByte(':')
 						if len(val) > 0 {
@@ -612,14 +581,24 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 						if err != nil {
 							return "", err
 						}
-						b.WriteString(indent)
+						if i == 0 {
+							b.WriteString(indent)
+							b.WriteString("- ")
+						} else {
+							b.WriteString(indent)
+						}
 						b.WriteString(arrayStr)
 					default:
 						encoded, err := e.encode(value, depth+1)
 						if err != nil {
 							return "", err
 						}
-						b.WriteString(indent)
+						if i == 0 {
+							b.WriteString(indent)
+							b.WriteString("- ")
+						} else {
+							b.WriteString(indent)
+						}
 						b.WriteString(encodedKey)
 						b.WriteString(": ")
 						b.WriteString(encoded)

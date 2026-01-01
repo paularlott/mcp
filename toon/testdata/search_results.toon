@@ -1,0 +1,43 @@
+searchResults[2]:
+  - description: AI completion tool with complex schema
+    inputSchema:
+      additionalProperties: false
+      properties:
+        model:
+          description: Model to use
+          enum[2]: gpt-4,gpt-3.5-turbo
+          type: string
+        parameters:
+          properties:
+            max_tokens:
+              minimum: 1
+              type: integer
+            temperature:
+              maximum: 2
+              minimum: 0
+              type: number
+          type: object
+        prompt:
+          description: The prompt to complete
+          type: string
+      required[1]: prompt
+      type: object
+    name: ai_completion
+    score: 1
+  - description: Execute database queries
+    inputSchema:
+      properties:
+        parameters:
+          items:
+            oneOf[3]:
+              - type: string
+              - type: number
+              - type: boolean
+          type: array
+        query:
+          description: SQL query to execute
+          type: string
+      required[1]: query
+      type: object
+    name: database_query
+    score: 0.9

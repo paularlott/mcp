@@ -1,0 +1,64 @@
+{
+  "searchResults": [
+    {
+      "name": "ai_completion",
+      "description": "AI completion tool with complex schema",
+      "score": 1.0,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "The prompt to complete"
+          },
+          "model": {
+            "type": "string", 
+            "description": "Model to use",
+            "enum": ["gpt-4", "gpt-3.5-turbo"]
+          },
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "temperature": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "required": ["prompt"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "database_query",
+      "description": "Execute database queries",
+      "score": 0.9,
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "SQL query to execute"
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {"type": "string"},
+                {"type": "number"},
+                {"type": "boolean"}
+              ]
+            }
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ]
+}
