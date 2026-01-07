@@ -78,7 +78,7 @@ func getRequestProviders(ctx context.Context) []ToolProvider {
 // registeredTool represents a tool that won't appear in ListTools but can be searched and called
 type registeredTool struct {
 	tool     *mcp.MCPTool
-	metadata ToolMetadata
+	keywords []string
 	handler  mcp.ToolHandler
 }
 
@@ -119,13 +119,9 @@ func (r *ToolRegistry) RegisterTool(tool *mcp.ToolBuilder, handler mcp.ToolHandl
 	}
 
 	r.tools[tool.Name()] = &registeredTool{
-		tool: mcpTool,
-		metadata: ToolMetadata{
-			Name:        tool.Name(),
-			Description: tool.Description(),
-			Keywords:    keywords,
-		},
-		handler: handler,
+		tool:     mcpTool,
+		keywords: keywords,
+		handler:  handler,
 	}
 }
 
@@ -137,13 +133,9 @@ func (r *ToolRegistry) RegisterMCPTool(tool *mcp.MCPTool, handler mcp.ToolHandle
 	defer r.mu.Unlock()
 
 	r.tools[tool.Name] = &registeredTool{
-		tool: tool,
-		metadata: ToolMetadata{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Keywords:    keywords,
-		},
-		handler: handler,
+		tool:     tool,
+		keywords: keywords,
+		handler:  handler,
 	}
 }
 
@@ -177,7 +169,11 @@ func (r *ToolRegistry) ListToolMetadata(ctx context.Context) ([]ToolMetadata, er
 
 	metadata := make([]ToolMetadata, 0, len(r.tools))
 	for _, rt := range r.tools {
-		metadata = append(metadata, rt.metadata)
+		metadata = append(metadata, ToolMetadata{
+			Name:        rt.tool.Name,
+			Description: rt.tool.Description,
+			Keywords:    rt.keywords,
+		})
 	}
 	return metadata, nil
 }
@@ -207,20 +203,25 @@ func (r *ToolRegistry) Search(ctx context.Context, query string, maxResults int)
 
 	// Search registered tools (we have the schema directly)
 	for _, dt := range toolsCopy {
+		meta := ToolMetadata{
+			Name:        dt.tool.Name,
+			Description: dt.tool.Description,
+			Keywords:    dt.keywords,
+		}
 		var score float64
 		if listAll {
 			score = 1.0 // All tools get same score when listing all
 		} else {
-			score = calculateScore(queryLower, dt.metadata)
+			score = calculateScore(queryLower, meta)
 		}
 		if score > 0 {
 			results = append(results, SearchResult{
-				Name:        dt.metadata.Name,
-				Description: dt.metadata.Description,
+				Name:        dt.tool.Name,
+				Description: dt.tool.Description,
 				Score:       score,
 				InputSchema: dt.tool.InputSchema,
 			})
-			seen[dt.metadata.Name] = true
+			seen[dt.tool.Name] = true
 		}
 	}
 

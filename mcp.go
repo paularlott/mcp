@@ -57,6 +57,9 @@ type registeredTool struct {
 type ToolRegistry interface {
 	// RegisterMCPTool registers a tool for discovery/search
 	RegisterMCPTool(tool *MCPTool, handler ToolHandler, keywords ...string)
+
+	// RegisterTool registers a tool builder for discovery/search
+	RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords ...string)
 }
 
 // Server represents an MCP server instance
@@ -181,6 +184,18 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 	sort.Slice(s.toolCache, func(i, j int) bool {
 		return s.toolCache[i].Name < s.toolCache[j].Name
 	})
+}
+
+// RegisterToolWithDiscovery registers a tool with either the server (native) or a discovery registry.
+// If registry is nil, the tool is registered with the server (visible in ListTools, callable directly).
+// If registry is provided, the tool is registered for discovery only (hidden from ListTools,
+// searchable via tool_search, callable via execute_tool).
+func (s *Server) RegisterToolWithDiscovery(tool *ToolBuilder, handler ToolHandler, registry ToolRegistry, keywords ...string) {
+	if registry == nil {
+		s.RegisterTool(tool, handler)
+		return
+	}
+	registry.RegisterTool(tool, handler, keywords...)
 }
 
 // RegisterRemoteServer registers a remote MCP server
