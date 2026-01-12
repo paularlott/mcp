@@ -215,7 +215,7 @@ func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProv
 //
 // For OnDemand tools, a registry must be set via SetToolRegistry().
 func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth AuthProvider, visibility ToolVisibility) error {
-	client := NewClient(url, auth)
+	client := NewClient(url, auth, "", "")
 
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -9,7 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
+
+	"github.com/paularlott/mcp/pool"
 )
 
 const (
@@ -22,7 +23,9 @@ type Client struct {
 	baseURL     string
 	httpClient  *http.Client
 	auth        AuthProvider
-	cachedTools []MCPTool
+	prefix      string      // Optional prefix for tool names (e.g., "scriptling/")
+	separator   string      // Separator for prefix
+	cachedTools []MCPTool   // Cached tools with prefix already applied
 	mu          sync.RWMutex
 	initialized bool
 	sessionID   string
@@ -34,12 +37,24 @@ type AuthProvider interface {
 	Refresh() error
 }
 
-// NewClient creates a new MCP client
-func NewClient(baseURL string, auth AuthProvider) *Client {
+// NewClient creates a new MCP client using the shared HTTP pool.
+// The prefix will be added to all tool names (e.g., prefix "scriptling" with separator "/" makes tool "search" available as "scriptling/search").
+// Use an empty prefix for no namespacing.
+func NewClient(baseURL string, auth AuthProvider, prefix string, separator string) *Client {
+	// Default separator
+	if separator == "" {
+		separator = "/"
+	}
+	// Ensure prefix ends with separator if provided and not empty
+	if prefix != "" && !strings.HasSuffix(prefix, separator) {
+		prefix = prefix + separator
+	}
 	return &Client{
 		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: pool.GetPool().GetHTTPClient(),
 		auth:       auth,
+		prefix:     prefix,
+		separator:  separator,
 	}
 }
 
@@ -92,6 +107,11 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// Prefix returns the prefix for this client's tools.
+func (c *Client) Prefix() string {
+	return c.prefix
+}
+
 // ListTools retrieves tools from the remote server
 func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 	if !c.initialized {
@@ -136,13 +156,21 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 		return nil, fmt.Errorf("failed to parse tools response: %w", err)
 	}
 
-	// Cache the results
+	// Add prefix to tool names and cache the results
+	prefixedTools := make([]MCPTool, len(result.Tools))
+	for i, tool := range result.Tools {
+		prefixedTools[i] = MCPTool{
+			Name:        c.prefix + tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.InputSchema,
+		}
+	}
+
 	c.mu.Lock()
-	c.cachedTools = make([]MCPTool, len(result.Tools))
-	copy(c.cachedTools, result.Tools)
+	c.cachedTools = prefixedTools
 	c.mu.Unlock()
 
-	return result.Tools, nil
+	return prefixedTools, nil
 }
 
 // RefreshToolCache explicitly refreshes the tool cache
@@ -155,7 +183,9 @@ func (c *Client) RefreshToolCache(ctx context.Context) error {
 	return err
 }
 
-// CallTool executes a tool on the remote server
+// CallTool executes a tool on the remote server.
+// If the client has a prefix, the tool name should include it (e.g., "scriptling/search").
+// The prefix will be stripped before calling the underlying tool.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {
@@ -163,12 +193,18 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]inte
 		}
 	}
 
+	// Strip prefix if present
+	toolName := name
+	if c.prefix != "" && strings.HasPrefix(name, c.prefix) {
+		toolName = name[len(c.prefix):]
+	}
+
 	req := MCPRequest{
 		JSONRPC: "2.0",
-		ID:      fmt.Sprintf("call-%s", name),
+		ID:      fmt.Sprintf("call-%s", toolName),
 		Method:  "tools/call",
 		Params: map[string]interface{}{
-			"name":      name,
+			"name":      toolName,
 			"arguments": args,
 		},
 	}
@@ -286,4 +322,86 @@ func (c *Client) parseEventStream(data []byte, resp *MCPResponse) error {
 	}
 
 	return json.Unmarshal(jsonData, resp)
+}
+
+// ToolSearch performs a tool search using the tool_search MCP tool.
+// This is useful when the server has many tools registered via a discovery registry.
+// The query searches tool names, descriptions, and keywords.
+func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) ([]map[string]interface{}, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	args := map[string]interface{}{
+		"query": query,
+	}
+	if maxResults > 0 {
+		args["max_results"] = maxResults
+	}
+
+	resp, err := c.CallTool(ctx, "tool_search", args)
+	if err != nil {
+		return nil, fmt.Errorf("tool_search failed: %w", err)
+	}
+
+	// Parse the response - tool_search returns JSON with search results
+	return parseToolSearchResponse(resp)
+}
+
+// ExecuteDiscoveredTool executes a tool by name using the execute_tool MCP tool.
+// This is the only way to call tools that were discovered via ToolSearch.
+// Discovered tools cannot be called directly via CallTool.
+func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, arguments map[string]interface{}) (*ToolResponse, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	args := map[string]interface{}{
+		"name":      name,
+		"arguments": arguments,
+	}
+
+	return c.CallTool(ctx, "execute_tool", args)
+}
+
+// parseToolSearchResponse parses the response from tool_search MCP tool.
+// The tool_search tool returns JSON containing search results.
+func parseToolSearchResponse(resp *ToolResponse) ([]map[string]interface{}, error) {
+	if resp == nil {
+		return nil, fmt.Errorf("nil response")
+	}
+
+	var jsonText string
+
+	// Try structured content first
+	if resp.StructuredContent != nil {
+		if bytes, err := json.Marshal(resp.StructuredContent); err == nil {
+			jsonText = string(bytes)
+		}
+	}
+
+	// Fall back to text content
+	if jsonText == "" && len(resp.Content) > 0 {
+		for _, content := range resp.Content {
+			if content.Type == "text" && content.Text != "" {
+				jsonText = content.Text
+				break
+			}
+		}
+	}
+
+	if jsonText == "" {
+		return []map[string]interface{}{}, nil
+	}
+
+	var results []map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
+		return nil, fmt.Errorf("failed to parse tool search response: %w", err)
+	}
+
+	return results, nil
 }
