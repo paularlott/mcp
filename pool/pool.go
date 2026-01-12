@@ -34,7 +34,7 @@ type PoolConfig struct {
 // Optimized for long-lived AI/MCP connections
 func DefaultPoolConfig() *PoolConfig {
 	return &PoolConfig{
-		InsecureSkipVerify: false, // Reject self-signed certs by default (secure)
+		InsecureSkipVerify:  false, // Reject self-signed certs by default (secure)
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
@@ -105,6 +105,7 @@ func newDefaultPoolImpl() *DefaultPool {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureSkipVerify,
+			MinVersion:         tls.VersionTLS13,
 		},
 		MaxIdleConns:        cfg.MaxIdleConns,
 		MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
