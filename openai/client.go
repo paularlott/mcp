@@ -48,8 +48,8 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 type Client struct {
 	baseURL         string
 	apiKey          string
-	localServer     MCPServer     // Local MCP server (no prefix)
-	remoteServers   []*mcp.Client // Remote MCP servers (each has their own prefix)
+	localServer     MCPServer     // Local MCP server (no namespace)
+	remoteServers   []*mcp.Client // Remote MCP servers (each has their own namespace)
 	remoteServersMu sync.RWMutex
 }
 
@@ -57,14 +57,14 @@ type Client struct {
 type RemoteServerConfig struct {
 	BaseURL string
 	Auth    mcp.AuthProvider
-	Prefix  string
+	Namespace string
 }
 
 // Config holds configuration for the OpenAI client
 type Config struct {
 	APIKey              string
 	BaseURL             string
-	LocalServer         MCPServer            // Local MCP server (no prefix)
+	LocalServer         MCPServer            // Local MCP server (no namespace)
 	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
 }
 
@@ -87,7 +87,7 @@ func New(config Config) (*Client, error) {
 	// Create remote clients (separator defaults to "/" in mcp.NewClient)
 	remoteServers := make([]*mcp.Client, len(config.RemoteServerConfigs))
 	for i, rsc := range config.RemoteServerConfigs {
-		remoteServers[i] = mcp.NewClient(rsc.BaseURL, rsc.Auth, rsc.Prefix, "")
+		remoteServers[i] = mcp.NewClient(rsc.BaseURL, rsc.Auth, rsc.Namespace)
 	}
 
 	return &Client{
@@ -99,22 +99,23 @@ func New(config Config) (*Client, error) {
 }
 
 // AddRemoteServer adds a remote MCP server.
-// The prefix is derived from the client's prefix.
-func (c *Client) AddRemoteServer(client *mcp.Client) {
+// The namespace is derived from the client's namespace.
+func (c *Client) AddRemoteServer(config RemoteServerConfig) {
+	client := mcp.NewClient(config.BaseURL, config.Auth, config.Namespace)
 	c.remoteServersMu.Lock()
 	defer c.remoteServersMu.Unlock()
 	c.remoteServers = append(c.remoteServers, client)
 }
 
-// RemoveRemoteServer removes a remote MCP server by prefix
-func (c *Client) RemoveRemoteServer(prefix string) {
+// RemoveRemoteServer removes a remote MCP server by namespace
+func (c *Client) RemoveRemoteServer(namespace string) {
 	c.remoteServersMu.Lock()
 	defer c.remoteServersMu.Unlock()
 
-	// Find and remove the client with matching prefix
-	// The prefix is already normalized by the MCP client
+	// Find and remove the client with matching namespace
+	// The namespace is already normalized by the MCP client
 	for i, client := range c.remoteServers {
-		if client.Prefix() == prefix {
+		if client.Namespace() == namespace {
 			c.remoteServers = append(c.remoteServers[:i], c.remoteServers[i+1:]...)
 			return
 		}
@@ -128,16 +129,16 @@ func (c *Client) GetLocalServer() MCPServer {
 
 // GetAllTools returns all tools from local and remote servers
 // Local server tools are returned as-is
-// Remote server tools are already prefixed by their client
+// Remote server tools are already namespaced by their client
 func (c *Client) GetAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
 	var allTools []mcp.MCPTool
 
-	// Add local server tools (no prefix)
+	// Add local server tools (no namespace)
 	if c.localServer != nil {
 		allTools = append(allTools, c.localServer.ListTools()...)
 	}
 
-	// Add remote server tools (already prefixed by their client)
+	// Add remote server tools (already namespaced by their client)
 	c.remoteServersMu.RLock()
 	defer c.remoteServersMu.RUnlock()
 
@@ -153,18 +154,18 @@ func (c *Client) GetAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
 }
 
 // callTool routes a tool call to the appropriate server
-// If the tool name has a prefix that matches a remote client's prefix, routes to that client
+// If the tool name has a namespace that matches a remote client's namespace, routes to that client
 // Otherwise, routes to the local server
 func (c *Client) callTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error) {
-	// Check if tool name matches a remote server's prefix
+	// Check if tool name matches a remote server's namespace
 	c.remoteServersMu.RLock()
 	defer c.remoteServersMu.RUnlock()
 
-	// Try to find a remote client whose prefix matches the tool name
+	// Try to find a remote client whose namespace matches the tool name
 	for _, client := range c.remoteServers {
-		prefix := client.Prefix()
-		if prefix != "" && strings.HasPrefix(name, prefix) {
-			// This client's prefix matches - call it with the full prefixed name
+		namespace := client.Namespace()
+		if namespace != "" && strings.HasPrefix(name, namespace) {
+			// This client's namespace matches - call it with the full namespaced name
 			return client.CallTool(ctx, name, args)
 		}
 	}

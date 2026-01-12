@@ -18,14 +18,17 @@ const (
 	mcpClientVersion = "1.0.0"
 )
 
+// DefaultNamespaceSeparator is the default separator used for namespacing tool names
+var DefaultNamespaceSeparator = "/"
+
 // Client represents an MCP client for connecting to remote servers
 type Client struct {
 	baseURL     string
 	httpClient  *http.Client
 	auth        AuthProvider
-	prefix      string      // Optional prefix for tool names (e.g., "scriptling/")
-	separator   string      // Separator for prefix
-	cachedTools []MCPTool   // Cached tools with prefix already applied
+	namespace   string      // Optional namespace for tool names (e.g., "scriptling/")
+	separator   string      // Separator for namespace
+	cachedTools []MCPTool   // Cached tools with namespace already applied
 	mu          sync.RWMutex
 	initialized bool
 	sessionID   string
@@ -38,22 +41,20 @@ type AuthProvider interface {
 }
 
 // NewClient creates a new MCP client using the shared HTTP pool.
-// The prefix will be added to all tool names (e.g., prefix "scriptling" with separator "/" makes tool "search" available as "scriptling/search").
-// Use an empty prefix for no namespacing.
-func NewClient(baseURL string, auth AuthProvider, prefix string, separator string) *Client {
-	// Default separator
-	if separator == "" {
-		separator = "/"
-	}
-	// Ensure prefix ends with separator if provided and not empty
-	if prefix != "" && !strings.HasSuffix(prefix, separator) {
-		prefix = prefix + separator
+// The namespace will be added to all tool names (e.g., namespace "scriptling" makes tool "search" available as "scriptling/search").
+// Use an empty namespace for no namespacing.
+func NewClient(baseURL string, auth AuthProvider, namespace string) *Client {
+	// Use the global default separator
+	separator := DefaultNamespaceSeparator
+	// Ensure namespace ends with separator if provided and not empty
+	if namespace != "" && !strings.HasSuffix(namespace, separator) {
+		namespace = namespace + separator
 	}
 	return &Client{
 		baseURL:    baseURL,
 		httpClient: pool.GetPool().GetHTTPClient(),
 		auth:       auth,
-		prefix:     prefix,
+		namespace:  namespace,
 		separator:  separator,
 	}
 }
@@ -107,9 +108,9 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// Prefix returns the prefix for this client's tools.
-func (c *Client) Prefix() string {
-	return c.prefix
+// Namespace returns the namespace for this client's tools.
+func (c *Client) Namespace() string {
+	return c.namespace
 }
 
 // ListTools retrieves tools from the remote server
@@ -156,21 +157,21 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 		return nil, fmt.Errorf("failed to parse tools response: %w", err)
 	}
 
-	// Add prefix to tool names and cache the results
-	prefixedTools := make([]MCPTool, len(result.Tools))
+	// Add namespace to tool names and cache the results
+	namespacedTools := make([]MCPTool, len(result.Tools))
 	for i, tool := range result.Tools {
-		prefixedTools[i] = MCPTool{
-			Name:        c.prefix + tool.Name,
+		namespacedTools[i] = MCPTool{
+			Name:        c.namespace + tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
 		}
 	}
 
 	c.mu.Lock()
-	c.cachedTools = prefixedTools
+	c.cachedTools = namespacedTools
 	c.mu.Unlock()
 
-	return prefixedTools, nil
+	return namespacedTools, nil
 }
 
 // RefreshToolCache explicitly refreshes the tool cache
@@ -184,8 +185,8 @@ func (c *Client) RefreshToolCache(ctx context.Context) error {
 }
 
 // CallTool executes a tool on the remote server.
-// If the client has a prefix, the tool name should include it (e.g., "scriptling/search").
-// The prefix will be stripped before calling the underlying tool.
+// If the client has a namespace, the tool name should include it (e.g., "scriptling/search").
+// The namespace will be stripped before calling the underlying tool.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {
@@ -193,10 +194,10 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]inte
 		}
 	}
 
-	// Strip prefix if present
+	// Strip namespace if present
 	toolName := name
-	if c.prefix != "" && strings.HasPrefix(name, c.prefix) {
-		toolName = name[len(c.prefix):]
+	if c.namespace != "" && strings.HasPrefix(name, c.namespace) {
+		toolName = name[len(c.namespace):]
 	}
 
 	req := MCPRequest{

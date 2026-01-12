@@ -26,7 +26,7 @@ func TestClient_InitializeListCall(t *testing.T) {
 	ts := httptest.NewServer(h)
 	defer ts.Close()
 
-	c := NewClient(ts.URL, staticAuth{"Bearer t"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"Bearer t"}, "")
 
 	ctx := context.Background()
 
@@ -81,7 +81,7 @@ func TestClient_SendsSessionAndAuth(t *testing.T) {
 	ts := httptest.NewServer(h)
 	defer ts.Close()
 
-	c := NewClient(ts.URL, staticAuth{"Bearer token-xyz"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"Bearer token-xyz"}, "")
 	ctx := context.Background()
 	_, _ = c.ListTools(ctx)
 
@@ -114,7 +114,7 @@ func TestClient_SessionFromHeader(t *testing.T) {
 	})
 	ts := httptest.NewServer(h)
 	defer ts.Close()
-	c := NewClient(ts.URL, staticAuth{"b"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"b"}, "")
 	_, _ = c.ListTools(context.Background())
 	if sessionSeen != "hdr-456" {
 		t.Fatalf("expected session header from response header, got %q", sessionSeen)
@@ -141,7 +141,7 @@ func TestClient_SSE_UnexpectedLines(t *testing.T) {
 	})
 	ts := httptest.NewServer(h)
 	defer ts.Close()
-	c := NewClient(ts.URL, staticAuth{"b"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"b"}, "")
 	tools, err := c.ListTools(context.Background())
 	if err != nil {
 		t.Fatalf("expected tolerant SSE parse, got err: %v", err)
@@ -168,7 +168,7 @@ func TestClient_HandlesServerErrors(t *testing.T) {
 	})
 	ts := httptest.NewServer(h)
 	defer ts.Close()
-	c := NewClient(ts.URL, staticAuth{"b"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"b"}, "")
 	ctx := context.Background()
 	_, err := c.CallTool(ctx, "x", nil)
 	if err == nil {
@@ -198,7 +198,7 @@ func TestClient_Non200Status(t *testing.T) {
 	})
 	ts := httptest.NewServer(h)
 	defer ts.Close()
-	c := NewClient(ts.URL, staticAuth{"b"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"b"}, "")
 	ctx := context.Background()
 	_ = c.Initialize(ctx)
 	// now any call should hit non-200
@@ -227,7 +227,7 @@ func TestClient_EventStreamParsing(t *testing.T) {
 	})
 	ts := httptest.NewServer(h)
 	defer ts.Close()
-	c := NewClient(ts.URL, staticAuth{"b"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"b"}, "")
 	ctx := context.Background()
 	tools, err := c.ListTools(ctx)
 	if err != nil {
@@ -267,7 +267,7 @@ func TestClient_RefreshToolCache(t *testing.T) {
 	})
 	ts := httptest.NewServer(h)
 	defer ts.Close()
-	c := NewClient(ts.URL, staticAuth{"b"}, "", "")
+	c := NewClient(ts.URL, staticAuth{"b"}, "")
 	ctx := context.Background()
 	t1, err := c.ListTools(ctx)
 	if err != nil {

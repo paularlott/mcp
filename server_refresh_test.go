@@ -43,10 +43,12 @@ func TestRefreshTools_SkipsFailingRemote(t *testing.T) {
 	defer badTS.Close()
 
 	host := NewServer("host", "1")
-	if err := host.RegisterRemoteServer(goodTS.URL, "g", NewBearerTokenAuth("t")); err != nil {
+	goodClient := NewClient(goodTS.URL, NewBearerTokenAuth("t"), "g")
+	if err := host.RegisterRemoteServer(goodClient); err != nil {
 		t.Fatalf("reg good: %v", err)
 	}
-	if err := host.RegisterRemoteServer(badTS.URL, "b", NewBearerTokenAuth("t")); err != nil {
+	badClient := NewClient(badTS.URL, NewBearerTokenAuth("t"), "b")
+	if err := host.RegisterRemoteServer(badClient); err != nil {
 		t.Fatalf("reg bad: %v", err)
 	}
 

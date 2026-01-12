@@ -19,7 +19,8 @@ func TestRegisterRemoteServerAndCall(t *testing.T) {
 
 	// host server registers remote under namespace
 	host := NewServer("host", "1")
-	if err := host.RegisterRemoteServer(ts.URL, "ns", NewBearerTokenAuth("t")); err != nil {
+	client := NewClient(ts.URL, NewBearerTokenAuth("t"), "ns")
+	if err := host.RegisterRemoteServer(client); err != nil {
 		t.Fatalf("register remote: %v", err)
 	}
 

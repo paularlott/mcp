@@ -199,13 +199,13 @@ func (s *Server) RegisterToolWithDiscovery(tool *ToolBuilder, handler ToolHandle
 }
 
 // RegisterRemoteServer registers a remote MCP server
-func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) error {
-	return s.RegisterRemoteServerWithVisibility(url, namespace, auth, ToolVisibilityVisible)
+func (s *Server) RegisterRemoteServer(client *Client) error {
+	return s.RegisterRemoteServerWithVisibility(client, ToolVisibilityVisible)
 }
 
 // RegisterRemoteServerHidden registers a remote MCP server with hidden tools
-func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProvider) error {
-	return s.RegisterRemoteServerWithVisibility(url, namespace, auth, ToolVisibilityHidden)
+func (s *Server) RegisterRemoteServerHidden(client *Client) error {
+	return s.RegisterRemoteServerWithVisibility(client, ToolVisibilityHidden)
 }
 
 // RegisterRemoteServerWithVisibility registers a remote MCP server with the specified visibility.
@@ -214,18 +214,19 @@ func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProv
 // - ToolVisibilityOnDemand: Tools don't appear in ListTools() but are in tool_search
 //
 // For OnDemand tools, a registry must be set via SetToolRegistry().
-func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth AuthProvider, visibility ToolVisibility) error {
-	client := NewClient(url, auth, "", "")
-
+func (s *Server) RegisterRemoteServerWithVisibility(client *Client, visibility ToolVisibility) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Extract namespace from client namespace (remove trailing separator)
+	namespace := strings.TrimSuffix(client.Namespace(), client.separator)
 
 	regClient := &registeredClient{
 		client:     client,
 		namespace:  namespace,
 		visibility: visibility,
 	}
-	s.remoteClients[url] = regClient
+	s.remoteClients[client.baseURL] = regClient
 
 	// Fetch tools from the new server and add to cache/lookup
 	ctx := context.Background()
@@ -238,10 +239,8 @@ func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth 
 
 	// Add tools to cache, lookup, or registry based on visibility
 	for _, tool := range tools {
+		// Tools from client.ListTools() already have the prefix applied
 		toolName := tool.Name
-		if namespace != "" {
-			toolName = namespace + "/" + tool.Name
-		}
 
 		// Add to lookup for execution
 		s.toolToServer[toolName] = regClient
@@ -319,10 +318,8 @@ func (s *Server) RefreshTools() error {
 		}
 
 		for _, tool := range tools {
+			// Tools from client.ListTools() already have the prefix applied
 			toolName := tool.Name
-			if regClient.namespace != "" {
-				toolName = regClient.namespace + "/" + tool.Name
-			}
 
 			// Add to new lookup
 			newToolToServer[toolName] = regClient
@@ -601,7 +598,7 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 		// Extract original tool name (remove namespace if present)
 		toolName := name
 		if namespace != "" {
-			toolName = strings.TrimPrefix(name, namespace+"/")
+			toolName = strings.TrimPrefix(name, namespace+regClient.client.separator)
 		}
 		return client.CallTool(ctx, toolName, args)
 	}
