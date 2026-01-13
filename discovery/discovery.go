@@ -1,14 +1,60 @@
 // Package discovery provides tool discovery functionality for MCP servers.
-// This package allows you to register tools that are hidden from the main tools/list response
-// but can be discovered via search and executed through a wrapper tool.
 //
-// This is useful when you have many tools and want to reduce context window usage.
-// Instead of sending all tool definitions to the LLM upfront, you can:
-// 1. Register essential tools normally with the MCP server
-// 2. Register specialized tools with a ToolRegistry
-// 3. Attach the registry to the server - it registers tool_search and execute_tool
+// This package allows you to register tools that are hidden from the main tools/list
+// response but can be discovered via search and executed through a wrapper tool.
 //
-// The workflow for LLMs becomes:
+// # When to Use Discovery
+//
+// Use this package when you have many tools (10+) and want to:
+//   - Reduce context window usage by not sending all tool schemas upfront
+//   - Improve LLM performance by reducing cognitive load
+//   - Organize tools into searchable categories with keywords
+//
+// # Tool Visibility Options
+//
+// The MCP server supports three visibility levels for tools:
+//
+//   - ToolVisibilityVisible: Tools appear in ListTools() and are callable directly.
+//     Use for essential tools that the LLM should always know about.
+//
+//   - ToolVisibilityHidden: Tools don't appear in ListTools() but can be called
+//     directly if the caller knows the name. Use for internal/admin tools.
+//
+//   - ToolVisibilityOnDemand: Tools don't appear in ListTools() but ARE searchable
+//     via tool_search and callable via execute_tool. Use with this discovery package.
+//
+// # Basic Usage
+//
+//	registry := discovery.NewToolRegistry()
+//
+//	// Register tools with keywords for better search
+//	registry.RegisterTool(
+//	    mcp.NewTool("send_email", "Send an email message", ...),
+//	    sendEmailHandler,
+//	    "email", "send", "message", "notification",  // keywords
+//	)
+//
+//	// Attach to server (registers tool_search and execute_tool)
+//	registry.Attach(server)
+//
+// # Keyword Best Practices
+//
+// Keywords significantly improve search quality. Include:
+//   - Action verbs: "create", "delete", "update", "send", "fetch"
+//   - Domain terms: "email", "database", "file", "user"
+//   - Synonyms: "remove" for "delete", "retrieve" for "get"
+//   - Common misspellings if relevant
+//
+// # Performance Considerations
+//
+// The search uses fuzzy matching with Levenshtein distance. For typical deployments
+// (< 100 tools), performance is excellent. For larger tool sets (1000+), consider:
+//   - Using more specific keywords to reduce search space
+//   - Implementing a custom ToolProvider with indexed search
+//
+// # LLM Workflow
+//
+// After setup, the LLM workflow becomes:
 //  1. tool_search(query="email") -> finds tools with full schemas
 //  2. execute_tool(name="send_email", arguments={...}) -> executes the tool
 package discovery
@@ -20,6 +66,16 @@ import (
 	"sync"
 
 	"github.com/paularlott/mcp"
+)
+
+// Tool names used by the discovery system.
+// These are registered with the MCP server when Attach() is called.
+const (
+	// ToolSearchName is the name of the tool search discovery tool
+	ToolSearchName = "tool_search"
+
+	// ExecuteToolName is the name of the tool execution wrapper
+	ExecuteToolName = "execute_tool"
 )
 
 // ToolMetadata contains searchable information about a tool
@@ -84,11 +140,32 @@ type registeredTool struct {
 
 // ToolRegistry manages searchable tools and provides discovery functionality.
 // Tools registered here are hidden from tools/list but can be discovered via search.
-// Create one instance and attach it to your MCP server.
+//
+// # Design Notes
+//
+// ToolRegistry is intentionally coupled to the mcp package. While this could be
+// decoupled via interfaces, the discovery feature is specifically designed for
+// MCP servers and would not make sense in isolation. The coupling is:
+//
+//   - Uses mcp.ToolBuilder and mcp.MCPTool for tool definitions
+//   - Uses mcp.ToolHandler for execution callbacks
+//   - Uses mcp.Server.RegisterTool via Attach() to add discovery endpoints
+//
+// This keeps the API simple and type-safe. For alternative use cases (non-MCP
+// tool registries), implement the ToolProvider interface with your own types.
+//
+// # Usage
+//
+// Create one instance and attach it to your MCP server:
+//
+//	registry := discovery.NewToolRegistry()
+//	registry.RegisterTool(myTool, myHandler, "keyword1", "keyword2")
+//	registry.Attach(server)  // Adds tool_search and execute_tool endpoints
 type ToolRegistry struct {
 	mu        sync.RWMutex
 	tools     map[string]*registeredTool
 	providers []ToolProvider
+	attached  bool // true if Attach() has been called
 }
 
 // NewToolRegistry creates a new tool registry for searchable tools
@@ -379,23 +456,33 @@ func (r *ToolRegistry) CallTool(ctx context.Context, name string, args map[strin
 	return nil, ErrToolNotFound
 }
 
-// Attach registers the discovery tools (tool_search, execute_tool) with the MCP server
+// Attach registers the discovery tools (tool_search, execute_tool) with the MCP server.
+// This method is idempotent - calling it multiple times on the same registry is safe
+// and will only register the tools once.
 func (r *ToolRegistry) Attach(server *mcp.Server) {
+	r.mu.Lock()
+	if r.attached {
+		r.mu.Unlock()
+		return // Already attached, nothing to do
+	}
+	r.attached = true
+	r.mu.Unlock()
+
 	// Register tool_search
 	server.RegisterTool(
-		mcp.NewTool("tool_search", "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores. IMPORTANT: After finding tools with this search, you MUST use execute_tool to call them - discovered tools cannot be called directly. Omit query to list all available tools.",
+		mcp.NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores. IMPORTANT: After finding tools with this search, you MUST use execute_tool to call them - discovered tools cannot be called directly. Omit query to list all available tools.",
 			mcp.String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
-			mcp.Number("max_results", "Maximum number of results to return (default: 10, max: 50)"),
+			mcp.Number("max_results", "Maximum number of results to return (default: 5)"),
 		),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			query := req.StringOr("query", "")
 
-			maxResults := req.IntOr("max_results", 10)
+			maxResults := req.IntOr("max_results", 5)
 			if maxResults <= 0 {
-				maxResults = 10
+				maxResults = 5
 			}
-			if maxResults > 50 {
-				maxResults = 50
+			if maxResults > 100 {
+				maxResults = 100
 			}
 
 			results := r.Search(ctx, query, maxResults)
@@ -411,7 +498,7 @@ func (r *ToolRegistry) Attach(server *mcp.Server) {
 
 	// Register execute_tool
 	server.RegisterTool(
-		mcp.NewTool("execute_tool", "Execute a tool by name with the given arguments. This is the ONLY way to call tools discovered via tool_search. Discovered tools cannot be called directly - you must use this execute_tool function.",
+		mcp.NewTool(ExecuteToolName, "Execute a tool by name with the given arguments. This is the ONLY way to call tools discovered via tool_search. Discovered tools cannot be called directly - you must use this execute_tool function.",
 			mcp.String("name", "The exact name of the tool to execute (must be a tool found via tool_search)", mcp.Required()),
 			mcp.Object("arguments", "The arguments to pass to the tool (matching the schema from tool_search results)"),
 		),

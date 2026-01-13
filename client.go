@@ -43,9 +43,16 @@ type AuthProvider interface {
 // NewClient creates a new MCP client using the shared HTTP pool.
 // The namespace will be added to all tool names (e.g., namespace "scriptling" makes tool "search" available as "scriptling/search").
 // Use an empty namespace for no namespacing.
+//
+// The namespace should be a simple identifier (letters, numbers, hyphens, underscores).
+// Whitespace is trimmed automatically.
 func NewClient(baseURL string, auth AuthProvider, namespace string) *Client {
 	// Use the global default separator
 	separator := DefaultNamespaceSeparator
+
+	// Normalize namespace: trim whitespace
+	namespace = strings.TrimSpace(namespace)
+
 	// Ensure namespace ends with separator if provided and not empty
 	if namespace != "" && !strings.HasSuffix(namespace, separator) {
 		namespace = namespace + separator
@@ -146,20 +153,15 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 		return nil, fmt.Errorf("list tools error: code %d", resp.Error.Code)
 	}
 
-	var result struct {
-		Tools []MCPTool `json:"tools"`
-	}
-	resultBytes, err := json.Marshal(resp.Result)
+	// Parse the result using type assertion where possible
+	tools, err := parseToolsResult(resp.Result)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-	if err := json.Unmarshal(resultBytes, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse tools response: %w", err)
 	}
 
 	// Add namespace to tool names and cache the results
-	namespacedTools := make([]MCPTool, len(result.Tools))
-	for i, tool := range result.Tools {
+	namespacedTools := make([]MCPTool, len(tools))
+	for i, tool := range tools {
 		namespacedTools[i] = MCPTool{
 			Name:        c.namespace + tool.Name,
 			Description: tool.Description,
@@ -405,4 +407,49 @@ func parseToolSearchResponse(resp *ToolResponse) ([]map[string]interface{}, erro
 	}
 
 	return results, nil
+}
+
+// parseToolsResult parses the tools list result using type assertions where possible
+// to avoid double JSON serialization. Falls back to marshal/unmarshal if needed.
+func parseToolsResult(result interface{}) ([]MCPTool, error) {
+	// Try direct type assertion first
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		if toolsRaw, ok := resultMap["tools"]; ok {
+			if toolsSlice, ok := toolsRaw.([]interface{}); ok {
+				tools := make([]MCPTool, 0, len(toolsSlice))
+				for _, toolRaw := range toolsSlice {
+					if toolMap, ok := toolRaw.(map[string]interface{}); ok {
+						tool := MCPTool{}
+						if name, ok := toolMap["name"].(string); ok {
+							tool.Name = name
+						}
+						if desc, ok := toolMap["description"].(string); ok {
+							tool.Description = desc
+						}
+						if schema, ok := toolMap["inputSchema"]; ok {
+							tool.InputSchema = schema
+						}
+						if outputSchema, ok := toolMap["outputSchema"]; ok {
+							tool.OutputSchema = outputSchema
+						}
+						tools = append(tools, tool)
+					}
+				}
+				return tools, nil
+			}
+		}
+	}
+
+	// Fallback: use JSON marshal/unmarshal
+	var parsed struct {
+		Tools []MCPTool `json:"tools"`
+	}
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Tools, nil
 }

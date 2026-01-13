@@ -3,6 +3,8 @@ package mcp
 // Parameter interface for all parameter types
 type Parameter interface {
 	apply(builder *paramBuilder)
+	// toParamDef converts the parameter to a paramDef for output schema reuse
+	toParamDef() paramDef
 }
 
 // Option interface for parameter options
@@ -34,75 +36,115 @@ func Required() Option {
 	return requiredOption{}
 }
 
+// processOptions applies options to a parameterBase and returns true if required
+func processOptions(options []Option) bool {
+	for _, opt := range options {
+		if _, ok := opt.(requiredOption); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// buildPropertiesFromParams builds a properties map from a slice of Parameter
+func buildPropertiesFromParams(properties []Parameter) map[string]*paramDef {
+	props := make(map[string]*paramDef)
+	for _, prop := range properties {
+		def := prop.toParamDef()
+		props[def.name] = &def
+	}
+	return props
+}
+
 // Parameter implementations
 type stringParam struct {
 	parameterBase
 }
 
-func (s *stringParam) apply(builder *paramBuilder) {
-	builder.params = append(builder.params, paramDef{
+func (s *stringParam) toParamDef() paramDef {
+	return paramDef{
 		name:        s.name,
 		paramType:   "string",
 		description: s.description,
 		required:    s.required,
 		properties:  make(map[string]*paramDef),
-	})
+	}
+}
+
+func (s *stringParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, s.toParamDef())
 }
 
 type numberParam struct {
 	parameterBase
 }
 
-func (n *numberParam) apply(builder *paramBuilder) {
-	builder.params = append(builder.params, paramDef{
+func (n *numberParam) toParamDef() paramDef {
+	return paramDef{
 		name:        n.name,
 		paramType:   "number",
 		description: n.description,
 		required:    n.required,
 		properties:  make(map[string]*paramDef),
-	})
+	}
+}
+
+func (n *numberParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, n.toParamDef())
 }
 
 type booleanParam struct {
 	parameterBase
 }
 
-func (b *booleanParam) apply(builder *paramBuilder) {
-	builder.params = append(builder.params, paramDef{
+func (b *booleanParam) toParamDef() paramDef {
+	return paramDef{
 		name:        b.name,
 		paramType:   "boolean",
 		description: b.description,
 		required:    b.required,
 		properties:  make(map[string]*paramDef),
-	})
+	}
+}
+
+func (b *booleanParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, b.toParamDef())
 }
 
 type stringArrayParam struct {
 	parameterBase
 }
 
-func (s *stringArrayParam) apply(builder *paramBuilder) {
-	builder.params = append(builder.params, paramDef{
+func (s *stringArrayParam) toParamDef() paramDef {
+	return paramDef{
 		name:        s.name,
 		paramType:   "array:string",
 		description: s.description,
 		required:    s.required,
 		properties:  make(map[string]*paramDef),
-	})
+	}
+}
+
+func (s *stringArrayParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, s.toParamDef())
 }
 
 type numberArrayParam struct {
 	parameterBase
 }
 
-func (n *numberArrayParam) apply(builder *paramBuilder) {
-	builder.params = append(builder.params, paramDef{
+func (n *numberArrayParam) toParamDef() paramDef {
+	return paramDef{
 		name:        n.name,
 		paramType:   "array:number",
 		description: n.description,
 		required:    n.required,
 		properties:  make(map[string]*paramDef),
-	})
+	}
+}
+
+func (n *numberArrayParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, n.toParamDef())
 }
 
 type objectParam struct {
@@ -110,24 +152,18 @@ type objectParam struct {
 	properties []Parameter
 }
 
-func (o *objectParam) apply(builder *paramBuilder) {
-	// Build properties
-	props := make(map[string]*paramDef)
-	for _, prop := range o.properties {
-		propBuilder := &paramBuilder{}
-		prop.apply(propBuilder)
-		if len(propBuilder.params) > 0 {
-			props[propBuilder.params[0].name] = &propBuilder.params[0]
-		}
-	}
-
-	builder.params = append(builder.params, paramDef{
+func (o *objectParam) toParamDef() paramDef {
+	return paramDef{
 		name:        o.name,
 		paramType:   "object",
 		description: o.description,
 		required:    o.required,
-		properties:  props,
-	})
+		properties:  buildPropertiesFromParams(o.properties),
+	}
+}
+
+func (o *objectParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, o.toParamDef())
 }
 
 type objectArrayParam struct {
@@ -135,30 +171,23 @@ type objectArrayParam struct {
 	properties []Parameter
 }
 
-func (o *objectArrayParam) apply(builder *paramBuilder) {
-	// Build properties for array items
-	props := make(map[string]*paramDef)
-	for _, prop := range o.properties {
-		propBuilder := &paramBuilder{}
-		prop.apply(propBuilder)
-		if len(propBuilder.params) > 0 {
-			props[propBuilder.params[0].name] = &propBuilder.params[0]
-		}
-	}
-
-	// Create item schema
+func (o *objectArrayParam) toParamDef() paramDef {
+	props := buildPropertiesFromParams(o.properties)
 	itemSchema := &paramDef{
 		paramType:  "object",
 		properties: props,
 	}
-
-	builder.params = append(builder.params, paramDef{
+	return paramDef{
 		name:        o.name,
 		paramType:   "array:object",
 		description: o.description,
 		required:    o.required,
 		itemSchema:  itemSchema,
-	})
+	}
+}
+
+func (o *objectArrayParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, o.toParamDef())
 }
 
 // Output wrapper
@@ -166,89 +195,15 @@ type outputParam struct {
 	parameters []Parameter
 }
 
+// toParamDef is not applicable for outputParam as it's a container
+func (o *outputParam) toParamDef() paramDef {
+	return paramDef{} // Not used directly
+}
+
 func (o *outputParam) apply(builder *paramBuilder) {
-	// Apply output parameters directly to outputParams
+	// Simply convert each parameter to its paramDef and add to outputParams
 	for _, param := range o.parameters {
-		switch p := param.(type) {
-		case *stringParam:
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "string",
-				description: p.description,
-				required:    p.required,
-				properties:  make(map[string]*paramDef),
-			})
-		case *numberParam:
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "number",
-				description: p.description,
-				required:    p.required,
-				properties:  make(map[string]*paramDef),
-			})
-		case *booleanParam:
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "boolean",
-				description: p.description,
-				required:    p.required,
-				properties:  make(map[string]*paramDef),
-			})
-		case *stringArrayParam:
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "array:string",
-				description: p.description,
-				required:    p.required,
-				properties:  make(map[string]*paramDef),
-			})
-		case *numberArrayParam:
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "array:number",
-				description: p.description,
-				required:    p.required,
-				properties:  make(map[string]*paramDef),
-			})
-		case *objectParam:
-			// Build properties for output object
-			props := make(map[string]*paramDef)
-			for _, prop := range p.properties {
-				propBuilder := &paramBuilder{}
-				prop.apply(propBuilder)
-				if len(propBuilder.params) > 0 {
-					props[propBuilder.params[0].name] = &propBuilder.params[0]
-				}
-			}
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "object",
-				description: p.description,
-				required:    p.required,
-				properties:  props,
-			})
-		case *objectArrayParam:
-			// Build properties for output object array
-			props := make(map[string]*paramDef)
-			for _, prop := range p.properties {
-				propBuilder := &paramBuilder{}
-				prop.apply(propBuilder)
-				if len(propBuilder.params) > 0 {
-					props[propBuilder.params[0].name] = &propBuilder.params[0]
-				}
-			}
-			itemSchema := &paramDef{
-				paramType:  "object",
-				properties: props,
-			}
-			builder.outputParams = append(builder.outputParams, paramDef{
-				name:        p.name,
-				paramType:   "array:object",
-				description: p.description,
-				required:    p.required,
-				itemSchema:  itemSchema,
-			})
-		}
+		builder.outputParams = append(builder.outputParams, param.toParamDef())
 	}
 }
 
@@ -258,97 +213,57 @@ func Output(parameters ...Parameter) Parameter {
 
 // String creates a string parameter
 func String(name, description string, options ...Option) Parameter {
-	param := &stringParam{
+	return &stringParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,
-			required:    false,
+			required:    processOptions(options),
 		},
 	}
-
-	for _, opt := range options {
-		if _, ok := opt.(requiredOption); ok {
-			param.required = true
-		}
-	}
-
-	return param
 }
 
 // Number creates a number parameter
 func Number(name, description string, options ...Option) Parameter {
-	param := &numberParam{
+	return &numberParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,
-			required:    false,
+			required:    processOptions(options),
 		},
 	}
-
-	for _, opt := range options {
-		if _, ok := opt.(requiredOption); ok {
-			param.required = true
-		}
-	}
-
-	return param
 }
 
 // Boolean creates a boolean parameter
 func Boolean(name, description string, options ...Option) Parameter {
-	param := &booleanParam{
+	return &booleanParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,
-			required:    false,
+			required:    processOptions(options),
 		},
 	}
-
-	for _, opt := range options {
-		if _, ok := opt.(requiredOption); ok {
-			param.required = true
-		}
-	}
-
-	return param
 }
 
 // StringArray creates a string array parameter
 func StringArray(name, description string, options ...Option) Parameter {
-	param := &stringArrayParam{
+	return &stringArrayParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,
-			required:    false,
+			required:    processOptions(options),
 		},
 	}
-
-	for _, opt := range options {
-		if _, ok := opt.(requiredOption); ok {
-			param.required = true
-		}
-	}
-
-	return param
 }
 
 // NumberArray creates a number array parameter
 func NumberArray(name, description string, options ...Option) Parameter {
-	param := &numberArrayParam{
+	return &numberArrayParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,
-			required:    false,
+			required:    processOptions(options),
 		},
 	}
-
-	for _, opt := range options {
-		if _, ok := opt.(requiredOption); ok {
-			param.required = true
-		}
-	}
-
-	return param
 }
 
 // Object creates an object parameter with properties

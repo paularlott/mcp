@@ -40,12 +40,17 @@ func (t *ToolBuilder) Description() string {
 	return t.description
 }
 
-// BuildSchema is a public method for building the input schema
+// BuildSchema returns the JSON Schema for the tool's input parameters.
+// This is primarily used by the discovery package when registering tools
+// for search functionality, but can also be used for documentation or
+// schema validation purposes.
 func (t *ToolBuilder) BuildSchema() map[string]interface{} {
 	return t.buildSchema()
 }
 
-// BuildOutputSchema is a public method for building the output schema
+// BuildOutputSchema returns the JSON Schema for the tool's structured output.
+// Returns nil if no output schema was defined with Output().
+// This is used by the discovery package and for tools that return structured content.
 func (t *ToolBuilder) BuildOutputSchema() map[string]interface{} {
 	return t.buildOutputSchema()
 }

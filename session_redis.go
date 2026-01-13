@@ -1,10 +1,29 @@
 package mcp
 
-// RedisSessionManager provides distributed session storage using Redis
-// This is a REFERENCE IMPLEMENTATION showing how to implement SessionManager
-// for multi-instance deployments. Requires github.com/redis/go-redis/v9
+// RedisSessionManager provides distributed session storage using Redis.
 //
-// Example usage:
+// # Why This Is Commented Out
+//
+// This is a REFERENCE IMPLEMENTATION for SessionManager using Redis.
+// It is intentionally commented out to avoid adding Redis as a required dependency
+// for users who don't need it. Most deployments should use JWTSessionManager
+// which is stateless and requires no external dependencies.
+//
+// # When To Use Redis Sessions
+//
+// Use Redis sessions when you need:
+//   - Session revocation (logout, security incidents)
+//   - Session listing (admin dashboards)
+//   - Custom session metadata storage
+//   - Strict session lifecycle control
+//
+// # How To Use
+//
+// 1. Copy this implementation to your project
+// 2. Add the Redis dependency: go get github.com/redis/go-redis/v9
+// 3. Uncomment and adapt the code below
+//
+// Example:
 //
 //	import "github.com/redis/go-redis/v9"
 //
@@ -13,9 +32,6 @@ package mcp
 //	})
 //	sessionMgr := NewRedisSessionManager(rdb, 30*time.Minute)
 //	server.SetSessionManager(sessionMgr)
-//
-// Note: This file is commented out to avoid adding Redis as a dependency.
-// Uncomment and adapt for your needs if using Redis for session storage.
 
 /*
 import "github.com/redis/go-redis/v9"

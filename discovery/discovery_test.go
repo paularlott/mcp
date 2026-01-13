@@ -384,6 +384,43 @@ func (p *MockToolProvider) CallTool(ctx context.Context, name string, args map[s
 	return nil, ErrToolNotFound
 }
 
+func TestToolRegistry_AttachIdempotency(t *testing.T) {
+	registry := NewToolRegistry()
+	server := mcp.NewServer("test", "1.0")
+
+	// First attach should succeed
+	registry.Attach(server)
+
+	// Get tool count after first attach
+	toolsAfterFirst := len(server.ListTools())
+
+	// Second attach should be idempotent (not panic, not duplicate tools)
+	registry.Attach(server)
+
+	// Tool count should be the same
+	toolsAfterSecond := len(server.ListTools())
+	if toolsAfterFirst != toolsAfterSecond {
+		t.Fatalf("Expected %d tools after second attach, got %d", toolsAfterFirst, toolsAfterSecond)
+	}
+
+	// Third attach for good measure
+	registry.Attach(server)
+	toolsAfterThird := len(server.ListTools())
+	if toolsAfterFirst != toolsAfterThird {
+		t.Fatalf("Expected %d tools after third attach, got %d", toolsAfterFirst, toolsAfterThird)
+	}
+}
+
+func TestToolRegistry_Constants(t *testing.T) {
+	// Verify the constants are defined correctly
+	if ToolSearchName != "tool_search" {
+		t.Errorf("Expected ToolSearchName to be 'tool_search', got %q", ToolSearchName)
+	}
+	if ExecuteToolName != "execute_tool" {
+		t.Errorf("Expected ExecuteToolName to be 'execute_tool', got %q", ExecuteToolName)
+	}
+}
+
 func TestToolRegistry_WithProvider(t *testing.T) {
 	registry := NewToolRegistry()
 

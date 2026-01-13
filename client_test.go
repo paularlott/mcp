@@ -287,3 +287,28 @@ func TestClient_RefreshToolCache(t *testing.T) {
 		t.Fatalf("unexpected second tools: %+v", t2)
 	}
 }
+
+func TestClient_NamespaceNormalization(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		want      string
+	}{
+		{name: "empty", namespace: "", want: ""},
+		{name: "simple", namespace: "myns", want: "myns/"},
+		{name: "with-trailing-slash", namespace: "myns/", want: "myns/"},
+		{name: "whitespace-only", namespace: "   ", want: ""},
+		{name: "whitespace-padded", namespace: "  myns  ", want: "myns/"},
+		{name: "with-hyphen", namespace: "my-namespace", want: "my-namespace/"},
+		{name: "with-underscore", namespace: "my_namespace", want: "my_namespace/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := NewClient("http://example.com", nil, tt.namespace)
+			if c.Namespace() != tt.want {
+				t.Errorf("Namespace() = %q, want %q", c.Namespace(), tt.want)
+			}
+		})
+	}
+}
