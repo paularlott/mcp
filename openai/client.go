@@ -51,6 +51,8 @@ type Client struct {
 	localServer     MCPServer     // Local MCP server (no namespace)
 	remoteServers   []*mcp.Client // Remote MCP servers (each has their own namespace)
 	remoteServersMu sync.RWMutex
+	customTools     []Tool        // Custom tools (not executed by client)
+	customToolsMu   sync.RWMutex
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -120,6 +122,21 @@ func (c *Client) RemoveRemoteServer(namespace string) {
 			return
 		}
 	}
+}
+
+// SetCustomTools sets custom tools that will be sent to the AI but not executed by the client.
+// These tools are returned to the caller for manual execution.
+func (c *Client) SetCustomTools(tools []Tool) {
+	c.customToolsMu.Lock()
+	defer c.customToolsMu.Unlock()
+	c.customTools = tools
+}
+
+// GetCustomTools returns the custom tools.
+func (c *Client) GetCustomTools() []Tool {
+	c.customToolsMu.RLock()
+	defer c.customToolsMu.RUnlock()
+	return c.customTools
 }
 
 // GetLocalServer returns the local MCP server
@@ -199,6 +216,13 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		req.Tools = MCPToolsToOpenAI(tools)
 	}
 
+	// Add custom tools
+	c.customToolsMu.RLock()
+	if len(c.customTools) > 0 {
+		req.Tools = append(req.Tools, c.customTools...)
+	}
+	c.customToolsMu.RUnlock()
+
 	toolHandler := ToolHandlerFromContext(ctx)
 
 	// Multi-turn tool processing loop if any servers are available
@@ -214,7 +238,12 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		}
 
 		// If no servers, no tool calls, or no choices, we're done
-		if !hasServers || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
+		// Also return if we have custom tools (caller handles execution)
+		c.customToolsMu.RLock()
+		hasCustomTools := len(c.customTools) > 0
+		c.customToolsMu.RUnlock()
+		
+		if !hasServers || hasCustomTools || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
 			return response, nil
 		}
 
@@ -290,6 +319,14 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 			req.Tools = MCPToolsToOpenAI(tools)
 		}
 
+		// Add custom tools
+		c.customToolsMu.RLock()
+		if len(c.customTools) > 0 {
+			req.Tools = append(req.Tools, c.customTools...)
+		}
+		hasCustomTools := len(c.customTools) > 0
+		c.customToolsMu.RUnlock()
+
 		toolHandler := ToolHandlerFromContext(ctx)
 
 		// Multi-turn tool processing loop if any servers are available
@@ -305,7 +342,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 			}
 
 			// If no servers, no tool calls, or no choices, we're done
-			if !hasServers || finalResponse == nil || len(finalResponse.Choices) == 0 || len(finalResponse.Choices[0].Message.ToolCalls) == 0 {
+			// Also return if we have custom tools (caller handles execution)
+			if !hasServers || hasCustomTools || finalResponse == nil || len(finalResponse.Choices) == 0 || len(finalResponse.Choices[0].Message.ToolCalls) == 0 {
 				return
 			}
 
