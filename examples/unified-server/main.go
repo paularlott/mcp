@@ -26,7 +26,8 @@ func main() {
 
 	// Register remote servers
 	bearerAuth := mcp.NewBearerTokenAuth("ai-tools-token")
-	server.RegisterRemoteServer("http://127.0.0.1:8000/mcp", "ai", bearerAuth)
+	client := mcp.NewClient("http://127.0.0.1:8000/mcp", bearerAuth, "ai")
+	server.RegisterRemoteServer(client)
 
 	// List all tools (local and remote)
 	allTools := server.ListTools()

@@ -31,6 +31,12 @@ const (
 	ToolVisibilityOnDemand
 )
 
+// supportedProtocolVersions lists all MCP protocol versions this server accepts.
+// Versions are in ISO date format (YYYY-MM-DD) representing when the protocol
+// version was standardized. During initialize, the client may request a specific
+// version and the server will use it if supported, otherwise returns an error.
+// For non-initialize requests, the MCP-Protocol-Version header is validated
+// against this list.
 var supportedProtocolVersions = []string{
 	"2024-11-05",
 	"2025-03-26",
@@ -62,7 +68,33 @@ type ToolRegistry interface {
 	RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords ...string)
 }
 
-// Server represents an MCP server instance
+// Server represents an MCP server instance.
+//
+// # Design Philosophy
+//
+// The Server struct is the central hub for MCP protocol handling. It intentionally
+// combines several related concerns to provide a cohesive API:
+//
+//   - Core Identity: name, version, and instructions for protocol negotiation
+//   - Tool Management: local tools with thread-safe registration and caching
+//   - Federation: remote MCP server integration with namespacing
+//   - Sessions: pluggable session management for stateful deployments
+//   - Discovery: optional tool registry for large tool sets
+//
+// This design prioritizes ease of use over strict separation of concerns. A typical
+// server setup requires only a few lines:
+//
+//	server := mcp.NewServer("myapp", "1.0.0")
+//	server.RegisterTool(myTool, myHandler)
+//	http.HandleFunc("/mcp", server.HandleRequest)
+//
+// For advanced use cases, the server delegates to specialized components:
+//   - SessionManager interface for custom session storage
+//   - ToolRegistry interface for on-demand tool discovery
+//   - Client for remote server federation
+//
+// Thread Safety: All methods are safe for concurrent use. The server uses RWMutex
+// for read-heavy operations (ListTools, CallTool) with minimal lock contention.
 type Server struct {
 	name           string
 	version        string
@@ -96,9 +128,15 @@ func NewServer(name, version string) *Server {
 	}
 }
 
-// SetSessionManager sets a custom session manager for the server
-// For most deployments, use the default EnableSessionManagement() (JWT-based)
-// Only use this if you need custom session storage (e.g., Redis for revocation)
+// SetSessionManager sets a custom session manager for the server.
+// For most deployments, use EnableSessionManagement() for stateless JWT sessions.
+//
+// Use this only when you need custom session behavior such as:
+//   - Session revocation (logout functionality, security incidents)
+//   - Session listing (admin dashboards, audit trails)
+//   - Custom session metadata
+//
+// See session_redis.go for a reference implementation using Redis.
 func (s *Server) SetSessionManager(manager SessionManager) {
 	s.sessionManager = manager
 }
@@ -147,11 +185,18 @@ func (s *Server) SetInstructions(instructions string) {
 	s.instructions = instructions
 }
 
-// RegisterTool registers a new tool with the server
+// RegisterTool registers a new tool with the server.
+// For registering multiple tools at once, consider using RegisterTools for better performance.
 func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.registerToolLocked(tool, handler)
+}
+
+// registerToolLocked registers a tool while the lock is already held.
+// This is an internal method used by RegisterTool and RegisterTools.
+func (s *Server) registerToolLocked(tool *ToolBuilder, handler ToolHandler) {
 	regTool := &registeredTool{
 		Name:         tool.name,
 		Description:  tool.description,
@@ -170,20 +215,74 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 		newTool.OutputSchema = regTool.OutputSchema
 	}
 
-	// Replace any existing cache entries with the same name to avoid duplicates
-	filtered := make([]MCPTool, 0, len(s.toolCache))
-	for _, t := range s.toolCache {
-		if t.Name != tool.name {
-			filtered = append(filtered, t)
-		}
-	}
-	filtered = append(filtered, newTool)
-	s.toolCache = filtered
+	// Use binary search to find insertion point for sorted order
+	idx := sort.Search(len(s.toolCache), func(i int) bool {
+		return s.toolCache[i].Name >= tool.name
+	})
 
-	// Sort to maintain consistent ordering
+	// Check if we're replacing an existing tool
+	if idx < len(s.toolCache) && s.toolCache[idx].Name == tool.name {
+		// Replace in place
+		s.toolCache[idx] = newTool
+	} else {
+		// Insert at sorted position
+		s.toolCache = append(s.toolCache, MCPTool{})
+		copy(s.toolCache[idx+1:], s.toolCache[idx:])
+		s.toolCache[idx] = newTool
+	}
+}
+
+// RegisterTools registers multiple tools with the server in a single batch.
+// This is more efficient than calling RegisterTool multiple times as it only
+// sorts the cache once at the end.
+func (s *Server) RegisterTools(tools ...*ToolRegistration) {
+	if len(tools) == 0 {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, tr := range tools {
+		regTool := &registeredTool{
+			Name:         tr.Tool.name,
+			Description:  tr.Tool.description,
+			Schema:       tr.Tool.buildSchema(),
+			OutputSchema: tr.Tool.buildOutputSchema(),
+			Handler:      tr.Handler,
+		}
+		s.tools[tr.Tool.name] = regTool
+	}
+
+	// Rebuild cache from tools map (handles duplicates automatically)
+	s.toolCache = make([]MCPTool, 0, len(s.tools))
+	for _, tool := range s.tools {
+		toolItem := MCPTool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: tool.Schema,
+		}
+		if tool.OutputSchema != nil {
+			toolItem.OutputSchema = tool.OutputSchema
+		}
+		s.toolCache = append(s.toolCache, toolItem)
+	}
+
+	// Single sort at the end
 	sort.Slice(s.toolCache, func(i, j int) bool {
 		return s.toolCache[i].Name < s.toolCache[j].Name
 	})
+}
+
+// ToolRegistration pairs a tool builder with its handler for batch registration.
+type ToolRegistration struct {
+	Tool    *ToolBuilder
+	Handler ToolHandler
+}
+
+// NewToolRegistration creates a tool registration for use with RegisterTools.
+func NewToolRegistration(tool *ToolBuilder, handler ToolHandler) *ToolRegistration {
+	return &ToolRegistration{Tool: tool, Handler: handler}
 }
 
 // RegisterToolWithDiscovery registers a tool with either the server (native) or a discovery registry.
@@ -199,13 +298,13 @@ func (s *Server) RegisterToolWithDiscovery(tool *ToolBuilder, handler ToolHandle
 }
 
 // RegisterRemoteServer registers a remote MCP server
-func (s *Server) RegisterRemoteServer(url, namespace string, auth AuthProvider) error {
-	return s.RegisterRemoteServerWithVisibility(url, namespace, auth, ToolVisibilityVisible)
+func (s *Server) RegisterRemoteServer(client *Client) error {
+	return s.RegisterRemoteServerWithVisibility(client, ToolVisibilityVisible)
 }
 
 // RegisterRemoteServerHidden registers a remote MCP server with hidden tools
-func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProvider) error {
-	return s.RegisterRemoteServerWithVisibility(url, namespace, auth, ToolVisibilityHidden)
+func (s *Server) RegisterRemoteServerHidden(client *Client) error {
+	return s.RegisterRemoteServerWithVisibility(client, ToolVisibilityHidden)
 }
 
 // RegisterRemoteServerWithVisibility registers a remote MCP server with the specified visibility.
@@ -214,18 +313,19 @@ func (s *Server) RegisterRemoteServerHidden(url, namespace string, auth AuthProv
 // - ToolVisibilityOnDemand: Tools don't appear in ListTools() but are in tool_search
 //
 // For OnDemand tools, a registry must be set via SetToolRegistry().
-func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth AuthProvider, visibility ToolVisibility) error {
-	client := NewClient(url, auth)
-
+func (s *Server) RegisterRemoteServerWithVisibility(client *Client, visibility ToolVisibility) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Extract namespace from client namespace (remove trailing separator)
+	namespace := strings.TrimSuffix(client.Namespace(), client.separator)
 
 	regClient := &registeredClient{
 		client:     client,
 		namespace:  namespace,
 		visibility: visibility,
 	}
-	s.remoteClients[url] = regClient
+	s.remoteClients[client.baseURL] = regClient
 
 	// Fetch tools from the new server and add to cache/lookup
 	ctx := context.Background()
@@ -238,10 +338,8 @@ func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth 
 
 	// Add tools to cache, lookup, or registry based on visibility
 	for _, tool := range tools {
+		// Tools from client.ListTools() already have the prefix applied
 		toolName := tool.Name
-		if namespace != "" {
-			toolName = namespace + "/" + tool.Name
-		}
 
 		// Add to lookup for execution
 		s.toolToServer[toolName] = regClient
@@ -287,18 +385,28 @@ func (s *Server) RegisterRemoteServerWithVisibility(url, namespace string, auth 
 	return nil
 }
 
-// RefreshTools manually refreshes the tool cache and lookup from all remote servers
+// RefreshTools manually refreshes the tool cache and lookup from all remote servers.
+// This method is safe for concurrent use - it releases the lock during network calls
+// to avoid blocking other operations, then atomically swaps in the new data.
 func (s *Server) RefreshTools() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// Phase 1: Copy data needed for network calls under read lock
+	s.mu.RLock()
+	localTools := make(map[string]*registeredTool, len(s.tools))
+	for k, v := range s.tools {
+		localTools[k] = v
+	}
+	remoteClients := make([]*registeredClient, 0, len(s.remoteClients))
+	for _, rc := range s.remoteClients {
+		remoteClients = append(remoteClients, rc)
+	}
+	s.mu.RUnlock()
 
-	// Build new maps
-	newToolCache := []MCPTool{}
+	// Phase 2: Build new maps without holding lock (network calls happen here)
 	newToolIndex := make(map[string]MCPTool)
 	newToolToServer := make(map[string]*registeredClient)
 
 	// Add local tools to new cache
-	for _, tool := range s.tools {
+	for _, tool := range localTools {
 		toolItem := MCPTool{
 			Name:        tool.Name,
 			Description: tool.Description,
@@ -310,8 +418,8 @@ func (s *Server) RefreshTools() error {
 		newToolIndex[toolItem.Name] = toolItem
 	}
 
-	// Add remote tools to new cache and lookup
-	for _, regClient := range s.remoteClients {
+	// Add remote tools to new cache and lookup (network calls here)
+	for _, regClient := range remoteClients {
 		ctx := context.Background()
 		tools, err := regClient.client.ListTools(ctx)
 		if err != nil {
@@ -319,10 +427,8 @@ func (s *Server) RefreshTools() error {
 		}
 
 		for _, tool := range tools {
+			// Tools from client.ListTools() already have the prefix applied
 			toolName := tool.Name
-			if regClient.namespace != "" {
-				toolName = regClient.namespace + "/" + tool.Name
-			}
 
 			// Add to new lookup
 			newToolToServer[toolName] = regClient
@@ -336,15 +442,17 @@ func (s *Server) RefreshTools() error {
 	}
 
 	// Move from map to slice and sort for consistent ordering
-	newToolCache = newToolCache[:0]
+	newToolCache := make([]MCPTool, 0, len(newToolIndex))
 	for _, v := range newToolIndex {
 		newToolCache = append(newToolCache, v)
 	}
 	sort.Slice(newToolCache, func(i, j int) bool { return newToolCache[i].Name < newToolCache[j].Name })
 
-	// Swap in new maps
+	// Phase 3: Atomically swap in new maps under write lock
+	s.mu.Lock()
 	s.toolCache = newToolCache
 	s.toolToServer = newToolToServer
+	s.mu.Unlock()
 
 	return nil
 }
@@ -479,7 +587,11 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// isSupportedProtocolVersion checks if the given version string matches one of the
+// supported MCP protocol versions. Protocol versions follow ISO date format (YYYY-MM-DD).
+// Leading/trailing whitespace is trimmed before comparison.
 func isSupportedProtocolVersion(version string) bool {
+	version = strings.TrimSpace(version)
 	for _, supported := range supportedProtocolVersions {
 		if supported == version {
 			return true
@@ -562,7 +674,10 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	return caps
 }
 
-// ListTools returns all registered tools including remote ones (direct API)
+// ListTools returns all registered tools including remote ones (direct API).
+// The returned slice is a copy, safe for concurrent use and modification.
+// For high-frequency access where copying is a concern, consider caching
+// the result on the caller side.
 func (s *Server) ListTools() []MCPTool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -601,7 +716,7 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 		// Extract original tool name (remove namespace if present)
 		toolName := name
 		if namespace != "" {
-			toolName = strings.TrimPrefix(name, namespace+"/")
+			toolName = strings.TrimPrefix(name, namespace+regClient.client.separator)
 		}
 		return client.CallTool(ctx, toolName, args)
 	}

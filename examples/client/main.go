@@ -11,7 +11,7 @@ import (
 func main() {
 	// Example 1: Using a client with bearer token auth
 	auth := mcp.NewBearerTokenAuth("your-token-here")
-	client := mcp.NewClient("http://127.0.0.1:8000/mcp", auth)
+	client := mcp.NewClient("http://127.0.0.1:8000/mcp", auth, "")
 
 	ctx := context.Background()
 

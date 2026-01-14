@@ -132,3 +132,20 @@ func TestHandleRequest_BadInputs(t *testing.T) {
 		t.Fatalf("expected 200 (json-rpc envelope), got %d", rr.Code)
 	}
 }
+
+func TestProtocolVersionHeader_WhitespaceTrimming(t *testing.T) {
+	s := NewServer("test", "0.1.0")
+	handler := http.HandlerFunc(s.HandleRequest)
+
+	// Protocol version with leading/trailing whitespace should be accepted
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("MCP-Protocol-Version", "  2024-11-05  ") // whitespace padded
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for whitespace-padded version, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
