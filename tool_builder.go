@@ -35,9 +35,16 @@ func (t *ToolBuilder) Name() string {
 	return t.name
 }
 
-// Description returns the tool's description
+// Description returns the tool's description with newlines normalized to spaces
+// and multiple whitespace collapsed to single spaces
 func (t *ToolBuilder) Description() string {
-	return t.description
+	// Replace newlines with spaces
+	desc := strings.ReplaceAll(t.description, "\n", " ")
+	// Replace tabs with spaces
+	desc = strings.ReplaceAll(desc, "\t", " ")
+	// Collapse multiple spaces into single space
+	words := strings.Fields(desc)
+	return strings.Join(words, " ")
 }
 
 // BuildSchema returns the JSON Schema for the tool's input parameters.

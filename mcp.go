@@ -199,7 +199,7 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
 func (s *Server) registerToolLocked(tool *ToolBuilder, handler ToolHandler) {
 	regTool := &registeredTool{
 		Name:         tool.name,
-		Description:  tool.description,
+		Description:  tool.Description(),
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
 		Handler:      handler,
@@ -208,7 +208,7 @@ func (s *Server) registerToolLocked(tool *ToolBuilder, handler ToolHandler) {
 
 	newTool := MCPTool{
 		Name:        tool.name,
-		Description: tool.description,
+		Description: tool.Description(),
 		InputSchema: regTool.Schema,
 	}
 	if regTool.OutputSchema != nil {
@@ -246,7 +246,7 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 	for _, tr := range tools {
 		regTool := &registeredTool{
 			Name:         tr.Tool.name,
-			Description:  tr.Tool.description,
+			Description:  tr.Tool.Description(),
 			Schema:       tr.Tool.buildSchema(),
 			OutputSchema: tr.Tool.buildOutputSchema(),
 			Handler:      tr.Handler,
