@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// SearchResult represents a matched tool from a search (copied from discovery package)
+// SearchResult represents a matched tool from a search (matches main package SearchResult)
 type SearchResult struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
@@ -13,7 +13,7 @@ type SearchResult struct {
 }
 
 func TestSearchResultEncoding(t *testing.T) {
-	// Test data similar to what discovery package produces
+	// Test data similar to what tool_search produces
 	results := []SearchResult{
 		{
 			Name:        "calculator",

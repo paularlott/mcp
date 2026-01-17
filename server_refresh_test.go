@@ -53,7 +53,7 @@ func TestRefreshTools_SkipsFailingRemote(t *testing.T) {
 	}
 
 	// Force refresh; bad server should be skipped silently
-	if err := host.RefreshTools(); err != nil {
+	if err := host.RefreshTools(context.Background()); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 	tools := host.ListTools()

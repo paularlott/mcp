@@ -7,11 +7,10 @@ import (
 	"net/http"
 
 	"github.com/paularlott/mcp"
-	"github.com/paularlott/mcp/discovery"
 )
 
 func main() {
-	server := mcp.NewServer("deferred-tools-example", "1.0.0")
+	server := mcp.NewServer("tool-discovery-example", "1.0.0")
 
 	// Set helpful instructions for the LLM
 	server.SetInstructions(`This server has many specialized tools available.
@@ -19,7 +18,7 @@ Use tool_search to discover tools for specific tasks.
 The search results include full schemas, then use execute_tool to call the tool.`)
 
 	// =========================================================================
-	// 1. Register regular tools (always visible in ListTools)
+	// 1. Register a native tool (visible in tools/list, not searchable)
 	// =========================================================================
 
 	server.RegisterTool(
@@ -39,13 +38,11 @@ Example workflow:
 	)
 
 	// =========================================================================
-	// 2. Create a ToolRegistry and register searchable tools
+	// 2. Register ondemand tools (searchable via tool_search, not in tools/list)
 	// =========================================================================
 
-	registry := discovery.NewToolRegistry()
-
 	// Database tools
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("sql_query", "Execute SQL queries against the database",
 			mcp.String("query", "SQL query to execute", mcp.Required()),
 			mcp.String("database", "Database name (default: main)"),
@@ -58,7 +55,7 @@ Example workflow:
 		"database", "sql", "query", "select", "insert", "update", "delete",
 	)
 
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("database_backup", "Create a backup of the database",
 			mcp.String("database", "Database to backup", mcp.Required()),
 			mcp.String("destination", "Backup destination path"),
@@ -72,7 +69,7 @@ Example workflow:
 	)
 
 	// Email tools
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("send_email", "Send an email message",
 			mcp.String("to", "Recipient email address", mcp.Required()),
 			mcp.String("subject", "Email subject", mcp.Required()),
@@ -88,7 +85,7 @@ Example workflow:
 		"email", "mail", "send", "notification", "smtp", "message",
 	)
 
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("list_emails", "List emails from inbox",
 			mcp.Number("limit", "Maximum number of emails to return"),
 			mcp.String("folder", "Folder to list (inbox, sent, drafts)"),
@@ -103,7 +100,7 @@ Example workflow:
 	)
 
 	// Document tools
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("create_pdf", "Generate a PDF document",
 			mcp.String("title", "Document title", mcp.Required()),
 			mcp.String("content", "Document content (markdown supported)", mcp.Required()),
@@ -117,7 +114,7 @@ Example workflow:
 		"pdf", "document", "export", "generate", "report",
 	)
 
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("convert_document", "Convert documents between formats",
 			mcp.String("input", "Input file path", mcp.Required()),
 			mcp.String("output_format", "Output format (pdf, docx, html, md)", mcp.Required()),
@@ -131,7 +128,7 @@ Example workflow:
 	)
 
 	// DevOps tools
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("kubernetes_deploy", "Deploy application to Kubernetes",
 			mcp.String("manifest", "Kubernetes manifest YAML", mcp.Required()),
 			mcp.String("namespace", "Target namespace"),
@@ -149,7 +146,7 @@ Example workflow:
 		"kubernetes", "k8s", "deploy", "container", "orchestration", "devops",
 	)
 
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("docker_build", "Build a Docker image",
 			mcp.String("dockerfile", "Path to Dockerfile", mcp.Required()),
 			mcp.String("tag", "Image tag", mcp.Required()),
@@ -168,7 +165,7 @@ Example workflow:
 	)
 
 	// Analytics tools
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("analyze_data", "Perform statistical analysis on data",
 			mcp.String("dataset", "Dataset name or path", mcp.Required()),
 			mcp.StringArray("columns", "Columns to analyze"),
@@ -182,7 +179,7 @@ Example workflow:
 		"analytics", "statistics", "data", "analysis", "pandas", "numpy",
 	)
 
-	registry.RegisterTool(
+	server.RegisterOnDemandTool(
 		mcp.NewTool("create_chart", "Generate charts and visualizations",
 			mcp.String("type", "Chart type (bar, line, pie, scatter)", mcp.Required()),
 			mcp.String("data", "Data in JSON format", mcp.Required()),
@@ -196,32 +193,29 @@ Example workflow:
 		"chart", "graph", "visualization", "plot", "matplotlib",
 	)
 
-	// =========================================================================
-	// 3. Register script-based tools (also deferred)
-	// =========================================================================
-
-	registry.RegisterTool(
-		mcp.NewTool("run_backup_script", "Run the nightly backup script to create database and file backups",
-			mcp.String("target", "What to backup: database, files, or all (default: all)"),
-			mcp.Boolean("compress", "Compress the backup (default: true)"),
+	// Script-based tools
+	server.RegisterOnDemandTool(
+		mcp.NewTool("run_backup_script", "Run the automated backup script",
+			mcp.String("target", "Backup target (database, files, all)"),
+			mcp.Boolean("compress", "Compress backup files"),
 		),
 		handleRunBackupScript,
-		"backup", "script", "automation", "database", "files", "archive", "save", "export", "snapshot",
+		"backup", "script", "database", "files", "automation",
 	)
 
-	registry.RegisterTool(
-		mcp.NewTool("cleanup_logs", "Delete old log files to free disk space",
+	server.RegisterOnDemandTool(
+		mcp.NewTool("cleanup_logs", "Clean up old log files to free disk space",
 			mcp.Number("days", "Delete logs older than this many days (default: 30)"),
-			mcp.String("log_type", "Type of logs: application, access, error, or all (default: all)"),
-			mcp.Boolean("dry_run", "Preview what would be deleted without actually deleting"),
+			mcp.String("log_type", "Type of logs to clean (application, access, error, all)"),
+			mcp.Boolean("dry_run", "Show what would be deleted without actually deleting"),
 		),
 		handleCleanupLogs,
-		"logs", "cleanup", "maintenance", "delete", "remove", "old", "older", "clean", "free", "disk", "space",
+		"cleanup", "logs", "disk", "space", "maintenance", "script",
 	)
 
-	registry.RegisterTool(
-		mcp.NewTool("health_check", "Run system health checks and return status report",
-			mcp.StringArray("checks", "Specific checks to run (disk, memory, cpu, network). Omit for all."),
+	server.RegisterOnDemandTool(
+		mcp.NewTool("system_health_check", "Run comprehensive system health checks",
+			mcp.StringArray("checks", "Specific checks to run (disk, memory, cpu, network)"),
 			mcp.Boolean("verbose", "Include detailed metrics in the output"),
 		),
 		handleHealthCheck,
@@ -229,75 +223,10 @@ Example workflow:
 	)
 
 	// =========================================================================
-	// 4. Attach registry to server (registers tool_search, execute_tool)
+	// 3. Set up HTTP handler
 	// =========================================================================
 
-	registry.Attach(server)
-
-	// =========================================================================
-	// 5. Set up HTTP handler with middleware for request-scoped providers
-	// =========================================================================
-
-	// Middleware that adds user-specific tools based on X-User-ID header
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check for user authentication
-		userID := r.Header.Get("X-User-ID")
-		if userID != "" {
-			// Create a user-specific registry for this request
-			// ToolRegistry implements ToolProvider, so it can be used directly
-			userRegistry := discovery.NewToolRegistry()
-
-			// Register user-specific tools
-			userRegistry.RegisterTool(
-				mcp.NewTool("my_saved_queries", fmt.Sprintf("Access saved queries for user %s", userID),
-					mcp.String("action", "Action: list, get, or run", mcp.Required()),
-					mcp.String("query_name", "Name of the saved query (for get/run)"),
-				),
-				func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
-					action, _ := req.String("action")
-					switch action {
-					case "list":
-						return mcp.NewToolResponseText(fmt.Sprintf("Saved queries for %s:\n- monthly_report\n- daily_summary\n- error_analysis", userID)), nil
-					case "get", "run":
-						queryName := req.StringOr("query_name", "unknown")
-						return mcp.NewToolResponseText(fmt.Sprintf("Query '%s' for %s: SELECT * FROM ...", queryName, userID)), nil
-					}
-					return mcp.NewToolResponseText("Unknown action"), nil
-				},
-				"saved", "queries", "user", "personal",
-			)
-
-			userRegistry.RegisterTool(
-				mcp.NewTool("my_preferences", fmt.Sprintf("Get/set preferences for user %s", userID),
-					mcp.String("action", "Action: get or set", mcp.Required()),
-					mcp.String("key", "Preference key"),
-					mcp.String("value", "Value to set (for set action)"),
-				),
-				func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
-					action, _ := req.String("action")
-					key := req.StringOr("key", "")
-					switch action {
-					case "get":
-						return mcp.NewToolResponseText(fmt.Sprintf("Preference '%s' for %s: default_value", key, userID)), nil
-					case "set":
-						value := req.StringOr("value", "")
-						return mcp.NewToolResponseText(fmt.Sprintf("Set preference '%s' = '%s' for %s", key, value, userID)), nil
-					}
-					return mcp.NewToolResponseText("Unknown action"), nil
-				},
-				"preferences", "settings", "user", "config",
-			)
-
-			// Add the user registry as a request-scoped provider
-			ctx := discovery.WithRequestProviders(r.Context(), userRegistry)
-			r = r.WithContext(ctx)
-		}
-
-		// Handle the request
-		server.HandleRequest(w, r)
-	})
-
-	http.Handle("/mcp", handler)
+	http.HandleFunc("/mcp", server.HandleRequest)
 
 	// Print info about registered tools
 	tools := server.ListTools()

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,7 @@ func TestUnknownTool_HTTPEnvelope(t *testing.T) {
 
 func TestUnknownTool_DirectAPI(t *testing.T) {
 	s := NewServer("s", "1")
-	if _, err := s.CallTool(nil, "nope", nil); err == nil || err != ErrUnknownTool {
+	if _, err := s.CallTool(context.TODO(), "nope", nil); err == nil || err != ErrUnknownTool {
 		t.Fatalf("expected ErrUnknownTool, got %v", err)
 	}
 }

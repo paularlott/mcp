@@ -15,20 +15,12 @@ import (
 const (
 	MCPProtocolVersionLatest = "2025-11-25"
 	MCPProtocolVersionMin    = "2024-11-05"
-)
 
-// ToolVisibility defines how tools are exposed to clients
-type ToolVisibility int
+	// DefaultSessionTTL is the default session lifetime for JWT session management
+	DefaultSessionTTL = 30 * time.Minute
 
-const (
-	// ToolVisibilityVisible - Tools appear in ListTools() and are searchable via tool_search
-	ToolVisibilityVisible ToolVisibility = iota
-
-	// ToolVisibilityHidden - Tools don't appear in ListTools() and are NOT searchable
-	ToolVisibilityHidden
-
-	// ToolVisibilityOnDemand - Tools don't appear in ListTools() but ARE searchable via tool_search
-	ToolVisibilityOnDemand
+	// DefaultOAuthRefreshTimeout is the default timeout for OAuth token refresh operations
+	DefaultOAuthRefreshTimeout = 30 * time.Second
 )
 
 // supportedProtocolVersions lists all MCP protocol versions this server accepts.
@@ -56,16 +48,7 @@ type registeredTool struct {
 	Schema       map[string]interface{}
 	OutputSchema map[string]interface{}
 	Handler      ToolHandler
-}
-
-// ToolRegistry is an interface for registering tools that are discoverable but not in ListTools.
-// This avoids circular imports with the discovery package.
-type ToolRegistry interface {
-	// RegisterMCPTool registers a tool for discovery/search
-	RegisterMCPTool(tool *MCPTool, handler ToolHandler, keywords ...string)
-
-	// RegisterTool registers a tool builder for discovery/search
-	RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords ...string)
+	Visibility   ToolVisibility
 }
 
 // Server represents an MCP server instance.
@@ -90,22 +73,22 @@ type ToolRegistry interface {
 //
 // For advanced use cases, the server delegates to specialized components:
 //   - SessionManager interface for custom session storage
-//   - ToolRegistry interface for on-demand tool discovery
 //   - Client for remote server federation
 //
 // Thread Safety: All methods are safe for concurrent use. The server uses RWMutex
 // for read-heavy operations (ListTools, CallTool) with minimal lock contention.
 type Server struct {
-	name           string
-	version        string
-	instructions   string
-	tools          map[string]*registeredTool
-	remoteClients  map[string]*registeredClient
-	toolToServer   map[string]*registeredClient
-	toolCache      []MCPTool
-	mu             sync.RWMutex
-	sessionManager SessionManager // Pluggable session management
-	registry       ToolRegistry   // Optional: for OnDemand tools
+	name             string
+	version          string
+	instructions     string
+	tools            map[string]*registeredTool   // All registered tools (native + ondemand)
+	remoteClients    map[string]*registeredClient // Remote MCP servers
+	toolToServer     map[string]*registeredClient // Tool name -> remote client mapping
+	nativeToolCache  []MCPTool                    // Native tools (visible in tools/list)
+	mu               sync.RWMutex
+	sessionManager   SessionManager    // Pluggable session management
+	internalRegistry *internalRegistry // Registry for ondemand tools (searchable)
+	hasOnDemandTools bool              // Track if any statically-registered ondemand tools exist
 }
 
 // registeredClient holds a remote client with its configuration
@@ -118,13 +101,14 @@ type registeredClient struct {
 // NewServer creates a new MCP server instance
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:          name,
-		version:       version,
-		instructions:  "",
-		tools:         make(map[string]*registeredTool),
-		remoteClients: make(map[string]*registeredClient),
-		toolToServer:  make(map[string]*registeredClient),
-		toolCache:     make([]MCPTool, 0),
+		name:             name,
+		version:          version,
+		instructions:     "",
+		tools:            make(map[string]*registeredTool),
+		remoteClients:    make(map[string]*registeredClient),
+		toolToServer:     make(map[string]*registeredClient),
+		nativeToolCache:  make([]MCPTool, 0),
+		internalRegistry: newInternalRegistry(),
 	}
 }
 
@@ -138,15 +122,108 @@ func NewServer(name, version string) *Server {
 //
 // See session_redis.go for a reference implementation using Redis.
 func (s *Server) SetSessionManager(manager SessionManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sessionManager = manager
 }
 
-// SetToolRegistry sets the tool registry for OnDemand tools.
-// Tools with OnDemand visibility will be registered here for discovery via tool_search.
-func (s *Server) SetToolRegistry(registry ToolRegistry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.registry = registry
+// getDiscoveryTools returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
+// These are generated dynamically, not stored in nativeToolCache.
+func (s *Server) getDiscoveryTools() []MCPTool {
+	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores. Use this to find tools that aren't visible in tools/list. After finding a tool: if it was not in tools/list, use execute_tool to call it; if it was in tools/list, you can call it directly. Omit query to list all available tools.",
+		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
+		Number("max_results", "Maximum number of results to return (default: 5)"),
+	)
+
+	executeTool := NewTool(ExecuteToolName, "Execute a tool by name with the given arguments. This is the ONLY way to call tools discovered via tool_search. Discovered tools cannot be called directly - you must use this execute_tool function.",
+		String("name", "The exact name of the tool to execute (must be a tool found via tool_search)", Required()),
+		Object("arguments", "The arguments to pass to the tool (matching the schema from tool_search results)"),
+	)
+
+	return []MCPTool{
+		{
+			Name:        ToolSearchName,
+			Description: toolSearch.Description(),
+			InputSchema: toolSearch.BuildSchema(),
+		},
+		{
+			Name:        ExecuteToolName,
+			Description: executeTool.Description(),
+			InputSchema: executeTool.BuildSchema(),
+		},
+	}
+}
+
+// handleToolSearch handles the tool_search meta-tool execution
+func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+	query := req.StringOr("query", "")
+	maxResults := req.IntOr("max_results", 5)
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+	if maxResults > 100 {
+		maxResults = 100
+	}
+
+	// In force ondemand mode, search both ondemand and native tools
+	if GetToolListMode(ctx) == ToolListModeForceOnDemand {
+		// Get native tools to include in search (from providers too)
+		s.mu.RLock()
+		nativeTools := make([]MCPTool, 0, len(s.nativeToolCache))
+		for _, tool := range s.nativeToolCache {
+			// Skip meta-tools
+			if tool.Name != ToolSearchName && tool.Name != ExecuteToolName {
+				nativeTools = append(nativeTools, tool)
+			}
+		}
+		s.mu.RUnlock()
+
+		// Also add tools from native providers
+		for _, provider := range GetToolProviders(ctx) {
+			tools, err := provider.GetTools(ctx)
+			if err != nil {
+				continue
+			}
+			nativeTools = append(nativeTools, tools...)
+		}
+
+		// Search with native tools included
+		results := s.internalRegistry.SearchWithAdditionalTools(ctx, query, maxResults, nativeTools)
+		if len(results) == 0 {
+			return NewToolResponseText("No tools found. Try different keywords or a broader search term."), nil
+		}
+		return NewToolResponseJSON(results), nil
+	}
+
+	// Normal mode: only search ondemand tools (from registry and ondemand providers)
+	results := s.internalRegistry.Search(ctx, query, maxResults)
+	if len(results) == 0 {
+		return NewToolResponseText("No tools found. Try different keywords or a broader search term."), nil
+	}
+	return NewToolResponseJSON(results), nil
+}
+
+// handleExecuteTool handles the execute_tool meta-tool execution
+func (s *Server) handleExecuteTool(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+	name, err := req.String("name")
+	if err != nil || name == "" {
+		return NewToolResponseText("Tool name is required"), nil
+	}
+
+	args, _ := req.Object("arguments")
+	if args == nil {
+		args = make(map[string]interface{})
+	}
+
+	// Use server's CallTool which handles local, remote, and provider tools
+	response, err := s.CallTool(ctx, name, args)
+	if err == ErrUnknownTool {
+		return NewToolResponseText("Tool not found: " + name + ". Use tool_search to discover available tools."), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // EnableSessionManagement enables JWT-based session management (stateless, production-ready)
@@ -162,47 +239,67 @@ func (s *Server) EnableSessionManagement() error {
 	if err != nil {
 		return fmt.Errorf("failed to generate signing key: %w", err)
 	}
-	s.sessionManager = NewJWTSessionManager(signingKey, 30*time.Minute)
+	s.mu.Lock()
+	s.sessionManager = NewJWTSessionManager(signingKey, DefaultSessionTTL)
+	s.mu.Unlock()
 	return nil
 }
 
 // EnableSessionManagementWithKey enables JWT session management with a specific signing key
 // Use this to maintain sessions across server restarts (persist the key securely)
 func (s *Server) EnableSessionManagementWithKey(signingKey []byte, ttl time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sessionManager = NewJWTSessionManager(signingKey, ttl)
+}
+
+// getSessionManager returns the session manager under read lock
+func (s *Server) getSessionManager() SessionManager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sessionManager
 }
 
 // CleanupExpiredSessions removes sessions that haven't been used in the specified duration
 // Only works if a session manager is configured
 func (s *Server) CleanupExpiredSessions(maxIdleTime time.Duration) error {
-	if s.sessionManager == nil {
+	sm := s.getSessionManager()
+	if sm == nil {
 		return nil
 	}
-	return s.sessionManager.CleanupExpiredSessions(context.Background(), maxIdleTime)
+	return sm.CleanupExpiredSessions(context.Background(), maxIdleTime)
 }
 
+// SetInstructions sets the server instructions that are returned during protocol initialization.
+// Instructions provide guidance to the LLM about how to use the server's capabilities.
 func (s *Server) SetInstructions(instructions string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.instructions = instructions
 }
 
-// RegisterTool registers a new tool with the server.
-// For registering multiple tools at once, consider using RegisterTools for better performance.
-func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler) {
+// RegisterTool registers a native tool that appears in tools/list and is directly callable.
+// This is the standard MCP behavior. Native tools are NOT searchable via tool_search in normal mode.
+// Optional keywords are stored and used only in force ondemand mode, where native tools become searchable.
+func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.registerToolLocked(tool, handler)
+	s.registerNativeToolLocked(tool, handler, keywords...)
 }
 
-// registerToolLocked registers a tool while the lock is already held.
-// This is an internal method used by RegisterTool and RegisterTools.
-func (s *Server) registerToolLocked(tool *ToolBuilder, handler ToolHandler) {
+// registerNativeToolLocked registers a native tool while the lock is already held.
+// Native tools appear in tools/list and are directly callable.
+// Keywords are stored but NOT added to internal registry in normal mode.
+// In force ondemand mode, native tools with keywords become searchable.
+func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
 	regTool := &registeredTool{
 		Name:         tool.name,
 		Description:  tool.Description(),
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
 		Handler:      handler,
+		Visibility:   ToolVisibilityNative,
 	}
 	s.tools[tool.name] = regTool
 
@@ -210,31 +307,60 @@ func (s *Server) registerToolLocked(tool *ToolBuilder, handler ToolHandler) {
 		Name:        tool.name,
 		Description: tool.Description(),
 		InputSchema: regTool.Schema,
+		Keywords:    keywords, // Store keywords for force ondemand mode
 	}
 	if regTool.OutputSchema != nil {
 		newTool.OutputSchema = regTool.OutputSchema
 	}
 
 	// Use binary search to find insertion point for sorted order
-	idx := sort.Search(len(s.toolCache), func(i int) bool {
-		return s.toolCache[i].Name >= tool.name
+	idx := sort.Search(len(s.nativeToolCache), func(i int) bool {
+		return s.nativeToolCache[i].Name >= tool.name
 	})
 
 	// Check if we're replacing an existing tool
-	if idx < len(s.toolCache) && s.toolCache[idx].Name == tool.name {
+	if idx < len(s.nativeToolCache) && s.nativeToolCache[idx].Name == tool.name {
 		// Replace in place
-		s.toolCache[idx] = newTool
+		s.nativeToolCache[idx] = newTool
 	} else {
 		// Insert at sorted position
-		s.toolCache = append(s.toolCache, MCPTool{})
-		copy(s.toolCache[idx+1:], s.toolCache[idx:])
-		s.toolCache[idx] = newTool
+		s.nativeToolCache = append(s.nativeToolCache, MCPTool{})
+		copy(s.nativeToolCache[idx+1:], s.nativeToolCache[idx:])
+		s.nativeToolCache[idx] = newTool
 	}
+
+	// DO NOT add to internal registry here - native tools are only searchable in force ondemand mode
 }
 
-// RegisterTools registers multiple tools with the server in a single batch.
+// RegisterOnDemandTool registers a tool that is only available via tool_search and execute_tool.
+// The tool does NOT appear in tools/list but can be discovered through keyword search.
+// This causes tool_search and execute_tool to be dynamically included in tools/list.
+// Use keywords to improve search relevance.
+func (s *Server) RegisterOnDemandTool(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Mark that we have statically-registered ondemand tools
+	s.hasOnDemandTools = true
+
+	// Register tool metadata for execution (but not in nativeToolCache)
+	regTool := &registeredTool{
+		Name:         tool.name,
+		Description:  tool.Description(),
+		Schema:       tool.buildSchema(),
+		OutputSchema: tool.buildOutputSchema(),
+		Handler:      handler,
+		Visibility:   ToolVisibilityOnDemand,
+	}
+	s.tools[tool.name] = regTool
+
+	// Add to internal registry for search
+	s.internalRegistry.RegisterTool(tool, handler, keywords...)
+}
+
+// RegisterTools registers multiple native tools with the server in a single batch.
 // This is more efficient than calling RegisterTool multiple times as it only
-// sorts the cache once at the end.
+// sorts the cache once at the end. All tools are registered as native (visible in tools/list).
 func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 	if len(tools) == 0 {
 		return
@@ -250,27 +376,36 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 			Schema:       tr.Tool.buildSchema(),
 			OutputSchema: tr.Tool.buildOutputSchema(),
 			Handler:      tr.Handler,
+			Visibility:   ToolVisibilityNative,
 		}
 		s.tools[tr.Tool.name] = regTool
 	}
 
-	// Rebuild cache from tools map (handles duplicates automatically)
-	s.toolCache = make([]MCPTool, 0, len(s.tools))
+	// Rebuild native cache from native tools only
+	s.rebuildNativeToolCacheLocked()
+}
+
+// rebuildNativeToolCacheLocked rebuilds the native tool cache from all native tools.
+// Must be called with s.mu held.
+func (s *Server) rebuildNativeToolCacheLocked() {
+	s.nativeToolCache = make([]MCPTool, 0)
 	for _, tool := range s.tools {
-		toolItem := MCPTool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.Schema,
+		if tool.Visibility == ToolVisibilityNative {
+			toolItem := MCPTool{
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: tool.Schema,
+			}
+			if tool.OutputSchema != nil {
+				toolItem.OutputSchema = tool.OutputSchema
+			}
+			s.nativeToolCache = append(s.nativeToolCache, toolItem)
 		}
-		if tool.OutputSchema != nil {
-			toolItem.OutputSchema = tool.OutputSchema
-		}
-		s.toolCache = append(s.toolCache, toolItem)
 	}
 
-	// Single sort at the end
-	sort.Slice(s.toolCache, func(i, j int) bool {
-		return s.toolCache[i].Name < s.toolCache[j].Name
+	// Sort for consistent ordering
+	sort.Slice(s.nativeToolCache, func(i, j int) bool {
+		return s.nativeToolCache[i].Name < s.nativeToolCache[j].Name
 	})
 }
 
@@ -285,37 +420,29 @@ func NewToolRegistration(tool *ToolBuilder, handler ToolHandler) *ToolRegistrati
 	return &ToolRegistration{Tool: tool, Handler: handler}
 }
 
-// RegisterToolWithDiscovery registers a tool with either the server (native) or a discovery registry.
-// If registry is nil, the tool is registered with the server (visible in ListTools, callable directly).
-// If registry is provided, the tool is registered for discovery only (hidden from ListTools,
-// searchable via tool_search, callable via execute_tool).
-func (s *Server) RegisterToolWithDiscovery(tool *ToolBuilder, handler ToolHandler, registry ToolRegistry, keywords ...string) {
-	if registry == nil {
-		s.RegisterTool(tool, handler)
-		return
-	}
-	registry.RegisterTool(tool, handler, keywords...)
-}
-
-// RegisterRemoteServer registers a remote MCP server
+// RegisterRemoteServer registers a remote MCP server with native visibility.
+// Remote server tools appear in tools/list and are directly callable.
+// Use RegisterRemoteServerOnDemand for tools that should only be searchable.
 func (s *Server) RegisterRemoteServer(client *Client) error {
-	return s.RegisterRemoteServerWithVisibility(client, ToolVisibilityVisible)
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative)
 }
 
-// RegisterRemoteServerHidden registers a remote MCP server with hidden tools
-func (s *Server) RegisterRemoteServerHidden(client *Client) error {
-	return s.RegisterRemoteServerWithVisibility(client, ToolVisibilityHidden)
+// RegisterRemoteServerOnDemand registers a remote MCP server with ondemand visibility.
+// Remote server tools do NOT appear in tools/list but are searchable via tool_search.
+// This automatically registers tool_search and execute_tool if not already registered.
+func (s *Server) RegisterRemoteServerOnDemand(client *Client) error {
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityOnDemand)
 }
 
-// RegisterRemoteServerWithVisibility registers a remote MCP server with the specified visibility.
-// - ToolVisibilityVisible: Tools appear in ListTools() and tool_search
-// - ToolVisibilityHidden: Tools don't appear in ListTools() or tool_search (but can be called directly)
-// - ToolVisibilityOnDemand: Tools don't appear in ListTools() but are in tool_search
-//
-// For OnDemand tools, a registry must be set via SetToolRegistry().
-func (s *Server) RegisterRemoteServerWithVisibility(client *Client, visibility ToolVisibility) error {
+// registerRemoteServerWithVisibility is the internal implementation for registering remote servers.
+func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// For ondemand visibility, mark that we have statically-registered ondemand tools
+	if visibility == ToolVisibilityOnDemand {
+		s.hasOnDemandTools = true
+	}
 
 	// Extract namespace from client namespace (remove trailing separator)
 	namespace := strings.TrimSuffix(client.Namespace(), client.separator)
@@ -327,7 +454,7 @@ func (s *Server) RegisterRemoteServerWithVisibility(client *Client, visibility T
 	}
 	s.remoteClients[client.baseURL] = regClient
 
-	// Fetch tools from the new server and add to cache/lookup
+	// Fetch tools from the new server
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx)
 	if err != nil {
@@ -336,50 +463,41 @@ func (s *Server) RegisterRemoteServerWithVisibility(client *Client, visibility T
 		return nil
 	}
 
-	// Add tools to cache, lookup, or registry based on visibility
+	// Add tools based on visibility
 	for _, tool := range tools {
-		// Tools from client.ListTools() already have the prefix applied
 		toolName := tool.Name
 
 		// Add to lookup for execution
 		s.toolToServer[toolName] = regClient
 
+		toolWithNamespace := tool
+		toolWithNamespace.Name = toolName
+
 		switch visibility {
-		case ToolVisibilityVisible:
-			// Add to toolCache for ListTools()
-			toolWithNamespace := tool
-			toolWithNamespace.Name = toolName
-			// filter existing
-			filtered := make([]MCPTool, 0, len(s.toolCache))
-			for _, t := range s.toolCache {
+		case ToolVisibilityNative:
+			// Add to nativeToolCache for tools/list
+			filtered := make([]MCPTool, 0, len(s.nativeToolCache))
+			for _, t := range s.nativeToolCache {
 				if t.Name != toolName {
 					filtered = append(filtered, t)
 				}
 			}
 			filtered = append(filtered, toolWithNamespace)
-			s.toolCache = filtered
+			s.nativeToolCache = filtered
 
 		case ToolVisibilityOnDemand:
-			// Register with ToolRegistry for tool_search
-			if s.registry != nil {
-				toolWithNamespace := tool
-				toolWithNamespace.Name = toolName
-				// Create a handler that delegates to the server's CallTool
-				handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-					return s.CallTool(ctx, toolName, req.args)
-				}
-				// Extract keywords from description for better search
-				// In the future, this could be enhanced to parse keywords from the tool itself
-				s.registry.RegisterMCPTool(&toolWithNamespace, handler)
+			// Add to internal registry for tool_search
+			localToolName := toolName // capture for closure
+			handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+				return s.CallTool(ctx, localToolName, req.args)
 			}
-		case ToolVisibilityHidden:
-			// Only in toolToServer for direct execution, not visible elsewhere
+			s.internalRegistry.RegisterMCPTool(&toolWithNamespace, handler)
 		}
 	}
 
-	// Sort to maintain consistent ordering
-	sort.Slice(s.toolCache, func(i, j int) bool {
-		return s.toolCache[i].Name < s.toolCache[j].Name
+	// Sort native cache to maintain consistent ordering
+	sort.Slice(s.nativeToolCache, func(i, j int) bool {
+		return s.nativeToolCache[i].Name < s.nativeToolCache[j].Name
 	})
 
 	return nil
@@ -388,12 +506,20 @@ func (s *Server) RegisterRemoteServerWithVisibility(client *Client, visibility T
 // RefreshTools manually refreshes the tool cache and lookup from all remote servers.
 // This method is safe for concurrent use - it releases the lock during network calls
 // to avoid blocking other operations, then atomically swaps in the new data.
-func (s *Server) RefreshTools() error {
+// The context can be used to cancel the operation if needed.
+func (s *Server) RefreshTools(ctx context.Context) error {
+	// Check for cancellation early
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Phase 1: Copy data needed for network calls under read lock
 	s.mu.RLock()
-	localTools := make(map[string]*registeredTool, len(s.tools))
+	localNativeTools := make(map[string]*registeredTool)
 	for k, v := range s.tools {
-		localTools[k] = v
+		if v.Visibility == ToolVisibilityNative {
+			localNativeTools[k] = v
+		}
 	}
 	remoteClients := make([]*registeredClient, 0, len(s.remoteClients))
 	for _, rc := range s.remoteClients {
@@ -402,11 +528,11 @@ func (s *Server) RefreshTools() error {
 	s.mu.RUnlock()
 
 	// Phase 2: Build new maps without holding lock (network calls happen here)
-	newToolIndex := make(map[string]MCPTool)
+	newNativeToolIndex := make(map[string]MCPTool)
 	newToolToServer := make(map[string]*registeredClient)
 
-	// Add local tools to new cache
-	for _, tool := range localTools {
+	// Add local native tools to new cache
+	for _, tool := range localNativeTools {
 		toolItem := MCPTool{
 			Name:        tool.Name,
 			Description: tool.Description,
@@ -415,12 +541,15 @@ func (s *Server) RefreshTools() error {
 		if tool.OutputSchema != nil {
 			toolItem.OutputSchema = tool.OutputSchema
 		}
-		newToolIndex[toolItem.Name] = toolItem
+		newNativeToolIndex[toolItem.Name] = toolItem
 	}
 
-	// Add remote tools to new cache and lookup (network calls here)
+	// Add remote tools to cache and lookup based on their visibility (network calls here)
 	for _, regClient := range remoteClients {
-		ctx := context.Background()
+		// Check for cancellation before each network call
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		tools, err := regClient.client.ListTools(ctx)
 		if err != nil {
 			continue // Skip failed remote servers
@@ -430,27 +559,28 @@ func (s *Server) RefreshTools() error {
 			// Tools from client.ListTools() already have the prefix applied
 			toolName := tool.Name
 
-			// Add to new lookup
+			// Add to lookup for execution
 			newToolToServer[toolName] = regClient
 
-			// Add/update in new cache only if visible
-			if regClient.visibility == ToolVisibilityVisible {
+			// Only add native remote tools to the native cache
+			if regClient.visibility == ToolVisibilityNative {
 				tool.Name = toolName
-				newToolIndex[toolName] = tool
+				newNativeToolIndex[toolName] = tool
 			}
+			// Note: OnDemand remote tools are in the internalRegistry which is not refreshed here
 		}
 	}
 
 	// Move from map to slice and sort for consistent ordering
-	newToolCache := make([]MCPTool, 0, len(newToolIndex))
-	for _, v := range newToolIndex {
-		newToolCache = append(newToolCache, v)
+	newNativeToolCache := make([]MCPTool, 0, len(newNativeToolIndex))
+	for _, v := range newNativeToolIndex {
+		newNativeToolCache = append(newNativeToolCache, v)
 	}
-	sort.Slice(newToolCache, func(i, j int) bool { return newToolCache[i].Name < newToolCache[j].Name })
+	sort.Slice(newNativeToolCache, func(i, j int) bool { return newNativeToolCache[i].Name < newNativeToolCache[j].Name })
 
 	// Phase 3: Atomically swap in new maps under write lock
 	s.mu.Lock()
-	s.toolCache = newToolCache
+	s.nativeToolCache = newNativeToolCache
 	s.toolToServer = newToolToServer
 	s.mu.Unlock()
 
@@ -474,7 +604,8 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Handle DELETE requests (session termination)
 	if r.Method == http.MethodDelete {
-		if s.sessionManager == nil {
+		sm := s.getSessionManager()
+		if sm == nil {
 			http.Error(w, "Session management not enabled", http.StatusMethodNotAllowed)
 			return
 		}
@@ -485,7 +616,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := s.sessionManager.DeleteSession(r.Context(), sessionID); err != nil {
+		if err := sm.DeleteSession(r.Context(), sessionID); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to delete session: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -551,14 +682,15 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate session ID if session management is enabled
-		if s.sessionManager != nil {
+		sm := s.getSessionManager()
+		if sm != nil {
 			sessionID := r.Header.Get("MCP-Session-Id")
 			if sessionID == "" {
 				http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
 				return
 			}
 
-			valid, err := s.sessionManager.ValidateSession(r.Context(), sessionID)
+			valid, err := sm.ValidateSession(r.Context(), sessionID)
 			if err != nil {
 				http.Error(w, fmt.Sprintf("Session validation error: %v", err), http.StatusInternalServerError)
 				return
@@ -620,6 +752,11 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 		protocolVersion = params.ProtocolVersion
 	}
 
+	// Read instructions under lock
+	s.mu.RLock()
+	instructions := s.instructions
+	s.mu.RUnlock()
+
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    s.buildCapabilities(protocolVersion),
@@ -627,12 +764,13 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 			Name:    s.name,
 			Version: s.version,
 		},
-		Instructions: s.instructions,
+		Instructions: instructions,
 	}
 
 	// Generate and store session if session management is enabled
-	if s.sessionManager != nil {
-		sessionID, err := s.sessionManager.CreateSession(r.Context(), protocolVersion)
+	sm := s.getSessionManager()
+	if sm != nil {
+		sessionID, err := sm.CreateSession(r.Context(), protocolVersion)
 		if err != nil {
 			s.sendMCPError(w, req.ID, ErrorCodeInternalError, "Failed to create session", nil)
 			return
@@ -674,30 +812,109 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	return caps
 }
 
-// ListTools returns all registered tools including remote ones (direct API).
+// ListTools returns all native tools including remote ones (direct API).
+// If ondemand tools are registered, discovery tools (tool_search, execute_tool) are also included.
 // The returned slice is a copy, safe for concurrent use and modification.
-// For high-frequency access where copying is a concern, consider caching
-// the result on the caller side.
+//
+// Performance Note: This method allocates and copies the tool cache on every call.
+// For high-frequency polling scenarios, consider caching the result on the caller side.
+// The tool list only changes when RegisterTool, RegisterRemoteServer, or RefreshTools is called.
 func (s *Server) ListTools() []MCPTool {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	hasOnDemand := s.hasOnDemandTools
+	result := make([]MCPTool, len(s.nativeToolCache))
+	copy(result, s.nativeToolCache)
+	s.mu.RUnlock()
 
-	result := make([]MCPTool, len(s.toolCache))
-	copy(result, s.toolCache)
+	// If we have static ondemand tools, add discovery tools
+	if hasOnDemand {
+		discoveryTools := s.getDiscoveryTools()
+		result = append(result, discoveryTools...)
+	}
+
+	// Sort for consistent ordering
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+
 	return result
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(r.Context())
 	result := map[string]interface{}{
 		"tools": tools,
 	}
 	s.sendMCPResponse(w, req.ID, result)
 }
 
+// ListToolsWithContext returns tools based on the context mode.
+// In normal mode: returns native tools + provider tools (+ discovery tools if ondemand tools exist)
+// In force ondemand mode: returns only tool_search and execute_tool
+// The context is used to retrieve request-scoped tool providers.
+func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
+	mode := GetToolListMode(ctx)
+	hasOnDemandProviders := len(GetOnDemandToolProviders(ctx)) > 0
+
+	s.mu.RLock()
+	nativeTools := make([]MCPTool, len(s.nativeToolCache))
+	copy(nativeTools, s.nativeToolCache)
+	hasStaticOnDemand := s.hasOnDemandTools
+	s.mu.RUnlock()
+
+	// Determine if we have any ondemand tools (static or from providers)
+	hasOnDemand := hasStaticOnDemand || hasOnDemandProviders
+
+	// Build seen map from native tools
+	seen := make(map[string]bool, len(nativeTools))
+	for _, tool := range nativeTools {
+		seen[tool.Name] = true
+	}
+
+	var allTools []MCPTool
+
+	// In force ondemand mode, only show tool_search and execute_tool
+	if mode == ToolListModeForceOnDemand {
+		return s.getDiscoveryTools()
+	}
+
+	// Normal mode: include all native tools
+	allTools = append(allTools, nativeTools...)
+
+	// Add tools from native providers
+	providerTools := listToolsFromProviders(ctx, seen)
+	allTools = append(allTools, providerTools...)
+
+	// If we have ondemand tools, dynamically add discovery tools
+	if hasOnDemand {
+		discoveryTools := s.getDiscoveryTools()
+		for _, tool := range discoveryTools {
+			if !seen[tool.Name] {
+				allTools = append(allTools, tool)
+				seen[tool.Name] = true
+			}
+		}
+	}
+
+	// Sort combined results
+	sort.Slice(allTools, func(i, j int) bool {
+		return allTools[i].Name < allTools[j].Name
+	})
+
+	return allTools
+}
+
 // CallTool executes a tool directly with namespace support (direct API)
-// It checks local tools first, then remote tools, then deferred/dynamic tools from the registry
+// It checks discovery tools first, then local tools, then remote tools, then providers from context.
 func (s *Server) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
+	// Handle discovery tools (tool_search, execute_tool) dynamically
+	if name == ToolSearchName {
+		return s.handleToolSearch(ctx, NewToolRequest(args))
+	}
+	if name == ExecuteToolName {
+		return s.handleExecuteTool(ctx, NewToolRequest(args))
+	}
+
 	s.mu.RLock()
 
 	// Try local tools first
@@ -708,7 +925,7 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 		return handler(ctx, toolReq)
 	}
 
-	// Fast lookup for remote tools
+	// Fast lookup for remote tools (registered via RegisterRemoteServer)
 	if regClient, exists := s.toolToServer[name]; exists {
 		client := regClient.client
 		namespace := regClient.namespace
@@ -723,7 +940,8 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 
 	s.mu.RUnlock()
 
-	return nil, ErrUnknownTool
+	// Try native providers from context (per-request dynamic tools)
+	return callToolFromProviders(ctx, name, args)
 }
 
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MCPRequest) {

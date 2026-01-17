@@ -15,7 +15,7 @@ func TestErrorCases(t *testing.T) {
 		{"array length mismatch", "arr[2]: 1,2,3", true},
 		{"empty input", "", false}, // Should return empty object
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := Decode(tt.input)
@@ -39,19 +39,19 @@ func TestSpecialValues(t *testing.T) {
 		{"Large Number", 1e20},
 		{"Small Number", 1e-20},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded, err := Encode(tt.input)
 			if err != nil {
 				t.Fatalf("Encode failed: %v", err)
 			}
-			
+
 			decoded, err := Decode(encoded)
 			if err != nil {
 				t.Fatalf("Decode failed: %v", err)
 			}
-			
+
 			// For NaN, it should be encoded as null
 			if math.IsNaN(tt.input.(float64)) {
 				if decoded != nil {
@@ -59,12 +59,17 @@ func TestSpecialValues(t *testing.T) {
 				}
 				return
 			}
-			
-			// For Infinity, check if it's handled (implementation may vary)
+
+			// For Infinity, implementation converts Inf to null
 			if math.IsInf(tt.input.(float64), 0) {
 				// Implementation converts Inf to null, but decoder may parse as string
-				// This is acceptable behavior
+				// This is acceptable behavior - just verify no error occurred
 				return
+			}
+
+			// For regular numbers, verify round-trip
+			if decoded == nil {
+				t.Errorf("Expected decoded value for %s, got nil", tt.name)
 			}
 		})
 	}
@@ -80,25 +85,25 @@ func TestEmptyCollections(t *testing.T) {
 		{"object with empty array", map[string]interface{}{"arr": []interface{}{}}},
 		{"object with empty object", map[string]interface{}{"obj": map[string]interface{}{}}},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			encoded, err := Encode(tt.input)
 			if err != nil {
 				t.Fatalf("Encode failed: %v", err)
 			}
-			
+
 			decoded, err := Decode(encoded)
 			if err != nil {
 				t.Fatalf("Decode failed: %v", err)
 			}
-			
+
 			// Should round-trip correctly
 			reencoded, err := Encode(decoded)
 			if err != nil {
 				t.Fatalf("Re-encode failed: %v", err)
 			}
-			
+
 			if reencoded != encoded {
 				t.Errorf("Round-trip failed for %s", tt.name)
 			}
@@ -126,14 +131,14 @@ func TestDelimiters(t *testing.T) {
 			map[string]interface{}{"arr": []interface{}{float64(1), float64(2)}},
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			decoded, err := Decode(tt.toonData)
 			if err != nil {
 				t.Fatalf("Decode failed: %v", err)
 			}
-			
+
 			if !deepEqual(decoded, tt.expected) {
 				t.Errorf("Expected %+v, got %+v", tt.expected, decoded)
 			}

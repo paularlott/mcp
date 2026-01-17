@@ -5,19 +5,25 @@ import (
 	"fmt"
 )
 
-// ToolHandler represents a function that handles tool calls
+// ToolHandler represents a function that handles tool calls.
+// It receives the request context and a ToolRequest with typed argument accessors.
 type ToolHandler func(ctx context.Context, req *ToolRequest) (*ToolResponse, error)
 
-// ToolRequest provides typed access to tool arguments
+// ToolRequest provides typed access to tool arguments.
+// Use the accessor methods (String, Int, Bool, etc.) to retrieve parameters
+// with automatic type conversion and validation.
 type ToolRequest struct {
 	args map[string]interface{}
 }
 
-// NewToolRequest creates a new ToolRequest with the given arguments
+// NewToolRequest creates a new ToolRequest with the given arguments.
+// This is typically called by the server when dispatching tool calls.
 func NewToolRequest(args map[string]interface{}) *ToolRequest {
 	return &ToolRequest{args: args}
 }
 
+// String returns a string parameter by name.
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) String(name string) (string, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -29,6 +35,7 @@ func (r *ToolRequest) String(name string) (string, error) {
 	return "", fmt.Errorf("parameter '%s' is not a string", name)
 }
 
+// StringOr returns a string parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) StringOr(name, defaultValue string) string {
 	if val, err := r.String(name); err == nil {
 		return val
@@ -36,6 +43,9 @@ func (r *ToolRequest) StringOr(name, defaultValue string) string {
 	return defaultValue
 }
 
+// Int returns an integer parameter by name.
+// Handles both int and float64 types (JSON numbers are parsed as float64).
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) Int(name string) (int, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -51,6 +61,7 @@ func (r *ToolRequest) Int(name string) (int, error) {
 	}
 }
 
+// IntOr returns an integer parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) IntOr(name string, defaultValue int) int {
 	if val, err := r.Int(name); err == nil {
 		return val
@@ -58,6 +69,8 @@ func (r *ToolRequest) IntOr(name string, defaultValue int) int {
 	return defaultValue
 }
 
+// Float returns a float64 parameter by name.
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) Float(name string) (float64, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -69,6 +82,7 @@ func (r *ToolRequest) Float(name string) (float64, error) {
 	return 0, fmt.Errorf("parameter '%s' is not a number", name)
 }
 
+// FloatOr returns a float64 parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) FloatOr(name string, defaultValue float64) float64 {
 	if val, err := r.Float(name); err == nil {
 		return val
@@ -76,6 +90,8 @@ func (r *ToolRequest) FloatOr(name string, defaultValue float64) float64 {
 	return defaultValue
 }
 
+// Bool returns a boolean parameter by name.
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) Bool(name string) (bool, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -87,6 +103,7 @@ func (r *ToolRequest) Bool(name string) (bool, error) {
 	return false, fmt.Errorf("parameter '%s' is not a boolean", name)
 }
 
+// BoolOr returns a boolean parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) BoolOr(name string, defaultValue bool) bool {
 	if val, err := r.Bool(name); err == nil {
 		return val
@@ -94,6 +111,8 @@ func (r *ToolRequest) BoolOr(name string, defaultValue bool) bool {
 	return defaultValue
 }
 
+// StringSlice returns a string array parameter by name.
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) StringSlice(name string) ([]string, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -113,6 +132,7 @@ func (r *ToolRequest) StringSlice(name string) ([]string, error) {
 	return nil, fmt.Errorf("parameter '%s' is not an array", name)
 }
 
+// StringSliceOr returns a string array parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) StringSliceOr(name string, defaultValue []string) []string {
 	if val, err := r.StringSlice(name); err == nil {
 		return val
@@ -120,6 +140,9 @@ func (r *ToolRequest) StringSliceOr(name string, defaultValue []string) []string
 	return defaultValue
 }
 
+// IntSlice returns an integer array parameter by name.
+// Handles both int and float64 array elements (JSON numbers are parsed as float64).
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) IntSlice(name string) ([]int, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -142,6 +165,7 @@ func (r *ToolRequest) IntSlice(name string) ([]int, error) {
 	return nil, fmt.Errorf("parameter '%s' is not an array", name)
 }
 
+// IntSliceOr returns an integer array parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) IntSliceOr(name string, defaultValue []int) []int {
 	if val, err := r.IntSlice(name); err == nil {
 		return val
@@ -149,6 +173,8 @@ func (r *ToolRequest) IntSliceOr(name string, defaultValue []int) []int {
 	return defaultValue
 }
 
+// FloatSlice returns a float64 array parameter by name.
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) FloatSlice(name string) ([]float64, error) {
 	val, ok := r.args[name]
 	if !ok {
@@ -168,6 +194,7 @@ func (r *ToolRequest) FloatSlice(name string) ([]float64, error) {
 	return nil, fmt.Errorf("parameter '%s' is not an array", name)
 }
 
+// FloatSliceOr returns a float64 array parameter or defaultValue if not present or invalid.
 func (r *ToolRequest) FloatSliceOr(name string, defaultValue []float64) []float64 {
 	if val, err := r.FloatSlice(name); err == nil {
 		return val
@@ -175,7 +202,37 @@ func (r *ToolRequest) FloatSliceOr(name string, defaultValue []float64) []float6
 	return defaultValue
 }
 
-// Object returns a parameter as a map[string]interface{} (generic object)
+// BoolSlice returns a boolean array parameter by name.
+// Returns ErrUnknownParameter if the parameter doesn't exist.
+func (r *ToolRequest) BoolSlice(name string) ([]bool, error) {
+	val, ok := r.args[name]
+	if !ok {
+		return nil, ErrUnknownParameter
+	}
+	if arr, ok := val.([]interface{}); ok {
+		result := make([]bool, len(arr))
+		for i, item := range arr {
+			if b, ok := item.(bool); ok {
+				result[i] = b
+			} else {
+				return nil, fmt.Errorf("parameter '%s' contains non-boolean element at index %d", name, i)
+			}
+		}
+		return result, nil
+	}
+	return nil, fmt.Errorf("parameter '%s' is not an array", name)
+}
+
+// BoolSliceOr returns a boolean array parameter or defaultValue if not present or invalid.
+func (r *ToolRequest) BoolSliceOr(name string, defaultValue []bool) []bool {
+	if val, err := r.BoolSlice(name); err == nil {
+		return val
+	}
+	return defaultValue
+}
+
+// Object returns a parameter as a map[string]interface{} (generic object).
+// Returns ErrUnknownParameter if the parameter doesn't exist.
 func (r *ToolRequest) Object(name string) (map[string]interface{}, error) {
 	val, ok := r.args[name]
 	if !ok {

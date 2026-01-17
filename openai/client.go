@@ -21,6 +21,7 @@ const MAX_TOOL_CALL_ITERATIONS = 20
 // MCPServer interface for MCP server operations (local server)
 type MCPServer interface {
 	ListTools() []mcp.MCPTool
+	ListToolsWithContext(ctx context.Context) []mcp.MCPTool
 	CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error)
 }
 
@@ -35,6 +36,10 @@ func (m *MCPServerFuncs) ListTools() []mcp.MCPTool {
 		return m.ListToolsFunc()
 	}
 	return nil
+}
+
+func (m *MCPServerFuncs) ListToolsWithContext(ctx context.Context) []mcp.MCPTool {
+	return m.ListTools()
 }
 
 func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error) {
@@ -152,7 +157,7 @@ func (c *Client) GetAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
 
 	// Add local server tools (no namespace)
 	if c.localServer != nil {
-		allTools = append(allTools, c.localServer.ListTools()...)
+		allTools = append(allTools, c.localServer.ListToolsWithContext(ctx)...)
 	}
 
 	// Add remote server tools (already namespaced by their client)

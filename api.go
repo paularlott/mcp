@@ -147,6 +147,24 @@ func (n *numberArrayParam) apply(builder *paramBuilder) {
 	builder.params = append(builder.params, n.toParamDef())
 }
 
+type booleanArrayParam struct {
+	parameterBase
+}
+
+func (b *booleanArrayParam) toParamDef() paramDef {
+	return paramDef{
+		name:        b.name,
+		paramType:   "array:boolean",
+		description: b.description,
+		required:    b.required,
+		properties:  make(map[string]*paramDef),
+	}
+}
+
+func (b *booleanArrayParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, b.toParamDef())
+}
+
 type objectParam struct {
 	parameterBase
 	properties []Parameter
@@ -258,6 +276,17 @@ func StringArray(name, description string, options ...Option) Parameter {
 // NumberArray creates a number array parameter
 func NumberArray(name, description string, options ...Option) Parameter {
 	return &numberArrayParam{
+		parameterBase: parameterBase{
+			name:        name,
+			description: description,
+			required:    processOptions(options),
+		},
+	}
+}
+
+// BooleanArray creates a boolean array parameter
+func BooleanArray(name, description string, options ...Option) Parameter {
+	return &booleanArrayParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,

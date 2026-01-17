@@ -1,18 +1,25 @@
 # Tool Discovery Example
 
-This example demonstrates how to use searchable tools and dynamic tool providers to reduce context window usage while maintaining access to a large tool library.
+This example demonstrates how to use searchable tools to reduce context window usage while maintaining access to a large tool library.
 
 ## Overview
 
 When you have many tools, sending all their definitions to an LLM consumes significant tokens from the context window. This example shows how to:
 
-1. **Searchable Tools**: Register tools that are hidden from `ListTools()` but can be discovered via search and called directly
-2. **Request-Scoped Providers**: Add per-user or per-tenant tools via context
+1. **Register native tools** (`RegisterTool`) - Essential tools that always appear in `tools/list`
+2. **Register ondemand tools** (`RegisterOnDemandTool`) - Specialized tools that are hidden but searchable via `tool_search`
+
+## How It Works
+
+- `RegisterTool(tool, handler)` - Tool is visible in `tools/list`, NOT searchable (except in force ondemand mode)
+- `RegisterOnDemandTool(tool, handler, keywords...)` - Tool is hidden from `tools/list` but searchable via `tool_search`
+- The server automatically provides `tool_search` and `execute_tool` when any ondemand tools are registered
+- LLMs can discover ondemand tools by keyword and get full schemas before calling them
 
 ## Running the Example
 
 ```bash
-cd examples/deferred-tools
+cd examples/tool-discovery
 go run main.go
 ```
 
@@ -28,7 +35,7 @@ curl -X POST http://localhost:8088/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-You'll see only a few tools: `help`, `tool_search`, and `execute_tool`.
+This returns all tools plus `tool_search` and `execute_tool`.
 
 ### Search for Tools
 
@@ -41,104 +48,76 @@ curl -X POST http://localhost:8088/mcp \
     "method":"tools/call",
     "params":{
       "name":"tool_search",
-      "arguments":{"query":"email"}
+      "arguments":{"query":"database", "limit": 5}
     }
   }'
 ```
 
-This will find the hidden `send_email` and `list_emails` tools, including their full schemas.
-
-### Execute a Hidden Tool
-
-Since MCP clients validate tool names against `tools/list`, you must use `execute_tool` to call hidden tools:
+### Execute a Discovered Tool
 
 ```bash
 curl -X POST http://localhost:8088/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",
-    "id":4,
+    "id":3,
     "method":"tools/call",
     "params":{
       "name":"execute_tool",
       "arguments":{
-        "name":"send_email",
-        "arguments":{
-          "to":"user@example.com",
-          "subject":"Test",
-          "body":"Hello!"
-        }
+        "name":"sql_query",
+        "arguments":{"query":"SELECT * FROM users", "database":"main"}
       }
     }
   }'
 ```
 
-### Search for Script Tools (Global Provider)
+## Tool Categories
 
-```bash
-curl -X POST http://localhost:8088/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":5,
-    "method":"tools/call",
-    "params":{
-      "name":"tool_search",
-      "arguments":{"query":"backup"}
-    }
-  }'
+This example registers tools in several categories:
+
+- **Database**: `sql_query`, `database_backup`
+- **Email**: `send_email`, `list_emails`
+- **Documents**: `create_pdf`, `convert_document`
+- **DevOps**: `kubernetes_deploy`, `docker_build`
+- **Analytics**: `analyze_data`, `create_chart`
+- **Automation**: `run_backup_script`, `cleanup_logs`, `system_health_check`
+
+## API
+
+### RegisterTool - Native Tools
+
+Essential tools that always appear in `tools/list`:
+
+```go
+server.RegisterTool(
+    mcp.NewTool("help", "Get help and guidance"),
+    handler,
+)
 ```
 
-### Access User-Specific Tools (Request-Scoped Provider)
+- Always visible in `tools/list`
+- Directly callable by name
+- NOT searchable via `tool_search` (unless using force ondemand mode)
+- Use for essential tools the LLM should always know about
 
-```bash
-# Add X-User-ID header to get user-specific tools
-curl -X POST http://localhost:8088/mcp \
-  -H "Content-Type: application/json" \
-  -H "X-User-ID: user123" \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":6,
-    "method":"tools/call",
-    "params":{
-      "name":"tool_search",
-      "arguments":{"query":"saved"}
-    }
-  }'
+### RegisterOnDemandTool - Searchable Tools
+
+Specialized tools hidden from `tools/list` but discoverable via search:
+
+```go
+server.RegisterOnDemandTool(
+    mcp.NewTool("send_email", "Send an email",
+        mcp.String("to", "Recipient", mcp.Required()),
+        mcp.String("subject", "Subject", mcp.Required()),
+    ),
+    handler,
+    "email", "notification", "smtp", "message", // keywords for search relevance
+)
 ```
 
-This will find `my_saved_queries` which is only available for authenticated users.
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      MCP Server                              │
-├─────────────────────────────────────────────────────────────┤
-│  Visible Tools (ListTools)                                   │
-│  ├── help                                                    │
-│  ├── tool_search                                             │
-│  └── execute_tool                                            │
-├─────────────────────────────────────────────────────────────┤
-│  Searchable Tools (hidden from list, discoverable via search)│
-│  ├── sql_query, database_backup                              │
-│  ├── send_email, list_emails                                 │
-│  ├── create_pdf, convert_document                            │
-│  ├── kubernetes_deploy, docker_build                         │
-│  ├── analyze_data, create_chart                              │
-│  ├── run_backup_script, cleanup_logs, health_check           │
-│  └── ... (extensible)                                        │
-├─────────────────────────────────────────────────────────────┤
-│  Request-Scoped ToolRegistry (per-user tools)                │
-│  ├── my_saved_queries  (per-user)                            │
-│  └── my_preferences    (per-user)                            │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Benefits
-
-1. **Reduced Token Usage**: Only 3 tools sent to LLM initially instead of 15+
-2. **On-Demand Discovery**: LLM finds relevant tools when needed
-3. **Multi-Tenant Support**: Different users can have different tools via request-scoped registries
-4. **Extensibility**: Add tools from scripts, databases, or APIs using ToolProvider interface
-5. **Client Compatibility**: `execute_tool` wrapper works with clients that validate tool names
+- Hidden from `tools/list`
+- Discoverable via `tool_search`
+- Callable via `execute_tool` or directly if you know the name
+- Keywords improve search relevance (matches tool name, description, and keywords)
+- Use for specialized tools to reduce context window usage

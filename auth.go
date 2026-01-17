@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
@@ -71,7 +70,7 @@ func (o *OAuth2Auth) Refresh() error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultOAuthRefreshTimeout)
 	defer cancel()
 
 	token, err := o.config.Token(ctx)

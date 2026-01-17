@@ -54,6 +54,7 @@ type MCPTool struct {
 	Description  string      `json:"description"`
 	InputSchema  interface{} `json:"inputSchema"`
 	OutputSchema interface{} `json:"outputSchema,omitempty"`
+	Keywords     []string    `json:"-"` // For discovery search, not serialized to clients
 }
 
 type ToolCallParams struct {
@@ -84,19 +85,4 @@ type ResourceContent struct {
 	MimeType string `json:"mimeType,omitempty"`
 	Text     string `json:"text,omitempty"`
 	Blob     string `json:"blob,omitempty"` // base64 encoded
-}
-
-type mcpResource struct {
-	URI         string `json:"uri"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
-}
-
-type resourceListParams struct {
-	Cursor string `json:"cursor,omitempty"`
-}
-
-type resourceReadParams struct {
-	URI string `json:"uri"`
 }
