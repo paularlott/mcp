@@ -106,10 +106,12 @@ To enable session management (optional):
 ```go
 server := mcp.NewServer("my-server", "1.0.0")
 
-// Enable JWT sessions (recommended for production)
-if err := server.EnableSessionManagement(); err != nil {
+// Enable JWT sessions
+sm, err := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+if err != nil {
     log.Fatal(err)
 }
+server.SetSessionManager(sm)
 ```
 
 ## Testing Different Versions
@@ -145,6 +147,7 @@ curl -X POST http://localhost:8080/mcp \
 **Sessions not working**
 
 - Session management is disabled by default
-- Call `server.EnableSessionManagement()` to enable JWT sessions
+- Use `mcp.NewJWTSessionManagerWithAutoKey()` or `mcp.NewJWTSessionManager()` to create a session manager
+- Call `server.SetSessionManager()` to enable sessions
 - For custom storage, implement `SessionManager` interface</content>
   <parameter name="filePath">/Users/paul/Code/Source/mcp/docs/guides/protocol-support.md

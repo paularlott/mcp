@@ -123,12 +123,6 @@ func newDefaultPoolImpl() *DefaultPool {
 	}
 }
 
-// NewDefaultPool creates a new default HTTP pool with sensible defaults
-// Deprecated: Use SetPoolConfig and GetPool instead
-func NewDefaultPool() *DefaultPool {
-	return newDefaultPoolImpl()
-}
-
 // GetHTTPClient returns the shared HTTP client
 func (p *DefaultPool) GetHTTPClient() *http.Client {
 	return p.httpClient

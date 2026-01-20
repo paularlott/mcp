@@ -10,6 +10,7 @@ This example demonstrates the new MCP 2025-11-25 protocol features with **JWT-ba
 ## Why JWT Sessions?
 
 JWT (JSON Web Token) sessions are the **recommended default** for production because:
+
 - ✅ **Stateless**: No session storage infrastructure needed
 - ✅ **Scalable**: Works perfectly in multi-instance clusters
 - ✅ **Simple**: Zero external dependencies
@@ -20,18 +21,22 @@ Trade-off: Sessions cannot be revoked before expiry (acceptable for most use cas
 ## Features Implemented
 
 ### 1. JWT Session Management
+
 - Server generates signed JWT tokens on initialization
 - Tokens contain protocol version and expiration
 - Validated on every request (signature + expiry check)
 - Automatic expiration (default 30 minutes)
 
 ### 2. Protocol Version Validation
+
 Per the MCP 2025-11-25 spec:
+
 - Clients send `MCP-Protocol-Version` header on all requests after initialization
 - Server validates the version and returns 400 Bad Request if unsupported
 - Defaults to `2025-03-26` if header is missing (for backwards compatibility)
 
 ### 3. HTTP Method Support
+
 - **POST**: Standard JSON-RPC requests
 - **GET**: Returns 405 (SSE streaming not yet implemented)
 - **DELETE**: Terminates sessions (note: JWT sessions auto-expire, cannot be revoked)
@@ -47,6 +52,7 @@ go run main.go
 ## Testing with curl
 
 ### Initialize (receive JWT session token)
+
 ```bash
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
@@ -57,6 +63,7 @@ curl -X POST http://localhost:8000/mcp \
 Look for the `MCP-Session-Id` header in the response - this will be a JWT token.
 
 ### Subsequent requests (with JWT session token)
+
 ```bash
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
@@ -66,6 +73,7 @@ curl -X POST http://localhost:8000/mcp \
 ```
 
 ### Session termination
+
 ```bash
 curl -X DELETE http://localhost:8000/mcp \
   -H "MCP-Session-Id: <jwt-token>"
@@ -76,6 +84,7 @@ Note: JWT sessions cannot be revoked - they expire naturally after 30 minutes.
 ## Alternative Session Managers
 
 ### Redis (If Revocation Needed)
+
 ```go
 // If you need to revoke sessions before expiry
 rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
@@ -83,15 +92,17 @@ server.SetSessionManager(mcp.NewRedisSessionManager(rdb, 30*time.Minute))
 ```
 
 ### Custom Signing Key (Persist Across Restarts)
+
 ```go
 // Load key from environment or secure storage
 signingKey := []byte(os.Getenv("SESSION_SIGNING_KEY"))
-server.EnableSessionManagementWithKey(signingKey, 30*time.Minute)
+server.SetSessionManager(mcp.NewJWTSessionManager(signingKey, 30*time.Minute))
 ```
 
 ## Backwards Compatibility
 
 The server supports older MCP protocol versions:
+
 - `2024-11-05`: Basic capabilities
 - `2025-03-26`: With listChanged support
 - `2025-06-18`: Enhanced capabilities

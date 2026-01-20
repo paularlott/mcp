@@ -2,57 +2,91 @@
 
 Enable optional session tracking for stateful interactions. **Sessions are disabled by default** and remain optional per the MCP spec.
 
-## Production Deployment (Recommended)
+## Quick Start
 
 JWT-based sessions provide stateless, scalable session management with zero infrastructure dependencies:
 
 ```go
 server := mcp.NewServer("my-server", "1.0.0")
 
-// Enable JWT session management (stateless, production-ready)
-if err := server.EnableSessionManagement(); err != nil {
+// Development/single instance: auto-generated key
+sm, err := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+if err != nil {
     log.Fatal(err)
 }
+server.SetSessionManager(sm)
 
-// No cleanup needed - JWT sessions self-expire
-// Sessions are validated on every request, no storage required
+// Production cluster: use persisted key so all instances validate each other's sessions
+signingKey := loadFromSecretStore()
+server.SetSessionManager(mcp.NewJWTSessionManager(signingKey, 30*time.Minute))
 ```
 
 ### Why JWT Sessions?
 
 - ✅ **Zero Dependencies**: No Redis, Database, or external storage needed
-- ✅ **Horizontal Scaling**: Works perfectly across all server instances
+- ✅ **Horizontal Scaling**: Works perfectly across all server instances (with shared key)
 - ✅ **Stateless**: Each server validates sessions independently
-- ✅ **Simple**: Just enable and it works in any deployment
+- ✅ **Simple**: Just create and set
 - ✅ **Secure**: Cryptographically signed with HMAC-SHA256
 
 Trade-off: Sessions cannot be revoked before expiry (acceptable for most use cases)
 
-## All Deployments
+## Deployment Patterns
 
-JWT sessions work perfectly for **all** deployment scenarios:
+### Single Instance / Development
 
-- ✅ Single instance (development)
-- ✅ Multiple instances (production clusters)
-- ✅ Serverless/edge deployments
-- ✅ Multi-region architectures
-
-No need for different session managers based on deployment type.
-
-## Advanced: Custom Session Storage
-
-If you need session revocation or custom storage:
+Use auto-generated key for simplicity:
 
 ```go
-// Redis (requires external dependency)
+sm, _ := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+server.SetSessionManager(sm)
+```
+
+### Production Cluster
+
+Use a persisted key so all instances can validate sessions:
+
+```go
+// Load key from secure storage (Vault, K8s secrets, etc.)
+signingKey := loadFromSecretStore()
+server.SetSessionManager(mcp.NewJWTSessionManager(signingKey, 30*time.Minute))
+```
+
+### Generate and Persist a Key
+
+```go
+// Generate once, persist securely
+key, err := mcp.GenerateSigningKey()
+if err != nil {
+    log.Fatal(err)
+}
+saveToSecretStore(key)
+```
+
+## Pluggable Session Management
+
+The session management system is fully pluggable via the `SessionManager` interface:
+
+```go
+// SessionManager interface for pluggable session storage
+type SessionManager interface {
+    CreateSession(ctx context.Context, protocolVersion string, toolMode ToolListMode) (string, error)
+    ValidateSession(ctx context.Context, sessionID string) (bool, error)
+    GetProtocolVersion(ctx context.Context, sessionID string) (string, error)
+    GetToolMode(ctx context.Context, sessionID string) (ToolListMode, error)
+    DeleteSession(ctx context.Context, sessionID string) error
+    CleanupExpiredSessions(ctx context.Context) error
+}
+```
+
+Use `SetSessionManager()` to plug in custom implementations:
+
+```go
+// Redis-backed sessions (requires external dependency)
 rdb := redis.NewClient(&redis.Options{Addr: "redis:6379"})
-server.SetSessionManager(mcp.NewRedisSessionManager(rdb, 30*time.Minute))
+server.SetSessionManager(NewRedisSessionManager(rdb, 30*time.Minute))
 
-// Custom signing key (persist JWT key across restarts)
-signingKey := loadKeyFromSecureStorage()
-server.EnableSessionManagementWithKey(signingKey, 30*time.Minute)
-
-// Implement your own SessionManager interface
+// Completely custom implementation
 server.SetSessionManager(myCustomManager)
 ```
 

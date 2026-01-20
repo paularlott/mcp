@@ -113,14 +113,17 @@ func NewServer(name, version string) *Server {
 }
 
 // SetSessionManager sets a custom session manager for the server.
-// For most deployments, use EnableSessionManagement() for stateless JWT sessions.
+// For JWT-based sessions, use NewJWTSessionManager or NewJWTSessionManagerWithAutoKey.
 //
-// Use this only when you need custom session behavior such as:
+// Example:
+//
+//	sm, _ := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+//	server.SetSessionManager(sm)
+//
+// Use a custom SessionManager when you need:
 //   - Session revocation (logout functionality, security incidents)
 //   - Session listing (admin dashboards, audit trails)
 //   - Custom session metadata
-//
-// See session_redis.go for a reference implementation using Redis.
 func (s *Server) SetSessionManager(manager SessionManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -224,33 +227,6 @@ func (s *Server) handleExecuteTool(ctx context.Context, req *ToolRequest) (*Tool
 		return nil, err
 	}
 	return response, nil
-}
-
-// EnableSessionManagement enables JWT-based session management (stateless, production-ready)
-// This is the recommended approach for all deployments as it:
-// - Requires no external dependencies (Redis, Database)
-// - Scales horizontally without coordination
-// - Works across all server instances
-// - Validates sessions in ~12 microseconds
-//
-// Only use SetSessionManager() if you need session revocation (Redis, Database)
-func (s *Server) EnableSessionManagement() error {
-	signingKey, err := GenerateSigningKey()
-	if err != nil {
-		return fmt.Errorf("failed to generate signing key: %w", err)
-	}
-	s.mu.Lock()
-	s.sessionManager = NewJWTSessionManager(signingKey, DefaultSessionTTL)
-	s.mu.Unlock()
-	return nil
-}
-
-// EnableSessionManagementWithKey enables JWT session management with a specific signing key
-// Use this to maintain sessions across server restarts (persist the key securely)
-func (s *Server) EnableSessionManagementWithKey(signingKey []byte, ttl time.Duration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessionManager = NewJWTSessionManager(signingKey, ttl)
 }
 
 // getSessionManager returns the session manager under read lock
@@ -700,6 +676,21 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Session not found", http.StatusNotFound)
 				return
 			}
+
+			// Get tool mode from session and apply to context if discovery mode
+			toolMode, _ := sm.GetToolMode(r.Context(), sessionID)
+			if toolMode == ToolListModeForceOnDemand {
+				// Apply discovery mode from session - preserve existing providers
+				existingProviders := GetToolProviders(r.Context())
+				r = r.WithContext(WithForceOnDemandMode(r.Context(), existingProviders...))
+			}
+		} else {
+			// No session management - check header/query on each request
+			toolMode := GetToolModeFromRequest(r)
+			if toolMode == ToolListModeForceOnDemand {
+				existingProviders := GetToolProviders(r.Context())
+				r = r.WithContext(WithForceOnDemandMode(r.Context(), existingProviders...))
+			}
 		}
 	}
 
@@ -752,6 +743,9 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 		protocolVersion = params.ProtocolVersion
 	}
 
+	// Check for tool mode from header or query param
+	toolMode := GetToolModeFromRequest(r)
+
 	// Read instructions under lock
 	s.mu.RLock()
 	instructions := s.instructions
@@ -770,7 +764,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 	// Generate and store session if session management is enabled
 	sm := s.getSessionManager()
 	if sm != nil {
-		sessionID, err := sm.CreateSession(r.Context(), protocolVersion)
+		sessionID, err := sm.CreateSession(r.Context(), protocolVersion, toolMode)
 		if err != nil {
 			s.sendMCPError(w, req.ID, ErrorCodeInternalError, "Failed to create session", nil)
 			return

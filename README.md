@@ -79,6 +79,29 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 
 - **[Dynamic Tool States Quick Ref](docs/quick-ref/dynamic-tool-states.md)** - Quick start for state transitions
 
+## Tool Discovery Mode
+
+The server supports two modes for tool visibility, selectable via HTTP header:
+
+### Header-Based Mode Selection
+
+Clients can request discovery mode during initialization:
+
+```http
+POST /mcp HTTP/1.1
+Content-Type: application/json
+X-MCP-Tool-Mode: discovery
+
+{"jsonrpc":"2.0","id":1,"method":"initialize",...}
+```
+
+Or via query parameter: `/mcp?tool_mode=discovery`
+
+**Normal Mode (default):** All native tools visible in `tools/list`
+**Discovery Mode:** Only `tool_search` and `execute_tool` visible - all tools searchable
+
+With session management enabled, the mode is stored in the session token. See [Tool Discovery Guide](docs/guides/tool-discovery.md) for details.
+
 ## Examples
 
 See the [examples/](examples/) directory for complete, runnable examples:

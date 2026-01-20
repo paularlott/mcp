@@ -57,7 +57,7 @@ func (m *RedisSessionManager) generateSessionID() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-func (m *RedisSessionManager) CreateSession(ctx context.Context, protocolVersion string) (string, error) {
+func (m *RedisSessionManager) CreateSession(ctx context.Context, protocolVersion string, toolMode ToolListMode) (string, error) {
 	sessionID, err := m.generateSessionID()
 	if err != nil {
 		return "", err
@@ -66,10 +66,12 @@ func (m *RedisSessionManager) CreateSession(ctx context.Context, protocolVersion
 	// Store session data in Redis with TTL
 	key := fmt.Sprintf("mcp:session:%s", sessionID)
 	protoKey := fmt.Sprintf("mcp:session:%s:protocol", sessionID)
+	modeKey := fmt.Sprintf("mcp:session:%s:tool_mode", sessionID)
 
 	pipe := m.client.Pipeline()
 	pipe.Set(ctx, key, time.Now().Unix(), m.sessionTTL)
 	pipe.Set(ctx, protoKey, protocolVersion, m.sessionTTL)
+	pipe.Set(ctx, modeKey, int(toolMode), m.sessionTTL)
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return "", fmt.Errorf("failed to create session in Redis: %w", err)
@@ -114,13 +116,35 @@ func (m *RedisSessionManager) GetProtocolVersion(ctx context.Context, sessionID 
 	return version, nil
 }
 
+func (m *RedisSessionManager) GetToolMode(ctx context.Context, sessionID string) (ToolListMode, error) {
+	modeKey := fmt.Sprintf("mcp:session:%s:tool_mode", sessionID)
+
+	modeStr, err := m.client.Get(ctx, modeKey).Result()
+	if err == redis.Nil {
+		return ToolListModeDefault, nil
+	}
+	if err != nil {
+		return ToolListModeDefault, fmt.Errorf("failed to get tool mode: %w", err)
+	}
+
+	// Parse as int
+	var mode int
+	if _, err := fmt.Sscanf(modeStr, "%d", &mode); err != nil {
+		return ToolListModeDefault, nil
+	}
+
+	return ToolListMode(mode), nil
+}
+
 func (m *RedisSessionManager) DeleteSession(ctx context.Context, sessionID string) error {
 	key := fmt.Sprintf("mcp:session:%s", sessionID)
 	protoKey := fmt.Sprintf("mcp:session:%s:protocol", sessionID)
+	modeKey := fmt.Sprintf("mcp:session:%s:tool_mode", sessionID)
 
 	pipe := m.client.Pipeline()
 	pipe.Del(ctx, key)
 	pipe.Del(ctx, protoKey)
+	pipe.Del(ctx, modeKey)
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)

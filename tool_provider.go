@@ -2,7 +2,18 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"strings"
 )
+
+// ToolModeHeader is the HTTP header used to specify tool mode
+const ToolModeHeader = "X-MCP-Tool-Mode"
+
+// ToolModeQueryParam is the query parameter used to specify tool mode (fallback)
+const ToolModeQueryParam = "tool_mode"
+
+// ToolModeDiscovery is the value that enables discovery mode
+const ToolModeDiscovery = "discovery"
 
 // ToolProvider is the interface that providers implement to expose tools.
 // This is the unified interface used for both native MCP endpoints and discovery search.
@@ -170,4 +181,36 @@ func callToolFromProviders(ctx context.Context, name string, params map[string]i
 	}
 
 	return nil, ErrUnknownTool
+}
+
+// GetToolModeFromRequest extracts the tool mode from an HTTP request.
+// It first checks the X-MCP-Tool-Mode header, then falls back to the tool_mode query parameter.
+// Returns ToolListModeDefault if neither is set or the value is not "discovery".
+func GetToolModeFromRequest(r *http.Request) ToolListMode {
+	// Check header first
+	mode := r.Header.Get(ToolModeHeader)
+	if mode == "" {
+		// Fall back to query parameter
+		mode = r.URL.Query().Get(ToolModeQueryParam)
+	}
+
+	if strings.EqualFold(mode, ToolModeDiscovery) {
+		return ToolListModeForceOnDemand
+	}
+
+	return ToolListModeDefault
+}
+
+// WithToolModeFromRequest returns a context with the tool mode from the HTTP request.
+// This is a convenience function that combines GetToolModeFromRequest and WithForceOnDemandMode.
+// If the request specifies discovery mode, all tools will be hidden except tool_search and execute_tool.
+func WithToolModeFromRequest(ctx context.Context, r *http.Request, providers ...ToolProvider) context.Context {
+	mode := GetToolModeFromRequest(r)
+	if mode == ToolListModeForceOnDemand {
+		return WithForceOnDemandMode(ctx, providers...)
+	}
+	if len(providers) > 0 {
+		return WithToolProviders(ctx, providers...)
+	}
+	return ctx
 }

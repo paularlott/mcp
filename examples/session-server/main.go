@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/paularlott/mcp"
 )
@@ -14,9 +15,11 @@ func main() {
 	server := mcp.NewServer("session-aware-server", "1.0.0")
 
 	// Enable JWT session management (stateless, scalable, no external dependencies)
-	if err := server.EnableSessionManagement(); err != nil {
-		log.Fatalf("Failed to enable session management: %v", err)
+	sm, err := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+	if err != nil {
+		log.Fatalf("Failed to create session manager: %v", err)
 	}
+	server.SetSessionManager(sm)
 
 	// No background cleanup needed for JWT sessions (they expire automatically)
 	// Sessions are stateless and validated on each request

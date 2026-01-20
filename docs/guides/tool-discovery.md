@@ -50,6 +50,45 @@ When you register any ondemand tool, `tool_search` and `execute_tool` are automa
 
 The server supports two modes for controlling how tools are exposed to clients.
 
+### Header-Based Mode Selection (Recommended)
+
+Clients can request discovery mode via HTTP header or query parameter:
+
+```
+X-MCP-Tool-Mode: discovery
+```
+
+Or via query parameter (fallback):
+
+```
+/mcp?tool_mode=discovery
+```
+
+**With Session Management:**
+
+- Mode is captured during `initialize` and stored in the session
+- All subsequent requests in the session use the stored mode
+- Mode cannot be changed mid-session (create a new session to change)
+
+**Without Session Management:**
+
+- Mode is checked on each request via header/query parameter
+
+**Server-side Code:**
+
+```go
+// Enable session management (recommended for production)
+sm, _ := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+server.SetSessionManager(sm)
+
+// The server automatically handles mode from headers/query params
+http.HandleFunc("/mcp", server.HandleRequest)
+```
+
+### Programmatic Mode Selection (For Internal Endpoints)
+
+For server-side consumers like web chat or OpenAI-compatible endpoints, use context-based mode:
+
 ### Normal Mode (`WithToolProviders`)
 
 All native and provider tools appear in `tools/list`:
@@ -97,6 +136,7 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 - Large tool libraries (20+ tools) where context window is a concern
 - AI clients that work better with minimal initial context
 - When you want ALL tools (including native ones) to be discoverable via search
+- Internal endpoints (web chat, OpenAI-compatible) that always need discovery mode
 
 ### The LLM Workflow with Tool Discovery
 
