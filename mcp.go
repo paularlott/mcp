@@ -848,7 +848,7 @@ func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MC
 // The context is used to retrieve request-scoped tool providers.
 func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 	mode := GetToolListMode(ctx)
-	hasOnDemandProviders := len(GetOnDemandToolProviders(ctx)) > 0
+	hasOnDemandProviders := HasOnDemandTools(ctx)
 
 	s.mu.RLock()
 	nativeTools := make([]MCPTool, len(s.nativeToolCache))

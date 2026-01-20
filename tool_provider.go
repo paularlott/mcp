@@ -214,3 +214,17 @@ func WithToolModeFromRequest(ctx context.Context, r *http.Request, providers ...
 	}
 	return ctx
 }
+
+// HasOnDemandTools checks if any ondemand providers in the context actually have tools.
+// This is more accurate than just checking if providers are registered, as providers
+// may return empty tool lists depending on the context (e.g., no discoverable scripts configured).
+func HasOnDemandTools(ctx context.Context) bool {
+	providers := GetOnDemandToolProviders(ctx)
+	for _, provider := range providers {
+		tools, err := provider.GetTools(ctx)
+		if err == nil && len(tools) > 0 {
+			return true
+		}
+	}
+	return false
+}
