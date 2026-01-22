@@ -58,6 +58,7 @@ type Client struct {
 	remoteServersMu sync.RWMutex
 	customTools     []Tool        // Custom tools (not executed by client)
 	customToolsMu   sync.RWMutex
+	extraHeaders    http.Header   // Custom headers added to all requests
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -73,6 +74,7 @@ type Config struct {
 	BaseURL             string
 	LocalServer         MCPServer            // Local MCP server (no namespace)
 	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
+	ExtraHeaders        http.Header          // Custom headers added to all requests
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -102,6 +104,7 @@ func New(config Config) (*Client, error) {
 		apiKey:        config.APIKey,
 		localServer:   config.LocalServer,
 		remoteServers: remoteServers,
+		extraHeaders:  config.ExtraHeaders,
 	}, nil
 }
 
@@ -247,7 +250,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		c.customToolsMu.RLock()
 		hasCustomTools := len(c.customTools) > 0
 		c.customToolsMu.RUnlock()
-		
+
 		if !hasServers || hasCustomTools || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
 			return response, nil
 		}
@@ -467,6 +470,16 @@ func (c *Client) nonStreamingChatCompletion(ctx context.Context, req ChatComplet
 		response.Choices = []Choice{}
 	}
 
+	// Inject estimated usage if upstream didn't provide it
+	if response.Usage == nil || (response.Usage.PromptTokens == 0 && response.Usage.CompletionTokens == 0) {
+		tc := NewTokenCounter()
+		tc.AddPromptTokensFromMessages(req.Messages)
+		if len(response.Choices) > 0 {
+			tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
+		}
+		tc.InjectUsageIfMissing(&response)
+	}
+
 	return &response, nil
 }
 
@@ -539,6 +552,22 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		return false, nil
 	}); err != nil {
 		return nil, fmt.Errorf("streaming failed: %w", err)
+	}
+
+	// Inject estimated usage if upstream didn't provide it
+	if finalResponse != nil && (finalResponse.Usage == nil ||
+		(finalResponse.Usage.PromptTokens == 0 && finalResponse.Usage.CompletionTokens == 0)) {
+		tc := NewTokenCounter()
+		tc.AddPromptTokensFromMessages(req.Messages)
+		tc.AddCompletionTokensFromText(assistantContent.String())
+		// Add tool call tokens if any
+		for _, toolCall := range toolAccumulator.Finalize() {
+			tc.AddCompletionTokensFromText(toolCall.Function.Name)
+			if args, err := json.Marshal(toolCall.Function.Arguments); err == nil {
+				tc.AddCompletionTokensFromText(string(args))
+			}
+		}
+		tc.InjectUsageIfMissing(finalResponse)
 	}
 
 	return finalResponse, nil
@@ -659,6 +688,13 @@ func (c *Client) setHeaders(req *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "mcp-openai-client/1.0.0")
+
+	// Apply extra headers (these can override defaults if needed)
+	for key, values := range c.extraHeaders {
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
 }
 
 // handleResponse handles the HTTP response

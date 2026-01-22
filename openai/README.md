@@ -36,6 +36,9 @@ client, err := openai.New(openai.Config{
     APIKey: "sk-...",
     BaseURL: "https://api.openai.com/v1", // optional, defaults to OpenAI
     LocalServer: myMCPServer, // optional local MCP server
+    ExtraHeaders: http.Header{           // optional custom headers for all requests
+        "X-Custom-Header": []string{"value"},
+    },
     RemoteServerConfigs: []openai.RemoteServerConfig{
         {
             BaseURL: "http://localhost:8080",
@@ -193,7 +196,9 @@ if err := stream.Err(); err != nil {
 }
 ```
 
-### Accumulating Streaming Responses
+### Accumulating Streaming Responses (Optional)
+
+The client automatically accumulates streaming responses internally to build tool calls and track usage. However, if you need to manually accumulate content or tool calls for custom processing, you can use `CompletionAccumulator`:
 
 ```go
 acc := &openai.CompletionAccumulator{}
@@ -218,6 +223,10 @@ if refusal, ok := acc.FinishedRefusal(); ok {
     fmt.Println("Refusal:", refusal)
 }
 ```
+
+**Note:** For token usage, you don't need to accumulate manually. The client automatically injects usage estimates into responses when the upstream doesn't provide them. See [Token Usage](#token-usage) for details.
+
+````
 
 ### Using Tool Handlers
 
@@ -256,7 +265,7 @@ if handler := openai.ToolHandlerFromContext(ctx); handler != nil {
     // 3. Notify AFTER execution with result
     handler.OnToolResult(toolCall.ID, toolCall.Function.Name, result)
 }
-```
+````
 
 ## Types Reference
 
@@ -644,9 +653,27 @@ if len(response.Choices) > 0 && len(response.Choices[0].Message.ToolCalls) > 0 {
 
 This package is part of the MCP library and is licensed under the same terms.
 
-## Token Estimation
+## Token Usage
 
-When the upstream LLM doesn't provide token usage in its response, you can use the `TokenCounter` to estimate tokens:
+The client automatically populates the `Usage` field in responses. If the upstream LLM provides token counts, those are used directly. If not, the client automatically estimates usage and injects it into the response.
+
+This means you can always rely on `response.Usage` being populated:
+
+```go
+response, err := client.ChatCompletion(ctx, req)
+if err != nil {
+    return err
+}
+
+// Usage is always available (real or estimated)
+fmt.Printf("Tokens used: %d prompt, %d completion\n",
+    response.Usage.PromptTokens,
+    response.Usage.CompletionTokens)
+```
+
+### Manual Token Estimation
+
+If you need to estimate tokens independently (e.g., for pre-flight checks or custom tracking), you can use `TokenCounter` directly:
 
 ```go
 // Initialize counter and estimate prompt tokens from initial messages
@@ -666,9 +693,6 @@ tokenCounter.AddPromptTokensFromMessages([]openai.Message{toolResultMsg})
 // Get the estimated usage
 usage := tokenCounter.GetUsage()
 // usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens
-
-// Or inject into a response if it's missing
-tokenCounter.InjectUsageIfMissing(response)
 ```
 
 ### Token Estimation Algorithm
