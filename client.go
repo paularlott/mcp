@@ -26,9 +26,9 @@ type Client struct {
 	baseURL     string
 	httpClient  *http.Client
 	auth        AuthProvider
-	namespace   string      // Optional namespace for tool names (e.g., "scriptling/")
-	separator   string      // Separator for namespace
-	cachedTools []MCPTool   // Cached tools with namespace already applied
+	namespace   string    // Optional namespace for tool names (e.g., "scriptling/")
+	separator   string    // Separator for namespace
+	cachedTools []MCPTool // Cached tools with namespace already applied
 	mu          sync.RWMutex
 	initialized bool
 	sessionID   string
@@ -70,7 +70,7 @@ func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, http
 	if namespace != "" && !strings.HasSuffix(namespace, separator) {
 		namespace = namespace + separator
 	}
-	
+
 	// Use provided pool or default
 	var httpClient *http.Client
 	if httpPool != nil {
@@ -78,7 +78,7 @@ func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, http
 	} else {
 		httpClient = pool.GetPool().GetHTTPClient()
 	}
-	
+
 	return &Client{
 		baseURL:    baseURL,
 		httpClient: httpClient,

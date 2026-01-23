@@ -102,7 +102,7 @@ func GetPoolConfig() PoolConfig {
 func NewPool(config *PoolConfig) HTTPPool {
 	// Start with defaults
 	defaults := DefaultPoolConfig()
-	
+
 	// Merge config with defaults - only override non-zero values
 	merged := &PoolConfig{
 		InsecureSkipVerify:  config.InsecureSkipVerify, // bool, so always use provided value
@@ -111,7 +111,7 @@ func NewPool(config *PoolConfig) HTTPPool {
 		IdleConnTimeout:     config.IdleConnTimeout,
 		Timeout:             config.Timeout,
 	}
-	
+
 	// Apply defaults for zero values
 	if merged.MaxIdleConns == 0 {
 		merged.MaxIdleConns = defaults.MaxIdleConns
@@ -125,7 +125,7 @@ func NewPool(config *PoolConfig) HTTPPool {
 	if merged.Timeout == 0 {
 		merged.Timeout = defaults.Timeout
 	}
-	
+
 	return createPoolWithConfig(merged)
 }
 
