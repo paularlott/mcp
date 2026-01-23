@@ -133,7 +133,7 @@ func (s *Server) SetSessionManager(manager SessionManager) {
 // getDiscoveryTools returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
 // These are generated dynamically, not stored in nativeToolCache.
 func (s *Server) getDiscoveryTools() []MCPTool {
-	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores. Use this to find tools that aren't visible in tools/list. After finding a tool: if it was not in tools/list, use execute_tool to call it; if it was in tools/list, you can call it directly. Omit query to list all available tools.",
+	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Use this to find tools that aren't visible in tools/list. After finding a tool: if it was not in tools/list, use execute_tool to call it; if it was in tools/list, you can call it directly. Omit query to list all available tools.",
 		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
 		Number("max_results", "Maximum number of results to return (default: 5)"),
 	)
