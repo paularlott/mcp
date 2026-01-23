@@ -515,9 +515,12 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 
 		// Only send response to client if:
 		// 1. No MCP servers (client handles tool calls), OR
-		// 2. MCP servers exist but this chunk has no tool calls (just content)
+		// 2. MCP servers exist but this chunk has no tool calls (just content) AND
+		// 3. This chunk doesn't signal tool_calls finish (which would make client think stream is done)
 		shouldSendToClient := !hasServers ||
-			(len(response.Choices) > 0 && len(response.Choices[0].Delta.ToolCalls) == 0)
+			(len(response.Choices) > 0 &&
+			 len(response.Choices[0].Delta.ToolCalls) == 0 &&
+			 response.Choices[0].FinishReason != "tool_calls")
 
 		if shouldSendToClient {
 			// Send the response to the channel
