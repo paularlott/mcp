@@ -47,6 +47,19 @@ type AuthProvider interface {
 // The namespace should be a simple identifier (letters, numbers, hyphens, underscores).
 // Whitespace is trimmed automatically.
 func NewClient(baseURL string, auth AuthProvider, namespace string) *Client {
+	return NewClientWithPool(baseURL, auth, namespace, nil)
+}
+
+// NewClientWithPool creates a new MCP client with a custom HTTP pool.
+// If httpPool is nil, the default secure pool is used.
+// This is useful when you need to use a pool with custom settings (e.g., InsecureSkipVerify for internal services).
+//
+// Example:
+//
+//	// Create an insecure pool for internal services with self-signed certs
+//	insecurePool := pool.NewPool(&pool.PoolConfig{InsecureSkipVerify: true})
+//	client := mcp.NewClientWithPool("https://internal.service", auth, "ns", insecurePool)
+func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, httpPool pool.HTTPPool) *Client {
 	// Use the global default separator
 	separator := DefaultNamespaceSeparator
 
@@ -57,9 +70,18 @@ func NewClient(baseURL string, auth AuthProvider, namespace string) *Client {
 	if namespace != "" && !strings.HasSuffix(namespace, separator) {
 		namespace = namespace + separator
 	}
+	
+	// Use provided pool or default
+	var httpClient *http.Client
+	if httpPool != nil {
+		httpClient = httpPool.GetHTTPClient()
+	} else {
+		httpClient = pool.GetPool().GetHTTPClient()
+	}
+	
 	return &Client{
 		baseURL:    baseURL,
-		httpClient: pool.GetPool().GetHTTPClient(),
+		httpClient: httpClient,
 		auth:       auth,
 		namespace:  namespace,
 		separator:  separator,

@@ -87,6 +87,48 @@ func GetPoolConfig() PoolConfig {
 	return *poolConfig
 }
 
+// NewPool creates a new HTTP pool with the given configuration.
+// The config is merged with DefaultPoolConfig() - any nil/zero values in config
+// will use the corresponding defaults. This ensures consistency across pools
+// while allowing specific overrides (e.g., InsecureSkipVerify).
+//
+// Example:
+//
+//	// Create an insecure pool for internal services with self-signed certs
+//	// All other settings (timeouts, connection limits) inherit from defaults
+//	insecurePool := pool.NewPool(&pool.PoolConfig{
+//	    InsecureSkipVerify: true,
+//	})
+func NewPool(config *PoolConfig) HTTPPool {
+	// Start with defaults
+	defaults := DefaultPoolConfig()
+	
+	// Merge config with defaults - only override non-zero values
+	merged := &PoolConfig{
+		InsecureSkipVerify:  config.InsecureSkipVerify, // bool, so always use provided value
+		MaxIdleConns:        config.MaxIdleConns,
+		MaxIdleConnsPerHost: config.MaxIdleConnsPerHost,
+		IdleConnTimeout:     config.IdleConnTimeout,
+		Timeout:             config.Timeout,
+	}
+	
+	// Apply defaults for zero values
+	if merged.MaxIdleConns == 0 {
+		merged.MaxIdleConns = defaults.MaxIdleConns
+	}
+	if merged.MaxIdleConnsPerHost == 0 {
+		merged.MaxIdleConnsPerHost = defaults.MaxIdleConnsPerHost
+	}
+	if merged.IdleConnTimeout == 0 {
+		merged.IdleConnTimeout = defaults.IdleConnTimeout
+	}
+	if merged.Timeout == 0 {
+		merged.Timeout = defaults.Timeout
+	}
+	
+	return createPoolWithConfig(merged)
+}
+
 // DefaultPool is the default HTTP pool implementation
 type DefaultPool struct {
 	httpClient *http.Client
@@ -102,6 +144,11 @@ func newDefaultPoolImpl() *DefaultPool {
 		cfg = DefaultPoolConfig()
 	}
 
+	return createPoolWithConfig(cfg)
+}
+
+// createPoolWithConfig creates a pool with the given configuration
+func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: cfg.InsecureSkipVerify,

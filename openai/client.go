@@ -59,13 +59,15 @@ type Client struct {
 	customTools     []Tool        // Custom tools (not executed by client)
 	customToolsMu   sync.RWMutex
 	extraHeaders    http.Header   // Custom headers added to all requests
+	httpPool        pool.HTTPPool // Optional custom HTTP pool
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
 type RemoteServerConfig struct {
-	BaseURL string
-	Auth    mcp.AuthProvider
+	BaseURL   string
+	Auth      mcp.AuthProvider
 	Namespace string
+	HTTPPool  pool.HTTPPool // Optional custom HTTP pool for this remote server
 }
 
 // Config holds configuration for the OpenAI client
@@ -75,6 +77,7 @@ type Config struct {
 	LocalServer         MCPServer            // Local MCP server (no namespace)
 	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
 	ExtraHeaders        http.Header          // Custom headers added to all requests
+	HTTPPool            pool.HTTPPool        // Optional custom HTTP pool (nil = use default secure pool)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -96,7 +99,11 @@ func New(config Config) (*Client, error) {
 	// Create remote clients (separator defaults to "/" in mcp.NewClient)
 	remoteServers := make([]*mcp.Client, len(config.RemoteServerConfigs))
 	for i, rsc := range config.RemoteServerConfigs {
-		remoteServers[i] = mcp.NewClient(rsc.BaseURL, rsc.Auth, rsc.Namespace)
+		if rsc.HTTPPool != nil {
+			remoteServers[i] = mcp.NewClientWithPool(rsc.BaseURL, rsc.Auth, rsc.Namespace, rsc.HTTPPool)
+		} else {
+			remoteServers[i] = mcp.NewClient(rsc.BaseURL, rsc.Auth, rsc.Namespace)
+		}
 	}
 
 	return &Client{
@@ -105,6 +112,7 @@ func New(config Config) (*Client, error) {
 		localServer:   config.LocalServer,
 		remoteServers: remoteServers,
 		extraHeaders:  config.ExtraHeaders,
+		httpPool:      config.HTTPPool, // Store the pool (nil = use default)
 	}, nil
 }
 
@@ -623,7 +631,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, r
 
 	c.setHeaders(req)
 
-	httpClient := pool.GetPool().GetHTTPClient()
+	// Use custom pool if provided, otherwise use default
+	var httpClient *http.Client
+	if c.httpPool != nil {
+		httpClient = c.httpPool.GetHTTPClient()
+	} else {
+		httpClient = pool.GetPool().GetHTTPClient()
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
@@ -652,7 +666,13 @@ func (c *Client) streamRequest(ctx context.Context, method, path string, body an
 	c.setHeaders(req)
 	req.Header.Set("Accept", "text/event-stream")
 
-	httpClient := pool.GetPool().GetHTTPClient()
+	// Use custom pool if provided, otherwise use default
+	var httpClient *http.Client
+	if c.httpPool != nil {
+		httpClient = c.httpPool.GetHTTPClient()
+	} else {
+		httpClient = pool.GetPool().GetHTTPClient()
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
