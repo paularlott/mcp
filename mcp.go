@@ -43,12 +43,13 @@ var (
 
 // registeredTool represents a registered tool
 type registeredTool struct {
-	Name         string
-	Description  string
-	Schema       map[string]interface{}
-	OutputSchema map[string]interface{}
-	Handler      ToolHandler
-	Visibility   ToolVisibility
+	Name          string
+	Description   string
+	Schema        map[string]interface{}
+	OutputSchema  map[string]interface{}
+	Handler       ToolHandler
+	Visibility    ToolVisibility
+	AlwaysVisible bool
 }
 
 // Server represents an MCP server instance.
@@ -132,7 +133,16 @@ func (s *Server) SetSessionManager(manager SessionManager) {
 
 // getDiscoveryTools returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
 // These are generated dynamically, not stored in nativeToolCache.
+// Also includes any native tools marked with AlwaysVisible.
 func (s *Server) getDiscoveryTools() []MCPTool {
+	return s.getDiscoveryToolsWithContext(context.Background())
+}
+
+// getDiscoveryToolsWithContext returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
+// These are generated dynamically, not stored in nativeToolCache.
+// Also includes any native tools marked with AlwaysVisible.
+// Additionally, checks tool providers for tools marked with AlwaysVisible.
+func (s *Server) getDiscoveryToolsWithContext(ctx context.Context) []MCPTool {
 	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Use this to find tools that aren't visible in tools/list. After finding a tool: if it was not in tools/list, use execute_tool to call it; if it was in tools/list, you can call it directly. Omit query to list all available tools.",
 		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
 		Number("max_results", "Maximum number of results to return (default: 5)"),
@@ -143,7 +153,7 @@ func (s *Server) getDiscoveryTools() []MCPTool {
 		Object("arguments", "The arguments to pass to the tool (matching the schema from tool_search results)"),
 	)
 
-	return []MCPTool{
+	discoveryTools := []MCPTool{
 		{
 			Name:        ToolSearchName,
 			Description: toolSearch.Description(),
@@ -155,6 +165,40 @@ func (s *Server) getDiscoveryTools() []MCPTool {
 			InputSchema: executeTool.BuildSchema(),
 		},
 	}
+
+	// Add native tools marked as AlwaysVisible (for tools that must remain discoverable in force on-demand mode)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, tool := range s.nativeToolCache {
+		if tool.AlwaysVisible {
+			discoveryTools = append(discoveryTools, tool)
+		}
+	}
+
+	// Add tools from providers marked as AlwaysVisible
+	for _, provider := range GetToolProviders(ctx) {
+		tools, err := provider.GetTools(ctx)
+		if err != nil {
+			continue
+		}
+		for _, tool := range tools {
+			if tool.AlwaysVisible {
+				// Avoid duplicates with native tools
+				alreadySeen := false
+				for _, existing := range discoveryTools {
+					if existing.Name == tool.Name {
+						alreadySeen = true
+						break
+					}
+				}
+				if !alreadySeen {
+					discoveryTools = append(discoveryTools, tool)
+				}
+			}
+		}
+	}
+
+	return discoveryTools
 }
 
 // handleToolSearch handles the tool_search meta-tool execution
@@ -270,20 +314,22 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords .
 // In force ondemand mode, native tools with keywords become searchable.
 func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
 	regTool := &registeredTool{
-		Name:         tool.name,
-		Description:  tool.Description(),
-		Schema:       tool.buildSchema(),
-		OutputSchema: tool.buildOutputSchema(),
-		Handler:      handler,
-		Visibility:   ToolVisibilityNative,
+		Name:          tool.name,
+		Description:   tool.Description(),
+		Schema:        tool.buildSchema(),
+		OutputSchema:  tool.buildOutputSchema(),
+		Handler:       handler,
+		Visibility:    ToolVisibilityNative,
+		AlwaysVisible: tool.alwaysVisible,
 	}
 	s.tools[tool.name] = regTool
 
 	newTool := MCPTool{
-		Name:        tool.name,
-		Description: tool.Description(),
-		InputSchema: regTool.Schema,
-		Keywords:    keywords, // Store keywords for force ondemand mode
+		Name:          tool.name,
+		Description:   tool.Description(),
+		InputSchema:   regTool.Schema,
+		Keywords:      keywords, // Store keywords for force ondemand mode
+		AlwaysVisible: tool.alwaysVisible,
 	}
 	if regTool.OutputSchema != nil {
 		newTool.OutputSchema = regTool.OutputSchema
@@ -347,12 +393,13 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 
 	for _, tr := range tools {
 		regTool := &registeredTool{
-			Name:         tr.Tool.name,
-			Description:  tr.Tool.Description(),
-			Schema:       tr.Tool.buildSchema(),
-			OutputSchema: tr.Tool.buildOutputSchema(),
-			Handler:      tr.Handler,
-			Visibility:   ToolVisibilityNative,
+			Name:          tr.Tool.name,
+			Description:   tr.Tool.Description(),
+			Schema:        tr.Tool.buildSchema(),
+			OutputSchema:  tr.Tool.buildOutputSchema(),
+			Handler:       tr.Handler,
+			Visibility:    ToolVisibilityNative,
+			AlwaysVisible: tr.Tool.alwaysVisible,
 		}
 		s.tools[tr.Tool.name] = regTool
 	}
@@ -368,9 +415,10 @@ func (s *Server) rebuildNativeToolCacheLocked() {
 	for _, tool := range s.tools {
 		if tool.Visibility == ToolVisibilityNative {
 			toolItem := MCPTool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.Schema,
+				Name:          tool.Name,
+				Description:   tool.Description,
+				InputSchema:   tool.Schema,
+				AlwaysVisible: tool.AlwaysVisible,
 			}
 			if tool.OutputSchema != nil {
 				toolItem.OutputSchema = tool.OutputSchema
@@ -869,7 +917,7 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 
 	// In force ondemand mode, only show tool_search and execute_tool
 	if mode == ToolListModeForceOnDemand {
-		return s.getDiscoveryTools()
+		return s.getDiscoveryToolsWithContext(ctx)
 	}
 
 	// Normal mode: include all native tools

@@ -4,10 +4,11 @@ import "strings"
 
 // ToolBuilder provides fluent API for building tools
 type ToolBuilder struct {
-	name         string
-	description  string
-	params       []paramDef
-	outputParams []paramDef
+	name          string
+	description   string
+	params        []paramDef
+	outputParams  []paramDef
+	alwaysVisible bool
 }
 
 type paramDef struct {
@@ -145,4 +146,11 @@ func (t *ToolBuilder) buildObjectSchema(param *paramDef) map[string]interface{} 
 		schema["required"] = required
 	}
 	return schema
+}
+
+// WithAlwaysVisible marks the tool as always visible, even in force on-demand mode.
+// This is useful for tools that must remain discoverable regardless of the tool mode.
+func (t *ToolBuilder) WithAlwaysVisible() *ToolBuilder {
+	t.alwaysVisible = true
+	return t
 }

@@ -44,10 +44,11 @@ func (r *internalRegistry) RegisterTool(tool *ToolBuilder, handler ToolHandler, 
 	outputSchema := tool.BuildOutputSchema()
 
 	mcpTool := &MCPTool{
-		Name:        tool.Name(),
-		Description: tool.Description(),
-		InputSchema: schema,
-		Keywords:    keywords,
+		Name:          tool.Name(),
+		Description:   tool.Description(),
+		InputSchema:   schema,
+		Keywords:      keywords,
+		AlwaysVisible: tool.alwaysVisible,
 	}
 	if outputSchema != nil {
 		mcpTool.OutputSchema = outputSchema

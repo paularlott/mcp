@@ -464,11 +464,16 @@ func NewMockToolProvider() *MockToolProvider {
 }
 
 func (p *MockToolProvider) AddTool(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), keywords ...string) {
+	p.AddToolWithOptions(name, description, handler, false, keywords...)
+}
+
+func (p *MockToolProvider) AddToolWithOptions(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), alwaysVisible bool, keywords ...string) {
 	p.tools = append(p.tools, MCPTool{
-		Name:        name,
-		Description: description,
-		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-		Keywords:    keywords,
+		Name:          name,
+		Description:   description,
+		InputSchema:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Keywords:      keywords,
+		AlwaysVisible: alwaysVisible,
 	})
 	p.handlers[name] = handler
 }
@@ -767,5 +772,195 @@ func TestVisibilityStringMethod(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("ToolVisibility(%d).String() = %q, want %q", tt.v, got, tt.want)
 		}
+	}
+}
+
+// TestAlwaysVisibleInForceOnDemandMode tests that tools with AlwaysVisible=true
+// appear in tools/list even in force on-demand mode
+func TestAlwaysVisibleInForceOnDemandMode(t *testing.T) {
+	server := NewServer("test", "1.0.0")
+
+	// Register a tool that is NOT always visible
+	server.RegisterTool(
+		NewTool("native_hidden", "A normal native tool"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+	)
+
+	// Register a tool that IS always visible
+	server.RegisterTool(
+		NewTool("always_visible_tool", "A tool that should always be visible").WithAlwaysVisible(),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+	)
+
+	// Register an ondemand tool to trigger discovery mode
+	server.RegisterOnDemandTool(
+		NewTool("dummy_ondemand", "Dummy tool"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+		"dummy",
+	)
+
+	// Normal mode - should have all tools except ondemand
+	normalTools := server.ListToolsWithContext(context.Background())
+	hasNativeHidden := false
+	hasAlwaysVisible := false
+	for _, tool := range normalTools {
+		if tool.Name == "native_hidden" {
+			hasNativeHidden = true
+		}
+		if tool.Name == "always_visible_tool" {
+			hasAlwaysVisible = true
+		}
+	}
+	if !hasNativeHidden {
+		t.Error("native_hidden should appear in normal mode")
+	}
+	if !hasAlwaysVisible {
+		t.Error("always_visible_tool should appear in normal mode")
+	}
+
+	// Force ondemand mode - should have tool_search, execute_tool, AND always_visible_tool
+	forceCtx := WithForceOnDemandMode(context.Background())
+	forceTools := server.ListToolsWithContext(forceCtx)
+
+	foundToolSearch := false
+	foundExecuteTool := false
+	foundAlwaysVisible := false
+	for _, tool := range forceTools {
+		if tool.Name == ToolSearchName {
+			foundToolSearch = true
+		}
+		if tool.Name == ExecuteToolName {
+			foundExecuteTool = true
+		}
+		if tool.Name == "always_visible_tool" {
+			foundAlwaysVisible = true
+		}
+		// native_hidden should NOT appear
+		if tool.Name == "native_hidden" {
+			t.Error("native_hidden should NOT appear in force ondemand mode")
+		}
+	}
+
+	if !foundToolSearch {
+		t.Error("tool_search should appear in force ondemand mode")
+	}
+	if !foundExecuteTool {
+		t.Error("execute_tool should appear in force ondemand mode")
+	}
+	if !foundAlwaysVisible {
+		t.Error("always_visible_tool should appear in force ondemand mode")
+	}
+
+	// Should have exactly 3 tools: tool_search, execute_tool, always_visible_tool
+	if len(forceTools) != 3 {
+		t.Errorf("expected 3 tools in force ondemand mode, got %d", len(forceTools))
+	}
+
+	// Verify the always visible tool is still callable
+	response, err := server.CallTool(forceCtx, "always_visible_tool", nil)
+	if err != nil {
+		t.Fatalf("always_visible_tool should be callable in force ondemand mode: %v", err)
+	}
+	if response.Content[0].Text != "OK" {
+		t.Errorf("unexpected response from always_visible_tool: %s", response.Content[0].Text)
+	}
+}
+
+// TestProviderAlwaysVisibleInForceOnDemandMode tests that provider tools with AlwaysVisible=true
+// appear in tools/list even in force on-demand mode
+func TestProviderAlwaysVisibleInForceOnDemandMode(t *testing.T) {
+	server := NewServer("test", "1.0.0")
+
+	// Register an ondemand tool to trigger discovery mode
+	server.RegisterOnDemandTool(
+		NewTool("dummy_ondemand", "Dummy tool"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+		"dummy",
+	)
+
+	// Create provider with a tool that is NOT always visible
+	provider := NewMockToolProvider()
+	provider.AddToolWithOptions("provider_hidden", "A provider tool that should be hidden", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		return NewToolResponseText("Hidden"), nil
+	}, false, "hidden", "test")
+
+	// Create provider with a tool that IS always visible
+	provider.AddToolWithOptions("provider_always_visible", "A provider tool that should always be visible", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		return NewToolResponseText("Always Visible"), nil
+	}, true, "always", "visible", "test")
+
+	// Normal mode - should have all provider tools
+	normalCtx := WithToolProviders(context.Background(), provider)
+	normalTools := server.ListToolsWithContext(normalCtx)
+	hasProviderHidden := false
+	hasProviderAlwaysVisible := false
+	for _, tool := range normalTools {
+		if tool.Name == "provider_hidden" {
+			hasProviderHidden = true
+		}
+		if tool.Name == "provider_always_visible" {
+			hasProviderAlwaysVisible = true
+		}
+	}
+	if !hasProviderHidden {
+		t.Error("provider_hidden should appear in normal mode")
+	}
+	if !hasProviderAlwaysVisible {
+		t.Error("provider_always_visible should appear in normal mode")
+	}
+
+	// Force ondemand mode - should have tool_search, execute_tool, AND provider_always_visible
+	forceCtx := WithForceOnDemandMode(context.Background(), provider)
+	forceTools := server.ListToolsWithContext(forceCtx)
+
+	foundToolSearch := false
+	foundExecuteTool := false
+	foundProviderAlwaysVisible := false
+	for _, tool := range forceTools {
+		if tool.Name == ToolSearchName {
+			foundToolSearch = true
+		}
+		if tool.Name == ExecuteToolName {
+			foundExecuteTool = true
+		}
+		if tool.Name == "provider_always_visible" {
+			foundProviderAlwaysVisible = true
+		}
+		// provider_hidden should NOT appear
+		if tool.Name == "provider_hidden" {
+			t.Error("provider_hidden should NOT appear in force ondemand mode")
+		}
+	}
+
+	if !foundToolSearch {
+		t.Error("tool_search should appear in force ondemand mode")
+	}
+	if !foundExecuteTool {
+		t.Error("execute_tool should appear in force ondemand mode")
+	}
+	if !foundProviderAlwaysVisible {
+		t.Error("provider_always_visible should appear in force ondemand mode")
+	}
+
+	// Should have exactly 3 tools: tool_search, execute_tool, provider_always_visible
+	if len(forceTools) != 3 {
+		t.Errorf("expected 3 tools in force ondemand mode, got %d", len(forceTools))
+	}
+
+	// Verify the provider always visible tool is still callable
+	response, err := server.CallTool(forceCtx, "provider_always_visible", nil)
+	if err != nil {
+		t.Fatalf("provider_always_visible should be callable in force ondemand mode: %v", err)
+	}
+	if response.Content[0].Text != "Always Visible" {
+		t.Errorf("unexpected response from provider_always_visible: %s", response.Content[0].Text)
 	}
 }

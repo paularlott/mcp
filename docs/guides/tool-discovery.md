@@ -126,10 +126,40 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 
 **Behavior:**
 
-- Only `tool_search` and `execute_tool` appear in `tools/list`
+- Only `tool_search` and `execute_tool` appear in `tools/list` by default
 - ALL tools (native, ondemand, provider, remote) are searchable via `tool_search`
 - Keywords on ALL tools (including native) are used for search
 - All tools remain callable (directly or via `execute_tool`)
+- **Exception:** Tools marked with `AlwaysVisible: true` also appear in `tools/list`
+
+**AlwaysVisible Tools:**
+
+Some tools need to remain visible even in force on-demand mode (e.g., discovery tools like `find_skill` that help the LLM find other resources). This applies to both native tools and provider tools:
+
+**Native Tools:**
+```go
+server.RegisterTool(
+    mcp.NewTool("find_skill", "Find skills by topic")
+        .WithAlwaysVisible(),  // This tool stays visible in force on-demand mode
+    handler,
+)
+```
+
+**Provider Tools:**
+```go
+type SkillProvider struct {
+    // ... provider implementation
+}
+
+func (p *SkillProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{{
+        Name:          "find_skill",
+        Description:   "Find skills by topic",
+        InputSchema:   schema,
+        AlwaysVisible: true,  // This tool stays visible in force on-demand mode
+    }}, nil
+}
+```
 
 **When to use:**
 
@@ -137,6 +167,7 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 - AI clients that work better with minimal initial context
 - When you want ALL tools (including native ones) to be discoverable via search
 - Internal endpoints (web chat, OpenAI-compatible) that always need discovery mode
+- When specific tools must remain discoverable for the LLM to find other resources
 
 ### The LLM Workflow with Tool Discovery
 
