@@ -154,3 +154,21 @@ func (t *ToolBuilder) WithAlwaysVisible() *ToolBuilder {
 	t.alwaysVisible = true
 	return t
 }
+
+// ToMCPTool converts the ToolBuilder to an MCPTool struct.
+// This is useful for tool providers that use the fluent API to build tools
+// but need to return MCPTool structs from their GetTools method.
+// The keywords parameter is optional; pass nil or an empty slice if not needed.
+func (t *ToolBuilder) ToMCPTool(keywords []string) MCPTool {
+	tool := MCPTool{
+		Name:          t.name,
+		Description:   t.Description(),
+		InputSchema:   t.buildSchema(),
+		Keywords:      keywords,
+		AlwaysVisible: t.alwaysVisible,
+	}
+	if outputSchema := t.buildOutputSchema(); outputSchema != nil {
+		tool.OutputSchema = outputSchema
+	}
+	return tool
+}
