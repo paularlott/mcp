@@ -312,3 +312,122 @@ func TestClient_NamespaceNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestClient_ToolFilter(t *testing.T) {
+	// Create server with multiple tools
+	srv := NewServer("svc", "1")
+	srv.RegisterTool(NewTool("search", "search tool", String("q", "query", Required())), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("search result"), nil
+	})
+	srv.RegisterTool(NewTool("delete", "delete tool", String("id", "id", Required())), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("deleted"), nil
+	})
+	srv.RegisterTool(NewTool("create", "create tool", String("name", "name", Required())), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("created"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	ctx := context.Background()
+
+	t.Run("no filter returns all tools", func(t *testing.T) {
+		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "ns")
+		tools, err := c.ListTools(ctx)
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		if len(tools) != 3 {
+			t.Errorf("expected 3 tools, got %d", len(tools))
+		}
+	})
+
+	t.Run("filter excludes tools from ListTools", func(t *testing.T) {
+		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "ns")
+		c.WithToolFilter(func(name string) bool {
+			return name != "delete" // exclude delete
+		})
+
+		tools, err := c.ListTools(ctx)
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		if len(tools) != 2 {
+			t.Errorf("expected 2 tools, got %d", len(tools))
+		}
+		for _, tool := range tools {
+			if tool.Name == "ns/delete" {
+				t.Error("delete tool should have been filtered out")
+			}
+		}
+	})
+
+	t.Run("filter blocks CallTool", func(t *testing.T) {
+		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "ns")
+		c.WithToolFilter(func(name string) bool {
+			return name == "search" // only allow search
+		})
+
+		// Should work for allowed tool
+		_, err := c.CallTool(ctx, "ns/search", map[string]any{"q": "test"})
+		if err != nil {
+			t.Fatalf("CallTool for allowed tool: %v", err)
+		}
+
+		// Should fail for filtered tool
+		_, err = c.CallTool(ctx, "ns/delete", map[string]any{"id": "123"})
+		if err != ErrToolFiltered {
+			t.Errorf("expected ErrToolFiltered, got %v", err)
+		}
+	})
+
+	t.Run("filter is chainable", func(t *testing.T) {
+		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "ns").
+			WithToolFilter(func(name string) bool {
+				return name == "create"
+			})
+
+		tools, err := c.ListTools(ctx)
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		if len(tools) != 1 || tools[0].Name != "ns/create" {
+			t.Errorf("expected only ns/create, got %+v", tools)
+		}
+	})
+
+	t.Run("clearing filter re-enables all tools", func(t *testing.T) {
+		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "ns")
+		c.WithToolFilter(func(name string) bool {
+			return name == "search"
+		})
+
+		// Only 1 tool with filter
+		tools, _ := c.ListTools(ctx)
+		if len(tools) != 1 {
+			t.Errorf("expected 1 tool with filter, got %d", len(tools))
+		}
+
+		// Clear filter and refresh
+		c.WithToolFilter(nil)
+		_ = c.RefreshToolCache(ctx)
+
+		tools, _ = c.ListTools(ctx)
+		if len(tools) != 3 {
+			t.Errorf("expected 3 tools after clearing filter, got %d", len(tools))
+		}
+	})
+
+	t.Run("GetToolFilter returns current filter", func(t *testing.T) {
+		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "")
+		if c.GetToolFilter() != nil {
+			t.Error("expected nil filter initially")
+		}
+
+		filter := func(name string) bool { return true }
+		c.WithToolFilter(filter)
+
+		if c.GetToolFilter() == nil {
+			t.Error("expected filter to be set")
+		}
+	})
+}

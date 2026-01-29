@@ -18,6 +18,62 @@ tools, err := client.ListTools(ctx)
 result, err := client.CallTool(ctx, "tool-name", args)
 ```
 
+## Tool Filtering
+
+Filter which tools are exposed from a remote server. The filter is applied to both `ListTools()` and `CallTool()`:
+
+```go
+// Create client with namespace
+client := mcp.NewClient("https://api.example.com/mcp", auth, "github")
+
+// Set a filter - only allow specific tools
+client.WithToolFilter(func(toolName string) bool {
+    // toolName is the original name WITHOUT namespace prefix
+    allowedTools := map[string]bool{
+        "search_repos":  true,
+        "list_issues":   true,
+        "create_issue":  true,
+    }
+    return allowedTools[toolName]
+})
+
+// ListTools only returns filtered tools
+tools, _ := client.ListTools(ctx)  // Only returns 3 tools
+
+// CallTool rejects filtered-out tools
+_, err := client.CallTool(ctx, "github/delete_repo", args)  // Returns ErrToolFiltered
+```
+
+### Filter Patterns
+
+```go
+// Exclude dangerous tools
+client.WithToolFilter(func(name string) bool {
+    return name != "delete" && name != "drop_database"
+})
+
+// Allow only read operations
+client.WithToolFilter(func(name string) bool {
+    return strings.HasPrefix(name, "get_") || strings.HasPrefix(name, "list_")
+})
+
+// Dynamic filter from database/config
+client.WithToolFilter(func(name string) bool {
+    return db.IsToolEnabled(serverID, name)
+})
+
+// Clear filter to re-enable all tools
+client.WithToolFilter(nil)
+_ = client.RefreshToolCache(ctx)  // Refresh to pick up new tools
+```
+
+### Filter Behavior
+
+- Filter receives the **original tool name** (without namespace prefix)
+- Setting a filter **clears the tool cache** automatically
+- `ErrToolFiltered` is returned when calling a filtered-out tool
+- `nil` filter means all tools are allowed (default)
+
 ## Unified Server with Remote Tools
 
 Register remote servers directly with your local server for a unified tool interface:

@@ -39,6 +39,7 @@ var supportedProtocolVersions = []string{
 var (
 	ErrUnknownTool      = errors.New("unknown tool")
 	ErrUnknownParameter = errors.New("parameter not found")
+	ErrToolFiltered     = errors.New("tool is filtered out")
 )
 
 // registeredTool represents a registered tool

@@ -21,6 +21,11 @@ const (
 // DefaultNamespaceSeparator is the default separator used for namespacing tool names
 var DefaultNamespaceSeparator = "/"
 
+// ToolFilterFunc is a function that determines if a tool should be included.
+// It receives the original tool name (without namespace prefix).
+// Return true to include the tool, false to exclude it.
+type ToolFilterFunc func(toolName string) bool
+
 // Client represents an MCP client for connecting to remote servers
 type Client struct {
 	baseURL     string
@@ -29,6 +34,7 @@ type Client struct {
 	namespace   string    // Optional namespace for tool names (e.g., "scriptling/")
 	separator   string    // Separator for namespace
 	cachedTools []MCPTool // Cached tools with namespace already applied
+	toolFilter  ToolFilterFunc // Optional filter for tools (applied to original name without namespace)
 	mu          sync.RWMutex
 	initialized bool
 	sessionID   string
@@ -142,6 +148,27 @@ func (c *Client) Namespace() string {
 	return c.namespace
 }
 
+// WithToolFilter sets a filter function for this client.
+// The filter receives the original tool name (without namespace prefix).
+// When set, ListTools will only return tools where filter returns true,
+// and CallTool will reject calls to filtered-out tools.
+// Pass nil to clear the filter. Returns the client for chaining.
+// Note: Setting a filter clears the tool cache to ensure consistency.
+func (c *Client) WithToolFilter(filter ToolFilterFunc) *Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.toolFilter = filter
+	c.cachedTools = nil // Clear cache when filter changes
+	return c
+}
+
+// GetToolFilter returns the current tool filter, or nil if none is set.
+func (c *Client) GetToolFilter() ToolFilterFunc {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.toolFilter
+}
+
 // ListTools retrieves tools from the remote server
 func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 	if !c.initialized {
@@ -181,14 +208,22 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 		return nil, fmt.Errorf("failed to parse tools response: %w", err)
 	}
 
-	// Add namespace to tool names and cache the results
-	namespacedTools := make([]MCPTool, len(tools))
-	for i, tool := range tools {
-		namespacedTools[i] = MCPTool{
+	// Add namespace to tool names, apply filter, and cache the results
+	c.mu.Lock()
+	filter := c.toolFilter
+	c.mu.Unlock()
+
+	var namespacedTools []MCPTool
+	for _, tool := range tools {
+		// Apply filter if set (filter receives original name without namespace)
+		if filter != nil && !filter(tool.Name) {
+			continue
+		}
+		namespacedTools = append(namespacedTools, MCPTool{
 			Name:        c.namespace + tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
-		}
+		})
 	}
 
 	c.mu.Lock()
@@ -211,6 +246,7 @@ func (c *Client) RefreshToolCache(ctx context.Context) error {
 // CallTool executes a tool on the remote server.
 // If the client has a namespace, the tool name should include it (e.g., "scriptling/search").
 // The namespace will be stripped before calling the underlying tool.
+// If a tool filter is set and the tool is filtered out, returns ErrToolFiltered.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {
@@ -222,6 +258,14 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]inte
 	toolName := name
 	if c.namespace != "" && strings.HasPrefix(name, c.namespace) {
 		toolName = name[len(c.namespace):]
+	}
+
+	// Check tool filter if set
+	c.mu.RLock()
+	filter := c.toolFilter
+	c.mu.RUnlock()
+	if filter != nil && !filter(toolName) {
+		return nil, ErrToolFiltered
 	}
 
 	req := MCPRequest{
