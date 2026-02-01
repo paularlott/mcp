@@ -21,9 +21,9 @@ func (p *mockProviderForDiscovery) ExecuteTool(ctx context.Context, name string,
 	return nil, ErrUnknownTool
 }
 
-// TestDiscoveryModeWithProvidersAttached tests that discovery mode works when providers are attached before HandleRequest
+// TestShowAllModeWithProvidersAttached tests that show-all mode works when providers are attached before HandleRequest
 // This mimics what llmrouter does - it attaches providers then calls MCP server's HandleRequest
-func TestDiscoveryModeWithProvidersAttached(t *testing.T) {
+func TestShowAllModeWithProvidersAttached(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 	// NOTE: No session management enabled
 
@@ -35,19 +35,27 @@ func TestDiscoveryModeWithProvidersAttached(t *testing.T) {
 		},
 	)
 
-	// Create a mock provider
+	// Register a discoverable tool so discovery meta-tools exist
+	server.RegisterTool(
+		NewTool("discoverable_tool", "A discoverable tool").Discoverable("test"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+	)
+
+	// Create a mock provider with a native tool
 	provider := &mockProviderForDiscovery{
 		tools: []MCPTool{
-			{Name: "native_tool", Description: "A native tool"},
+			{Name: "native_tool", Description: "A native tool", Visibility: ToolVisibilityNative},
 		},
 	}
 
-	// List tools with discovery mode header AND provider attached (like llmrouter)
+	// List tools with show-all mode header AND provider attached (like llmrouter)
 	listBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(listBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
-	req.Header.Set(ToolModeHeader, "discovery")
+	req.Header.Set(ShowAllHeader, "true")
 
 	// Attach provider BEFORE calling HandleRequest (like llmrouter does)
 	ctx := WithToolProviders(req.Context(), provider)
@@ -70,36 +78,46 @@ func TestDiscoveryModeWithProvidersAttached(t *testing.T) {
 
 	t.Logf("Tools returned: %v", listResp.Result.Tools)
 
-	// Should only see discovery tools
-	for _, tool := range listResp.Result.Tools {
-		if tool.Name == "native_tool" {
-			t.Error("native_tool should NOT be visible in discovery mode (from provider)")
-		}
-		if tool.Name == "execute_code" {
-			t.Error("execute_code should NOT be visible in discovery mode (from server)")
-		}
-	}
-
-	// Should see tool_search and execute_tool
+	// In show-all mode, ALL tools should be visible
+	hasNativeTool := false
+	hasExecuteCode := false
+	hasDiscoverableTool := false
 	hasToolSearch := false
 	hasExecuteTool := false
 	for _, tool := range listResp.Result.Tools {
-		if tool.Name == ToolSearchName {
+		switch tool.Name {
+		case "native_tool":
+			hasNativeTool = true
+		case "execute_code":
+			hasExecuteCode = true
+		case "discoverable_tool":
+			hasDiscoverableTool = true
+		case ToolSearchName:
 			hasToolSearch = true
-		}
-		if tool.Name == ExecuteToolName {
+		case ExecuteToolName:
 			hasExecuteTool = true
 		}
 	}
-	if !hasToolSearch {
-		t.Error("tool_search should be visible in discovery mode")
+
+	if !hasNativeTool {
+		t.Error("native_tool should be visible in show-all mode (from provider)")
 	}
-	if !hasExecuteTool {
-		t.Error("execute_tool should be visible in discovery mode")
+	if !hasExecuteCode {
+		t.Error("execute_code should be visible in show-all mode (from server)")
+	}
+	if !hasDiscoverableTool {
+		t.Error("discoverable_tool should be visible in show-all mode")
+	}
+	if hasToolSearch {
+		t.Error("tool_search should NOT be visible in show-all mode")
+	}
+	if hasExecuteTool {
+		t.Error("execute_tool should NOT be visible in show-all mode")
 	}
 
-	// Should have exactly 2 tools
-	if len(listResp.Result.Tools) != 2 {
-		t.Errorf("Expected 2 tools in discovery mode, got %d", len(listResp.Result.Tools))
+	// Should have 3 tools: native_tool, execute_code, discoverable_tool (meta-tools excluded)
+	if len(listResp.Result.Tools) != 3 {
+		t.Errorf("Expected 3 tools in show-all mode, got %d", len(listResp.Result.Tools))
 	}
 }
+

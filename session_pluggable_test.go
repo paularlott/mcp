@@ -21,7 +21,7 @@ type mockSessionManager struct {
 
 type mockSession struct {
 	protocolVersion string
-	toolMode        ToolListMode
+	showAll         bool
 	createdAt       time.Time
 }
 
@@ -31,14 +31,14 @@ func newMockSessionManager() *mockSessionManager {
 	}
 }
 
-func (m *mockSessionManager) CreateSession(ctx context.Context, protocolVersion string, toolMode ToolListMode) (string, error) {
+func (m *mockSessionManager) CreateSession(ctx context.Context, protocolVersion string, showAll bool) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createCalled++
 	sessionID := "mock-session-" + time.Now().Format("20060102150405.000000")
 	m.sessions[sessionID] = &mockSession{
 		protocolVersion: protocolVersion,
-		toolMode:        toolMode,
+		showAll:         showAll,
 		createdAt:       time.Now(),
 	}
 	return sessionID, nil
@@ -62,14 +62,14 @@ func (m *mockSessionManager) GetProtocolVersion(ctx context.Context, sessionID s
 	return session.protocolVersion, nil
 }
 
-func (m *mockSessionManager) GetToolMode(ctx context.Context, sessionID string) (ToolListMode, error) {
+func (m *mockSessionManager) GetShowAll(ctx context.Context, sessionID string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	session, exists := m.sessions[sessionID]
 	if !exists {
-		return ToolListModeDefault, nil
+		return false, nil
 	}
-	return session.toolMode, nil
+	return session.showAll, nil
 }
 
 func (m *mockSessionManager) DeleteSession(ctx context.Context, sessionID string) error {
@@ -151,7 +151,7 @@ func TestPluggableSessionManager_Revocation(t *testing.T) {
 	server.SetSessionManager(mockSM)
 
 	// Create a session directly
-	sessionID, err := mockSM.CreateSession(context.Background(), "2025-03-26", ToolListModeDefault)
+	sessionID, err := mockSM.CreateSession(context.Background(), "2025-03-26", false)
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
@@ -217,26 +217,26 @@ func TestNewJWTSessionManager_WithExplicitKey(t *testing.T) {
 	}
 }
 
-// TestSessionManager_ToolModePreserved verifies that tool mode is preserved across sessions
-func TestSessionManager_ToolModePreserved(t *testing.T) {
+// TestSessionManager_ShowAllPreserved verifies that show-all mode is preserved across sessions
+func TestSessionManager_ShowAllPreserved(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 	mockSM := newMockSessionManager()
 	server.SetSessionManager(mockSM)
 
-	// Create a session with discovery mode
-	sessionID, err := mockSM.CreateSession(context.Background(), "2025-03-26", ToolListModeForceOnDemand)
+	// Create a session with show-all mode
+	sessionID, err := mockSM.CreateSession(context.Background(), "2025-03-26", true)
 	if err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
-	// Verify tool mode is preserved
-	mode, err := mockSM.GetToolMode(context.Background(), sessionID)
+	// Verify show-all is preserved
+	showAll, err := mockSM.GetShowAll(context.Background(), sessionID)
 	if err != nil {
-		t.Fatalf("Failed to get tool mode: %v", err)
+		t.Fatalf("Failed to get show-all: %v", err)
 	}
 
-	if mode != ToolListModeForceOnDemand {
-		t.Errorf("Expected ToolListModeForceOnDemand, got %v", mode)
+	if !showAll {
+		t.Errorf("Expected showAll to be true")
 	}
 }
 
@@ -261,13 +261,12 @@ func TestSessionWithNativeAndDiscoveryTools(t *testing.T) {
 		"native", "keyword1",
 	)
 
-	// Register an ondemand tool
-	server.RegisterOnDemandTool(
-		NewTool("ondemand_tool", "An ondemand tool"),
+	// Register a discoverable tool
+	server.RegisterTool(
+		NewTool("discoverable_tool", "A discoverable tool").Discoverable("discoverable", "keyword2"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-			return NewToolResponseText("ondemand result"), nil
+			return NewToolResponseText("discoverable result"), nil
 		},
-		"ondemand", "keyword2",
 	)
 
 	// Initialize a normal mode session
@@ -304,52 +303,55 @@ func TestSessionWithNativeAndDiscoveryTools(t *testing.T) {
 		t.Error("native_tool should be visible in normal mode")
 	}
 
-	// Initialize a discovery mode session
+	// Initialize a show-all mode session
 	initBody = `{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`
 	req = httptest.NewRequest("POST", "/mcp", strings.NewReader(initBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(ToolModeHeader, "discovery")
+	req.Header.Set(ShowAllHeader, "true")
 	w = httptest.NewRecorder()
 	server.HandleRequest(w, req)
 
 	if w.Code != 200 {
-		t.Fatalf("Initialize with discovery mode failed: %d - %s", w.Code, w.Body.String())
+		t.Fatalf("Initialize with show-all mode failed: %d - %s", w.Code, w.Body.String())
 	}
 
-	discoverySessionID := w.Header().Get("MCP-Session-Id")
-	if discoverySessionID == "" {
-		t.Fatal("Expected session ID for discovery mode session")
+	showAllSessionID := w.Header().Get("MCP-Session-Id")
+	if showAllSessionID == "" {
+		t.Fatal("Expected session ID for show-all mode session")
 	}
 
-	if normalSessionID == discoverySessionID {
+	if normalSessionID == showAllSessionID {
 		t.Error("Expected different session IDs for different modes")
 	}
 
-	// List tools in discovery mode session - should see only meta tools
+	// List tools in show-all mode session - should see ALL tools including discoverable
 	listBody = `{"jsonrpc":"2.0","id":4,"method":"tools/list"}`
 	req = httptest.NewRequest("POST", "/mcp", strings.NewReader(listBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Session-Id", discoverySessionID)
+	req.Header.Set("MCP-Session-Id", showAllSessionID)
 	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
 	w = httptest.NewRecorder()
 	server.HandleRequest(w, req)
 
 	if w.Code != 200 {
-		t.Fatalf("List tools in discovery mode failed: %d - %s", w.Code, w.Body.String())
+		t.Fatalf("List tools in show-all mode failed: %d - %s", w.Code, w.Body.String())
 	}
 
-	// Should NOT see native_tool in discovery mode (only tool_search, execute_tool)
-	if strings.Contains(w.Body.String(), `"name":"native_tool"`) {
-		t.Error("native_tool should NOT be visible in discovery mode")
+	// In show-all mode, should see native_tool AND discoverable_tool (but not meta-tools)
+	if !strings.Contains(w.Body.String(), `"name":"native_tool"`) {
+		t.Error("native_tool should be visible in show-all mode")
+	}
+	if !strings.Contains(w.Body.String(), `"name":"discoverable_tool"`) {
+		t.Error("discoverable_tool should be visible in show-all mode")
 	}
 
-	// Should see tool_search and execute_tool
-	if !strings.Contains(w.Body.String(), "tool_search") {
-		t.Error("tool_search should be visible in discovery mode")
+	// Meta-tools should NOT appear in show-all mode
+	if strings.Contains(w.Body.String(), "tool_search") {
+		t.Error("tool_search should NOT be visible in show-all mode")
 	}
-	if !strings.Contains(w.Body.String(), "execute_tool") {
-		t.Error("execute_tool should be visible in discovery mode")
+	if strings.Contains(w.Body.String(), "execute_tool") {
+		t.Error("execute_tool should NOT be visible in show-all mode")
 	}
 
-	t.Log("Successfully verified native and discovery tools work within sessions")
+	t.Log("Successfully verified native and discoverable tools work within sessions")
 }

@@ -85,20 +85,33 @@ The server supports two modes for tool visibility, selectable via HTTP header:
 
 ### Header-Based Mode Selection
 
-Clients can request discovery mode during initialization:
+Clients can request show-all mode (useful for MCP server chaining):
 
 ```http
 POST /mcp HTTP/1.1
 Content-Type: application/json
-X-MCP-Tool-Mode: discovery
+X-MCP-Show-All: true
 
 {"jsonrpc":"2.0","id":1,"method":"initialize",...}
 ```
 
-Or via query parameter: `/mcp?tool_mode=discovery`
+Or via query parameter: `/mcp?show_all=true`
 
-**Normal Mode (default):** All native tools visible in `tools/list`
-**Discovery Mode:** Only `tool_search` and `execute_tool` visible - all tools searchable
+**Normal Mode (default):** Native tools visible in `tools/list`. If discoverable tools exist, `tool_search` and `execute_tool` are also available.
+
+**Show-All Mode:** ALL tools visible in `tools/list` including discoverable ones. This is useful when chaining MCP servers together.
+
+### Discoverable Tools
+
+Tools can be marked as discoverable, meaning they won't appear in the normal `tools/list` but can be found via `tool_search`:
+
+```go
+// Discoverable tool using the fluent builder
+server.RegisterTool(
+    mcp.NewTool("specialized_tool", "A specialized tool").Discoverable("keyword1", "keyword2"),
+    handler,
+)
+```
 
 With session management enabled, the mode is stored in the session token. See [Tool Discovery Guide](docs/guides/tool-discovery.md) for details.
 

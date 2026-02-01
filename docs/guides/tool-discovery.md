@@ -1,97 +1,62 @@
 # Tool Discovery and Searchable Tools Guide
 
-When working with many tools, the context window can become bloated with tool definitions. The server provides built-in support for searchable tools - tools that can be discovered via keyword search and executed on-demand.
+When working with many tools, the context window can become bloated with tool definitions. The server provides built-in support for discoverable tools - tools that can be discovered via keyword search rather than appearing in the main `tools/list`.
 
 This approach is inspired by [Anthropic's Tool Search Tool](https://www.anthropic.com/engineering/advanced-tool-use) pattern, which can reduce token usage by up to 85% while maintaining access to your full tool library.
 
-## Tool Registration
+## Tool Visibility
 
-There are two ways to register tools with different visibility:
+Tools have a visibility property that determines how they appear to clients:
 
-### Native Tools (`RegisterTool`) - Always visible in `tools/list`
+### Native Tools (default) - Visible in `tools/list`
 
 ```go
+// Using RegisterTool - creates a native tool
 server.RegisterTool(
     mcp.NewTool("get_status", "Get system status"),
     handleGetStatus,
 )
+
+// Or using the builder (native tool - no .Discoverable())
+tool := mcp.NewTool("get_status", "Get system status").Build()
 ```
 
-- **Visible in `tools/list`**: Yes, always
+- **Visible in `tools/list`**: Yes
 - **Directly callable**: Yes
-- **Searchable via `tool_search`**: Only in force ondemand mode
-- **Keywords parameter**: Stored but only used in force ondemand mode
+- **Searchable via `tool_search`**: No (use for essential tools)
 
-Use for essential tools that should always be visible to the LLM.
-
-### OnDemand Tools (`RegisterOnDemandTool`) - Hidden from `tools/list`, searchable only
+### Discoverable Tools - Hidden from `tools/list`, searchable only
 
 ```go
-server.RegisterOnDemandTool(
+// Using RegisterTool with Discoverable()
+server.RegisterTool(
     mcp.NewTool("send_email", "Send an email",
         mcp.String("to", "Recipient", mcp.Required()),
         mcp.String("subject", "Subject", mcp.Required()),
-    ),
+    ).Discoverable("email", "notification", "smtp"),
     handleSendEmail,
-    "email", "notification", "smtp", // keywords for search relevance
 )
+
+// Or using the builder with Discoverable()
+tool := mcp.NewTool("send_email", "Send an email",
+    mcp.String("to", "Recipient", mcp.Required()),
+    mcp.String("subject", "Subject", mcp.Required()),
+).Discoverable("email", "notification", "smtp").Build()
 ```
 
-- **Visible in `tools/list`**: No
+- **Visible in `tools/list`**: No (only via `tool_search`)
 - **Directly callable**: Yes (if you know the name)
-- **Searchable via `tool_search`**: Yes, always
-- **Keywords parameter**: Used to improve search relevance
+- **Searchable via `tool_search`**: Yes
 
-Use for secondary/specialized tools to reduce context window usage.
-
-When you register any ondemand tool, `tool_search` and `execute_tool` are automatically registered as native tools.
+When you register any discoverable tool, `tool_search` and `execute_tool` are automatically registered as native tools.
 
 ## Visibility Modes
 
 The server supports two modes for controlling how tools are exposed to clients.
 
-### Header-Based Mode Selection (Recommended)
+### Normal Mode (default)
 
-Clients can request discovery mode via HTTP header or query parameter:
-
-```
-X-MCP-Tool-Mode: discovery
-```
-
-Or via query parameter (fallback):
-
-```
-/mcp?tool_mode=discovery
-```
-
-**With Session Management:**
-
-- Mode is captured during `initialize` and stored in the session
-- All subsequent requests in the session use the stored mode
-- Mode cannot be changed mid-session (create a new session to change)
-
-**Without Session Management:**
-
-- Mode is checked on each request via header/query parameter
-
-**Server-side Code:**
-
-```go
-// Enable session management (recommended for production)
-sm, _ := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
-server.SetSessionManager(sm)
-
-// The server automatically handles mode from headers/query params
-http.HandleFunc("/mcp", server.HandleRequest)
-```
-
-### Programmatic Mode Selection (For Internal Endpoints)
-
-For server-side consumers like web chat or OpenAI-compatible endpoints, use context-based mode:
-
-### Normal Mode (`WithToolProviders`)
-
-All native and provider tools appear in `tools/list`:
+Native tools appear in `tools/list`. Discoverable tools are hidden but searchable.
 
 ```go
 http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
@@ -102,76 +67,92 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 
 **Behavior:**
 
-- Native tools appear in `tools/list`
-- Provider tools appear in `tools/list`
-- OnDemand tools are hidden but searchable via `tool_search`
-- Keywords on native tools are ignored (not searchable)
+- Native tools (including from providers) appear in `tools/list`
+- Discoverable tools are hidden but searchable via `tool_search`
+- `tool_search` and `execute_tool` appear if any discoverable tools exist
 
-**When to use:**
+### Show-All Mode (for MCP chaining)
 
-- Most deployments with a moderate number of tools (< 20)
-- When you want essential tools always visible to the LLM
-- When using per-user providers with role-based access control
+ALL tools appear in `tools/list`, including discoverable ones. This is useful when one MCP server connects to another and needs to see all available tools.
 
-### Force OnDemand Mode (`WithForceOnDemandMode`)
+**Header-Based:**
 
-Only `tool_search` and `execute_tool` appear in `tools/list`:
+```
+X-MCP-Show-All: true
+```
+
+**Query Parameter:**
+
+```
+/mcp?show_all=true
+```
+
+**Programmatic:**
 
 ```go
 http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
-    ctx := mcp.WithForceOnDemandMode(r.Context(), providers...)
+    ctx := mcp.WithToolProviders(r.Context(), providers...)
+    ctx = mcp.WithShowAllTools(ctx)
     server.HandleRequest(w, r.WithContext(ctx))
 })
 ```
 
 **Behavior:**
 
-- Only `tool_search` and `execute_tool` appear in `tools/list` by default
-- ALL tools (native, ondemand, provider, remote) are searchable via `tool_search`
-- Keywords on ALL tools (including native) are used for search
-- All tools remain callable (directly or via `execute_tool`)
-- **Exception:** Tools marked with `AlwaysVisible: true` also appear in `tools/list`
-
-**AlwaysVisible Tools:**
-
-Some tools need to remain visible even in force on-demand mode (e.g., discovery tools like `find_skill` that help the LLM find other resources). This applies to both native tools and provider tools:
-
-**Native Tools:**
-```go
-server.RegisterTool(
-    mcp.NewTool("find_skill", "Find skills by topic")
-        .WithAlwaysVisible(),  // This tool stays visible in force on-demand mode
-    handler,
-)
-```
-
-**Provider Tools:**
-```go
-type SkillProvider struct {
-    // ... provider implementation
-}
-
-func (p *SkillProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
-    return []mcp.MCPTool{{
-        Name:          "find_skill",
-        Description:   "Find skills by topic",
-        InputSchema:   schema,
-        AlwaysVisible: true,  // This tool stays visible in force on-demand mode
-    }}, nil
-}
-```
+- ALL tools (native and discoverable) appear in `tools/list`
+- `tool_search` still only searches discoverable tools
+- All tools remain callable
 
 **When to use:**
 
-- Large tool libraries (20+ tools) where context window is a concern
-- AI clients that work better with minimal initial context
-- When you want ALL tools (including native ones) to be discoverable via search
-- Internal endpoints (web chat, OpenAI-compatible) that always need discovery mode
-- When specific tools must remain discoverable for the LLM to find other resources
+- MCP server chaining (downstream server needs full tool list)
+- Debugging/development to see all available tools
+- Internal tooling that needs complete tool visibility
 
-### The LLM Workflow with Tool Discovery
+### Session-Based Mode
 
-1. **Initialize with minimal context**: Only `tool_search` and `execute_tool` are visible
+With session management enabled, the mode is captured during `initialize` and stored in the session:
+
+```go
+// Enable session management
+sm, _ := mcp.NewJWTSessionManagerWithAutoKey(30 * time.Minute)
+server.SetSessionManager(sm)
+
+// The server automatically handles mode from headers/query params
+http.HandleFunc("/mcp", server.HandleRequest)
+```
+
+- Mode is captured during `initialize` and stored in the session
+- All subsequent requests in the session use the stored mode
+- Mode cannot be changed mid-session (create a new session to change)
+
+## Provider Tools with Visibility
+
+When creating tool providers, set the `Visibility` field on the MCPTool:
+
+```go
+type MyProvider struct{}
+
+func (p *MyProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{
+        {
+            Name:        "native_tool",
+            Description: "Always visible",
+            Visibility:  mcp.ToolVisibilityNative,
+        },
+        {
+            Name:        "discoverable_tool",
+            Description: "Only via search",
+            Keywords:    []string{"search", "keywords"},
+            Visibility:  mcp.ToolVisibilityDiscoverable,
+        },
+    }, nil
+}
+```
+
+## The LLM Workflow with Tool Discovery
+
+1. **Initialize with minimal context**: Only essential tools + `tool_search`/`execute_tool` visible
 2. **Search for needed tools**: `tool_search(query="email")` → finds "send_email" with full schema
 3. **Execute discovered tool**: `execute_tool(name="send_email", arguments={...})` → executes the tool
 4. **Repeat as needed**: LLM can search for different tools as needed

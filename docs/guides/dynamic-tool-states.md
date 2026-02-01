@@ -1,26 +1,45 @@
-# Dynamic Tool State Transitions: Implementation Guide
+# Dynamic Tool Visibility: Implementation Guide
 
-This document explains how to dynamically transition tools between native and ondemand visibility modes in the MCP core library. This is useful for feature gating, progressive disclosure, and per-request access control.
+This document explains how to control tool visibility dynamically in the MCP library. Tools can be native (always visible) or discoverable (searchable only), and you can also use show-all mode to reveal all tools.
 
 ## Overview
 
-Tools in the MCP server can operate in two visibility modes:
+Tools in the MCP server have a visibility property:
 
-- **Native Mode**: Tools appear in `tools/list` and are immediately available to clients
-- **OnDemand Mode**: Tools are hidden from `tools/list` but remain discoverable and callable via `tool_search` and `execute_tool`
+- **Native**: Tools appear in `tools/list` and are immediately available to clients
+- **Discoverable**: Tools are hidden from `tools/list` but remain searchable via `tool_search`
 
-By switching contexts per request, you can dynamically control which tools are visible to which clients.
+Additionally, you can use **Show-All Mode** to reveal all tools (useful for MCP chaining).
 
 ## Core Concepts
 
-### Visibility Modes
+### Tool Visibility on MCPTool
 
 ```go
-// Native Mode - All tools visible
-ctx := WithToolProviders(context.Background(), provider)
+// Native tool - visible in tools/list
+tool := mcp.MCPTool{
+    Name:       "visible_tool",
+    Visibility: mcp.ToolVisibilityNative,
+}
 
-// OnDemand Mode - Only discovery tools visible
-ctx := WithForceOnDemandMode(context.Background(), provider)
+// Discoverable tool - only via tool_search
+tool := mcp.MCPTool{
+    Name:       "hidden_tool",
+    Keywords:   []string{"search", "keywords"},
+    Visibility: mcp.ToolVisibilityDiscoverable,
+}
+```
+
+### Show-All Mode for MCP Chaining
+
+When one MCP server connects to another, use show-all mode to see all tools:
+
+```go
+// Normal mode - native tools visible, discoverable hidden
+ctx := mcp.WithToolProviders(context.Background(), provider)
+
+// Show-all mode - ALL tools visible (for MCP chaining)
+ctx = mcp.WithShowAllTools(ctx)
 ```
 
 ### Context-Based Control
@@ -28,56 +47,84 @@ ctx := WithForceOnDemandMode(context.Background(), provider)
 Each request gets its own context, allowing different clients to see different tools:
 
 ```go
-// Request 1: Admin sees all tools
-ctxAdmin := WithToolProviders(context.Background(), provider)
+// Request 1: Normal mode (native tools + discovery if discoverable exist)
+ctxNormal := mcp.WithToolProviders(context.Background(), provider)
 
-// Request 2: User sees only discovery tools
-ctxUser := WithForceOnDemandMode(context.Background(), provider)
+// Request 2: Show-all mode (all tools visible)
+ctxShowAll := mcp.WithToolProviders(context.Background(), provider)
+ctxShowAll = mcp.WithShowAllTools(ctxShowAll)
 
 // Same server, different visibility per request
-adminTools := server.ListToolsWithContext(ctxAdmin)
-userTools := server.ListToolsWithContext(ctxUser)
+normalTools := server.ListToolsWithContext(ctxNormal)
+showAllTools := server.ListToolsWithContext(ctxShowAll)
 ```
 
 ## Implementation Patterns
 
-### Pattern 1: Simple Native → OnDemand Transition
+### Pattern 1: Native vs Discoverable Tools
 
-**Scenario**: All tools start visible, then get hidden
+**Scenario**: Some tools are always visible, others require search
 
 ```go
-func transitionToolsToOnDemand(ctx context.Context, provider ToolProvider) context.Context {
-    // Was native mode:
-    // ctx := WithToolProviders(context.Background(), provider)
+type MyProvider struct{}
 
-    // Switch to ondemand mode:
-    return WithForceOnDemandMode(context.Background(), provider)
+func (p *MyProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{
+        {
+            Name:        "essential_tool",
+            Description: "Always visible to users",
+            Visibility:  mcp.ToolVisibilityNative,
+        },
+        {
+            Name:        "specialized_tool",
+            Description: "Only via search to reduce context",
+            Keywords:    []string{"specialized", "advanced"},
+            Visibility:  mcp.ToolVisibilityDiscoverable,
+        },
+    }, nil
 }
 ```
 
 ### Pattern 2: Role-Based Visibility (Recommended)
 
-**Scenario**: Different user roles see different tool visibility
+**Scenario**: Different user roles see different tools
 
 ```go
-func getContextForUser(user *User, provider ToolProvider) context.Context {
-    // Determine visibility based on role
-    if hasElevatedRole(user.Role) {
-        // Admins/power users see everything in native mode
-        return WithToolProviders(context.Background(), provider)
-    } else {
-        // Regular users see only discovery tools
-        return WithForceOnDemandMode(context.Background(), provider)
+func getProviderForUser(user *User) mcp.ToolProvider {
+    return &UserProvider{user: user}
+}
+
+type UserProvider struct {
+    user *User
+}
+
+func (p *UserProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    tools := []mcp.MCPTool{
+        {Name: "basic_tool", Visibility: mcp.ToolVisibilityNative},
     }
+
+    if p.user.HasRole("admin") {
+        tools = append(tools, mcp.MCPTool{
+            Name:       "admin_tool",
+            Visibility: mcp.ToolVisibilityNative,
+        })
+    }
+
+    // Sensitive tools are discoverable for everyone, but filtering happens in ExecuteTool
+    tools = append(tools, mcp.MCPTool{
+        Name:       "sensitive_tool",
+        Keywords:   []string{"sensitive"},
+        Visibility: mcp.ToolVisibilityDiscoverable,
+    })
+
+    return tools, nil
 }
 
 // Usage in HTTP handler:
 func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
-    user := getUser(r)  // Extract from auth header
-    provider := createToolProvider(user)
-    ctx := getContextForUser(user, provider)
-
-    // Server respects context mode for this request
+    user := getUser(r)
+    provider := getProviderForUser(user)
+    ctx := mcp.WithToolProviders(r.Context(), provider)
     server.HandleRequest(w, r.WithContext(ctx))
 }
 ```
@@ -88,7 +135,7 @@ func handleMCPRequest(w http.ResponseWriter, r *http.Request) {
 
 ```go
 func getContextWithFeatureFlags(userID string, featureFlags FeatureFlags) context.Context {
-    providers := []ToolProvider{}
+    providers := []mcp.ToolProvider{}
 
     if featureFlags.IsEnabled("advanced_tools", userID) {
         providers = append(providers, advancedToolProvider)
@@ -98,67 +145,51 @@ func getContextWithFeatureFlags(userID string, featureFlags FeatureFlags) contex
         providers = append(providers, sensitiveOpsProvider)
     }
 
-    // Determine mode based on flags
-    if featureFlags.IsEnabled("hide_tool_list", userID) {
-        return WithForceOnDemandMode(context.Background(), providers...)
-    } else {
-        return WithToolProviders(context.Background(), providers...)
-    }
+    return mcp.WithToolProviders(context.Background(), providers...)
 }
 ```
 
-### Pattern 4: Progressive Disclosure
+### Pattern 4: Progressive Disclosure with Providers
 
-**Scenario**: Tools gradually revealed as user advances
+**Scenario**: Different user tiers get different tool sets
 
 ```go
-func getContextByUserTier(userTier int, provider ToolProvider) context.Context {
+func getProviderForTier(userTier int) mcp.ToolProvider {
     switch userTier {
     case 1:
-        // Tier 1: Only basic tools visible
-        return WithForceOnDemandMode(context.Background(), provider)
-
+        return basicToolProvider // Only basic tools
     case 2:
-        // Tier 2: Tools visible, limited set
-        return WithToolProviders(context.Background(), provider)
-
+        return proToolProvider   // Basic + pro tools
     case 3:
-        // Tier 3: All tools visible, all discoverable
-        return WithToolProviders(context.Background(), provider)
-
+        return enterpriseProvider // All tools including advanced
     default:
-        // Fallback: conservative (hidden)
-        return WithForceOnDemandMode(context.Background(), provider)
+        return basicToolProvider
     }
 }
 ```
 
 ### Pattern 5: Conditional Visibility with Middleware
 
-**Scenario**: HTTP middleware controls visibility per request
+**Scenario**: HTTP middleware controls tool availability per request
 
 ```go
 type visibilityMiddleware struct {
-    server *mcp.Server
+    server   *mcp.Server
     provider mcp.ToolProvider
 }
 
 func (m *visibilityMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-    // Extract user info
     user := extractUserFromAuth(r)
 
-    // Determine visibility mode
-    var ctx context.Context
-    if user.HasPermission("view_all_tools") {
-        ctx = mcp.WithToolProviders(r.Context(), m.provider)
-    } else {
-        ctx = mcp.WithForceOnDemandMode(r.Context(), m.provider)
+    // Set up context with provider
+    ctx := mcp.WithToolProviders(r.Context(), m.provider)
+
+    // Check for show-all mode (MCP chaining)
+    if mcp.GetShowAllFromRequest(r) {
+        ctx = mcp.WithShowAllTools(ctx)
     }
 
-    // Update request with new context
     r = r.WithContext(ctx)
-
-    // Continue to server
     m.server.HandleRequest(w, r)
 }
 
@@ -168,7 +199,6 @@ func setupRouting(server *mcp.Server, provider mcp.ToolProvider) {
         server:   server,
         provider: provider,
     }
-
     http.Handle("/mcp", middleware)
 }
 ```
@@ -185,180 +215,212 @@ import (
 )
 
 type Tenant struct {
-    ID             string
-    Plan           string  // "free", "pro", "enterprise"
+    ID              string
+    Plan            string // "free", "pro", "enterprise"
     EnabledFeatures []string
 }
 
-func createTenantProvider(tenant *Tenant) mcp.ToolProvider {
-    // Create provider with tenant-specific tools
-    tools := []mcp.MCPTool{}
+type TenantProvider struct {
+    tenant *Tenant
+}
 
-    if tenant.Plan == "pro" || tenant.Plan == "enterprise" {
+func (p *TenantProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    tools := []mcp.MCPTool{
+        // Basic tools for all plans
+        {
+            Name:        "basic_tool",
+            Description: "Available to all users",
+            Visibility:  mcp.ToolVisibilityNative,
+        },
+    }
+
+    if p.tenant.Plan == "pro" || p.tenant.Plan == "enterprise" {
         tools = append(tools, mcp.MCPTool{
             Name:        "advanced_analytics",
             Description: "Advanced analytics for pro users",
+            Visibility:  mcp.ToolVisibilityNative,
         })
     }
 
-    if tenant.Plan == "enterprise" {
+    if p.tenant.Plan == "enterprise" {
         tools = append(tools, mcp.MCPTool{
             Name:        "custom_workflows",
             Description: "Custom workflow automation",
+            Visibility:  mcp.ToolVisibilityNative,
         })
     }
 
-    // Return as provider
-    return &staticProvider{tools: tools}
-}
+    // Add discoverable tools for all plans (searchable but hidden)
+    tools = append(tools, mcp.MCPTool{
+        Name:        "specialized_report",
+        Description: "Generate specialized reports",
+        Keywords:    []string{"report", "export", "analysis"},
+        Visibility:  mcp.ToolVisibilityDiscoverable,
+    })
 
-func getTenantContext(tenant *Tenant) context.Context {
-    provider := createTenantProvider(tenant)
-
-    // Free plan: ondemand mode (limited visibility)
-    if tenant.Plan == "free" {
-        return mcp.WithForceOnDemandMode(context.Background(), provider)
-    }
-
-    // Pro/Enterprise: native mode (full visibility)
-    return mcp.WithToolProviders(context.Background(), provider)
+    return tools, nil
 }
 
 func handleMCPRequest(server *mcp.Server, w http.ResponseWriter, r *http.Request) {
-    // Extract tenant from subdomain or header
     tenantID := r.Header.Get("X-Tenant-ID")
     tenant := loadTenant(tenantID)
 
-    // Get context with appropriate visibility
-    ctx := getTenantContext(tenant)
+    provider := &TenantProvider{tenant: tenant}
+    ctx := mcp.WithToolProviders(r.Context(), provider)
 
-    // Process request with tenant-specific context
+    // Check if MCP chaining (another MCP server requesting)
+    if mcp.GetShowAllFromRequest(r) {
+        ctx = mcp.WithShowAllTools(ctx)
+    }
+
     server.HandleRequest(w, r.WithContext(ctx))
 }
 ```
 
-## Testing Dynamic Transitions
+## Testing Tool Visibility
 
-The test file `provider_dynamic_test.go` includes three comprehensive tests:
+The test file `provider_dynamic_test.go` includes comprehensive tests:
 
-1. **TestDynamicToolStateTransition**: Shows complete cycle from native → ondemand → native
-2. **TestDynamicToolStateTransition_PerRequest**: Concurrent requests with different modes
-3. **TestDynamicToolStateTransition_ConditionalVisibility**: Role-based visibility control
+1. **TestDynamicToolProvider**: Shows provider returning native and discoverable tools
+2. **TestShowAllToolsVisibility**: Tests show-all mode revealing all tools
 
 Run these tests:
 
 ```bash
-go test -run "TestDynamicToolState" -v
+go test -run "TestDynamic" -v
 ```
 
 ## Key Behaviors to Understand
 
 ### Tools are Always Callable
 
-Whether in native or ondemand mode, tools can always be called:
+Whether native or discoverable, tools can always be called via `execute_tool`:
 
 ```go
-// Both modes work
-server.CallTool(ctxNative, "tool_name", args)     // Works
-server.CallTool(ctxOnDemand, "tool_name", args)   // Also works
+// Both visibility types work
+server.CallTool(ctx, "native_tool", args)       // Works
+server.CallTool(ctx, "discoverable_tool", args) // Also works via execute_tool
 ```
 
-### Only Visibility Changes, Not Availability
+### Visibility Controls Listing, Not Execution
 
 ```go
-// Native mode
-tools := server.ListToolsWithContext(ctxNative)
-// Result: ["tool1", "tool2", "tool_search", "execute_tool"]
+// Normal mode (no show-all)
+tools := server.ListToolsWithContext(ctx)
+// Result: ["native_tool", "tool_search", "execute_tool"]
+// (discoverable_tool hidden but callable)
 
-// OnDemand mode
-tools := server.ListToolsWithContext(ctxOnDemand)
-// Result: ["tool_search", "execute_tool"]
-
-// But both can call tool1 and tool2
-server.CallTool(ctxOnDemand, "tool1", args)  // Still works!
+// Show-all mode
+ctxShowAll := mcp.WithShowAllTools(ctx)
+tools := server.ListToolsWithContext(ctxShowAll)
+// Result: ["native_tool", "discoverable_tool", "tool_search", "execute_tool"]
 ```
 
-### Discovery Tools are Always Available
+### Discovery Tools Appear When Discoverable Tools Exist
 
-In any mode with ondemand tools, `tool_search` and `execute_tool` are always present in the list.
+When any tools have `ToolVisibilityDiscoverable`, the server automatically includes:
 
-### Context Replacement, Not Merging
+- `tool_search` - Search for discoverable tools
+- `execute_tool` - Execute any tool by name
 
-Each `WithToolProviders()` or `WithForceOnDemandMode()` call **replaces** the context value, it doesn't merge:
+### Providers Accumulate
+
+Multiple calls to `WithToolProviders()` accumulate providers:
 
 ```go
-ctx1 := WithToolProviders(background, provider1)
-ctx2 := WithToolProviders(ctx1, provider2)
+ctx1 := mcp.WithToolProviders(background, provider1)
+ctx2 := mcp.WithToolProviders(ctx1, provider2)
 
-// ctx2 has provider2 only, NOT provider1 + provider2
-// To have both: WithToolProviders(background, provider1, provider2)
+// ctx2 has BOTH provider1 AND provider2 tools
 ```
 
 ## Common Use Cases
 
-### 1. Rate Limiting Tool Visibility
+### 1. Reduce Context Window Usage
 
-Hide expensive tools for free tier users:
+Mark rarely-used tools as discoverable to reduce AI context:
 
 ```go
-if user.PlanTier == "free" {
-    ctx = mcp.WithForceOnDemandMode(context.Background(), provider)
-} else {
-    ctx = mcp.WithToolProviders(context.Background(), provider)
+func (p *Provider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{
+        // Frequently used - always visible
+        {Name: "common_tool", Visibility: mcp.ToolVisibilityNative},
+
+        // Rarely used - discoverable only
+        {Name: "specialized_tool", Keywords: []string{"advanced"}, Visibility: mcp.ToolVisibilityDiscoverable},
+    }, nil
 }
 ```
 
 ### 2. Gradual Feature Rollout
 
-Show new features to percentage of users:
+Mark beta tools as discoverable, graduate to native when stable:
 
 ```go
-if isInBeta(user.ID) {
-    // New tools visible
-    ctx = mcp.WithToolProviders(context.Background(), betaProvider)
-} else {
-    // New tools hidden, only searchable
-    ctx = mcp.WithForceOnDemandMode(context.Background(), betaProvider)
+func (p *Provider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    tools := []mcp.MCPTool{
+        {Name: "stable_tool", Visibility: mcp.ToolVisibilityNative},
+    }
+
+    // Beta tools are discoverable until stable
+    if p.featureFlags.Has("show_beta_tools") {
+        tools = append(tools, mcp.MCPTool{
+            Name:       "beta_tool",
+            Visibility: mcp.ToolVisibilityNative, // Visible when flag enabled
+        })
+    } else {
+        tools = append(tools, mcp.MCPTool{
+            Name:       "beta_tool",
+            Keywords:   []string{"beta", "experimental"},
+            Visibility: mcp.ToolVisibilityDiscoverable, // Hidden otherwise
+        })
+    }
+    return tools, nil
 }
 ```
 
-### 3. Context-Aware Tool Availability
+### 3. MCP Server Chaining
 
-Different tools per deployment environment:
+When one MCP server connects to another, use show-all mode:
 
 ```go
-switch os.Getenv("ENVIRONMENT") {
-case "production":
-    ctx = mcp.WithToolProviders(context.Background(), prodProvider)
-case "staging":
-    ctx = mcp.WithForceOnDemandMode(context.Background(), stagingProvider)
-case "development":
-    ctx = mcp.WithForceOnDemandMode(context.Background(), devProvider)
+func connectToUpstreamMCP(upstreamURL string) *mcp.Client {
+    client := mcp.NewClient(upstreamURL)
+
+    // Request show-all mode to see ALL tools from upstream
+    client.SetHeader(mcp.ShowAllHeader, "true")
+    // Or use query param: ?show_all=true
+
+    return client
 }
 ```
 
-### 4. Permission-Based Visibility
+### 4. Permission-Based Tool Sets
 
-Tools visible only to users with specific permissions:
+Different providers for different permission levels:
 
 ```go
-perms := user.GetPermissions()
+func getProvidersForUser(user *User) []mcp.ToolProvider {
+    providers := []mcp.ToolProvider{basicToolProvider}
 
-providers := []mcp.ToolProvider{}
-if perms.Has("read:data") {
-    providers = append(providers, readDataProvider)
-}
-if perms.Has("write:data") {
-    providers = append(providers, writeDataProvider)
-}
-if perms.Has("admin") {
-    providers = append(providers, adminProvider)
+    if user.HasPermission("read:data") {
+        providers = append(providers, readDataProvider)
+    }
+    if user.HasPermission("write:data") {
+        providers = append(providers, writeDataProvider)
+    }
+    if user.HasPermission("admin") {
+        providers = append(providers, adminProvider)
+    }
+
+    return providers
 }
 
-if len(providers) > 0 {
-    ctx = mcp.WithToolProviders(context.Background(), providers...)
-} else {
-    ctx = mcp.WithForceOnDemandMode(context.Background()) // Empty
+func handleRequest(w http.ResponseWriter, r *http.Request) {
+    user := getUser(r)
+    providers := getProvidersForUser(user)
+    ctx := mcp.WithToolProviders(r.Context(), providers...)
+    server.HandleRequest(w, r.WithContext(ctx))
 }
 ```
 
@@ -372,15 +434,15 @@ if len(providers) > 0 {
 
 1. **Visibility ≠ Access Control**: Hiding tools in the list doesn't prevent execution
 2. **Implement Access Control**: Check permissions in tool handlers
-3. **Search Results**: Filter search results based on user permissions, not just visibility mode
+3. **Search Results**: Filter search results based on user permissions
 
-Example:
+Example with permission-based filtering in provider:
 
 ```go
-func (p *provider) GetTools(ctx context.Context) ([]MCPTool, error) {
+func (p *provider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
     user := ctx.Value("user").(*User)
 
-    var allowedTools []MCPTool
+    var allowedTools []mcp.MCPTool
     for _, tool := range p.allTools {
         if user.HasPermission(tool.RequiredPermission) {
             allowedTools = append(allowedTools, tool)
@@ -392,11 +454,11 @@ func (p *provider) GetTools(ctx context.Context) ([]MCPTool, error) {
 
 ## Summary
 
-Dynamic tool state transitions are controlled through context:
+Tool visibility is controlled at the tool level:
 
-1. Use `WithToolProviders()` for **native mode** (visible in list)
-2. Use `WithForceOnDemandMode()` for **ondemand mode** (hidden from list)
-3. Create the appropriate context per request based on user/tenant attributes
-4. Pass context to `server.ListToolsWithContext()` and `server.CallTool()`
+1. Set `Visibility: mcp.ToolVisibilityNative` for tools visible in `tools/list`
+2. Set `Visibility: mcp.ToolVisibilityDiscoverable` for tools only via `tool_search`
+3. Use `WithShowAllTools()` for MCP chaining (reveals ALL tools)
+4. Use `WithToolProviders()` to inject dynamic providers per-request
 
 This allows a single MCP server to serve different tools to different clients without code changes.

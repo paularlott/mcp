@@ -8,7 +8,8 @@ type ToolBuilder struct {
 	description   string
 	params        []paramDef
 	outputParams  []paramDef
-	alwaysVisible bool
+	discoverable  bool     // If true, tool is discoverable via tool_search but not in tools/list
+	keywords      []string // Keywords for discovery search
 }
 
 type paramDef struct {
@@ -148,24 +149,44 @@ func (t *ToolBuilder) buildObjectSchema(param *paramDef) map[string]interface{} 
 	return schema
 }
 
-// WithAlwaysVisible marks the tool as always visible, even in force on-demand mode.
-// This is useful for tools that must remain discoverable regardless of the tool mode.
-func (t *ToolBuilder) WithAlwaysVisible() *ToolBuilder {
-	t.alwaysVisible = true
+// Discoverable marks the tool as discoverable via tool_search.
+// Discoverable tools do NOT appear in tools/list but can be found through search.
+// Keywords improve search relevance - include terms users might search for.
+// When any discoverable tools exist, tool_search and execute_tool are automatically
+// added to tools/list.
+func (t *ToolBuilder) Discoverable(keywords ...string) *ToolBuilder {
+	t.discoverable = true
+	t.keywords = keywords
 	return t
+}
+
+// IsDiscoverable returns true if the tool is marked as discoverable.
+func (t *ToolBuilder) IsDiscoverable() bool {
+	return t.discoverable
+}
+
+// Keywords returns the keywords set for this tool.
+func (t *ToolBuilder) Keywords() []string {
+	return t.keywords
 }
 
 // ToMCPTool converts the ToolBuilder to an MCPTool struct.
 // This is useful for tool providers that use the fluent API to build tools
 // but need to return MCPTool structs from their GetTools method.
-// The keywords parameter is optional; pass nil or an empty slice if not needed.
-func (t *ToolBuilder) ToMCPTool(keywords []string) MCPTool {
+// Use .Discoverable(keywords...) before calling this to set keywords and mark as discoverable.
+func (t *ToolBuilder) ToMCPTool() MCPTool {
+	// Determine visibility from discoverable flag
+	visibility := ToolVisibilityNative
+	if t.discoverable {
+		visibility = ToolVisibilityDiscoverable
+	}
+
 	tool := MCPTool{
 		Name:          t.name,
 		Description:   t.Description(),
 		InputSchema:   t.buildSchema(),
-		Keywords:      keywords,
-		AlwaysVisible: t.alwaysVisible,
+		Keywords:      t.keywords,
+		Visibility:    visibility,
 	}
 	if outputSchema := t.buildOutputSchema(); outputSchema != nil {
 		tool.OutputSchema = outputSchema

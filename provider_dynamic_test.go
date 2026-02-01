@@ -6,7 +6,7 @@ import (
 )
 
 // TestAddRemoveProvidersToNativeContext tests that providers can be dynamically added and removed
-// to a native (non-ondemand) context
+// to a native (non-discoverable) context
 func TestAddRemoveProvidersToNativeContext(t *testing.T) {
 	// Create base context without providers
 	ctx := context.Background()
@@ -83,13 +83,13 @@ func TestAddRemoveProvidersToNativeContext(t *testing.T) {
 	}
 }
 
-// TestAddRemoveProvidersToOnDemandContext tests that providers work correctly with force ondemand mode
-func TestAddRemoveProvidersToOnDemandContext(t *testing.T) {
+// TestAddRemoveProvidersToDiscoverableContext tests that providers work correctly with show-all mode
+func TestAddRemoveProvidersToDiscoverableContext(t *testing.T) {
 	ctx := context.Background()
 
 	provider := &mockToolProvider{
 		tools: []MCPTool{
-			{Name: "demand_tool", Description: "A tool for ondemand mode", Keywords: []string{"demand"}},
+			{Name: "demand_tool", Description: "A tool for discoverable mode", Keywords: []string{"demand"}},
 		},
 		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
 			if name == "demand_tool" {
@@ -99,24 +99,25 @@ func TestAddRemoveProvidersToOnDemandContext(t *testing.T) {
 		},
 	}
 
-	// Add provider to force ondemand context
-	ctxOnDemand := WithForceOnDemandMode(ctx, provider)
+	// Add provider to context and enable show-all mode
+	ctx = WithToolProviders(ctx, provider)
+	ctxShowAll := WithShowAllTools(ctx)
 
-	// In force ondemand mode, provider tools should be hidden from listToolsFromProviders
+	// In show-all mode, provider tools should be visible (not hidden)
 	seen := make(map[string]bool)
-	tools := listToolsFromProviders(ctxOnDemand, seen)
-	if len(tools) != 0 {
-		t.Errorf("provider tools should be hidden in force ondemand mode, got %d tools", len(tools))
+	tools := listToolsFromProviders(ctxShowAll, seen)
+	if len(tools) != 1 {
+		t.Errorf("provider tools should be visible in show-all mode, got %d tools", len(tools))
 	}
 
-	// But the provider should still be retrievable and executable
-	providers := GetToolProviders(ctxOnDemand)
+	// Provider should still be retrievable and executable
+	providers := GetToolProviders(ctxShowAll)
 	if len(providers) != 1 {
 		t.Fatalf("expected 1 provider, got %d", len(providers))
 	}
 
-	// Provider tool should still be callable
-	result, err := callToolFromProviders(ctxOnDemand, "demand_tool", nil)
+	// Provider tool should be callable
+	result, err := callToolFromProviders(ctxShowAll, "demand_tool", nil)
 	if err != nil {
 		t.Fatalf("failed to call provider tool: %v", err)
 	}
@@ -124,10 +125,10 @@ func TestAddRemoveProvidersToOnDemandContext(t *testing.T) {
 		t.Error("expected non-nil result")
 	}
 
-	// Verify ondemand mode is set
-	mode := GetToolListMode(ctxOnDemand)
-	if mode != ToolListModeForceOnDemand {
-		t.Errorf("expected ToolListModeForceOnDemand, got %v", mode)
+	// Verify show-all mode is set
+	showAll := GetShowAllTools(ctxShowAll)
+	if !showAll {
+		t.Errorf("expected true, got %v", showAll)
 	}
 }
 
@@ -303,26 +304,34 @@ func TestProviderToolVisibilityNativeMode(t *testing.T) {
 		t.Error("provider_tool should be in tools list")
 	}
 
-	// tool_search and execute_tool should NOT appear in native mode (no ondemand tools)
+	// tool_search and execute_tool should NOT appear in native mode (no discoverable tools)
 	if found[ToolSearchName] {
-		t.Error("tool_search should not appear in native mode without ondemand tools")
+		t.Error("tool_search should not appear in native mode without discoverable tools")
 	}
 	if found[ExecuteToolName] {
-		t.Error("execute_tool should not appear in native mode without ondemand tools")
+		t.Error("execute_tool should not appear in native mode without discoverable tools")
 	}
 }
 
-// TestProviderToolVisibilityOnDemandMode tests tool visibility in force ondemand mode
-func TestProviderToolVisibilityOnDemandMode(t *testing.T) {
+// TestProviderToolVisibilityShowAllMode tests tool visibility in show-all mode
+func TestProviderToolVisibilityShowAllMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register a native tool with keywords for searchability
+	// Register a native tool
 	server.RegisterTool(
 		NewTool("native_tool", "A native tool"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("native"), nil
 		},
 		"search", "keyword",
+	)
+
+	// Register a discoverable tool so discovery meta-tools exist
+	server.RegisterTool(
+		NewTool("discoverable_tool", "A discoverable tool").Discoverable("discoverable"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("discoverable"), nil
+		},
 	)
 
 	// Create provider with dynamic tool
@@ -338,13 +347,17 @@ func TestProviderToolVisibilityOnDemandMode(t *testing.T) {
 		},
 	}
 
-	// List tools in force ondemand mode
-	ctx := WithForceOnDemandMode(context.Background(), provider)
+	// List tools in show-all mode - should have ALL tools (but not meta-tools)
+	ctx := WithToolProviders(context.Background(), provider)
+	ctx = WithShowAllTools(ctx)
 	tools := server.ListToolsWithContext(ctx)
 
-	// Only tool_search and execute_tool should appear in list
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools in force ondemand mode, got %d", len(tools))
+	// Should have: native_tool, discoverable_tool, provider_tool (meta-tools excluded)
+	if len(tools) != 3 {
+		t.Errorf("expected 3 tools in show-all mode, got %d", len(tools))
+		for _, tool := range tools {
+			t.Logf("  - %s", tool.Name)
+		}
 	}
 
 	found := make(map[string]bool)
@@ -352,19 +365,20 @@ func TestProviderToolVisibilityOnDemandMode(t *testing.T) {
 		found[tool.Name] = true
 	}
 
-	if !found[ToolSearchName] {
-		t.Error("tool_search should appear in force ondemand mode")
+	if !found["native_tool"] {
+		t.Error("native_tool should appear in show-all mode")
 	}
-	if !found[ExecuteToolName] {
-		t.Error("execute_tool should appear in force ondemand mode")
+	if !found["discoverable_tool"] {
+		t.Error("discoverable_tool should appear in show-all mode")
 	}
-
-	// native_tool and provider_tool should NOT appear in the list
-	if found["native_tool"] {
-		t.Error("native_tool should not appear in force ondemand mode list")
+	if !found["provider_tool"] {
+		t.Error("provider_tool should appear in show-all mode")
 	}
-	if found["provider_tool"] {
-		t.Error("provider_tool should not appear in force ondemand mode list")
+	if found[ToolSearchName] {
+		t.Error("tool_search should NOT appear in show-all mode")
+	}
+	if found[ExecuteToolName] {
+		t.Error("execute_tool should NOT appear in show-all mode")
 	}
 }
 
@@ -444,7 +458,7 @@ func TestProviderWithoutContext(t *testing.T) {
 	}
 }
 
-// TestNestedContexts tests that later contexts override earlier ones
+// TestNestedContexts tests that providers accumulate when nested
 func TestNestedContexts(t *testing.T) {
 	provider1 := &mockToolProvider{
 		tools: []MCPTool{
@@ -464,34 +478,39 @@ func TestNestedContexts(t *testing.T) {
 		},
 	}
 
-	// Create nested contexts
+	// Create nested contexts - providers accumulate
 	ctx1 := WithToolProviders(context.Background(), provider1)
-	ctx2 := WithToolProviders(ctx1, provider2) // This overrides ctx1
-	ctx3 := WithToolProviders(ctx2, provider3) // This overrides ctx2
+	ctx2 := WithToolProviders(ctx1, provider2) // Adds to ctx1
+	ctx3 := WithToolProviders(ctx2, provider3) // Adds to ctx2
 
-	// ctx3 should only have provider3, not provider1 or provider2
-	// (WithToolProviders doesn't merge, it replaces)
+	// ctx3 should have all three providers
 	providers := GetToolProviders(ctx3)
-	if len(providers) != 1 {
-		t.Fatalf("ctx3 should have exactly 1 provider, got %d", len(providers))
+	if len(providers) != 3 {
+		t.Fatalf("ctx3 should have exactly 3 providers, got %d", len(providers))
 	}
 
 	seen := make(map[string]bool)
 	tools := listToolsFromProviders(ctx3, seen)
-	if len(tools) != 1 || !seen["tool3"] {
-		t.Error("ctx3 should only have tool3")
+	if len(tools) != 3 {
+		t.Errorf("ctx3 should have 3 tools, got %d", len(tools))
+	}
+	if !seen["tool1"] || !seen["tool2"] || !seen["tool3"] {
+		t.Error("ctx3 should have tool1, tool2, and tool3")
 	}
 
-	// ctx2 should have provider2 (and would have provider1 if we traced back, but context values don't merge)
+	// ctx2 should have 2 providers
 	providers2 := GetToolProviders(ctx2)
-	if len(providers2) != 1 {
-		t.Fatalf("ctx2 should have exactly 1 provider, got %d", len(providers2))
+	if len(providers2) != 2 {
+		t.Fatalf("ctx2 should have exactly 2 providers, got %d", len(providers2))
 	}
 
 	seen2 := make(map[string]bool)
 	tools2 := listToolsFromProviders(ctx2, seen2)
-	if len(tools2) != 1 || !seen2["tool2"] {
-		t.Error("ctx2 should only have tool2")
+	if len(tools2) != 2 {
+		t.Errorf("ctx2 should have 2 tools, got %d", len(tools2))
+	}
+	if !seen2["tool1"] || !seen2["tool2"] {
+		t.Error("ctx2 should have tool1 and tool2")
 	}
 }
 
@@ -538,257 +557,209 @@ func TestProviderToolWithParameters(t *testing.T) {
 	}
 }
 
-// TestDynamicToolStateTransition tests transitioning tools between native and ondemand modes
-// This demonstrates a real-world pattern where tools can be:
-// 1. Initially available as native tools (visible in tools/list)
-// 2. Dynamically hidden and moved to ondemand (only searchable)
-// 3. Returned to native visibility (visible in tools/list again)
-//
-// Use cases:
-// - Progressive disclosure: Start with all tools, hide rarely-used ones
-// - Mode switching: Change visibility based on LLM capability
-// - Feature gates: Show/hide features per tenant or request
-func TestDynamicToolStateTransition(t *testing.T) {
-	server := NewServer("state-transition-test", "1.0.0")
+// TestDynamicToolVisibility tests that tools with different visibility settings
+// behave correctly in normal mode and show-all mode.
+func TestDynamicToolVisibility(t *testing.T) {
+	server := NewServer("visibility-test", "1.0.0")
 
-	// Create a provider that tracks which tools are active
+	// Create a provider with mixed visibility tools
 	provider := &mockToolProvider{
 		tools: []MCPTool{
 			{
-				Name:        "email_send",
-				Description: "Send email messages",
-				Keywords:    []string{"email", "send", "message"},
+				Name:        "native_tool",
+				Description: "A native tool visible in tools/list",
+				Keywords:    []string{"native"},
+				Visibility:  ToolVisibilityNative,
 			},
 			{
-				Name:        "file_upload",
-				Description: "Upload files to storage",
-				Keywords:    []string{"file", "upload", "storage"},
+				Name:        "discoverable_tool",
+				Description: "A discoverable tool only available via search",
+				Keywords:    []string{"discoverable"},
+				Visibility:  ToolVisibilityDiscoverable,
 			},
 		},
 		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
-			if name == "email_send" {
-				return map[string]interface{}{"sent": true, "to": "user@example.com"}, nil
+			if name == "native_tool" {
+				return "native result", nil
 			}
-			if name == "file_upload" {
-				return map[string]interface{}{"uploaded": true, "size": 1024}, nil
+			if name == "discoverable_tool" {
+				return "discoverable result", nil
 			}
 			return nil, nil
 		},
 	}
 
-	// ============================================================================
-	// STAGE 1: Native Mode - All tools visible in tools/list
-	// ============================================================================
-	// Default context without providers (server's own native tools)
+	// Register a server-side discoverable tool to enable discovery meta-tools
 	server.RegisterTool(
-		NewTool("list_emails", "List recent emails"),
+		NewTool("server_discoverable", "Server discoverable").Discoverable("server"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-			return NewToolResponseText("3 emails found"), nil
+			return NewToolResponseText("OK"), nil
 		},
-		"email", "list",
 	)
 
-	// Get tools in native mode with provider
-	ctxNative := WithToolProviders(context.Background(), provider)
-	toolsNative := server.ListToolsWithContext(ctxNative)
+	// ============================================================================
+	// NORMAL MODE: Native tools visible, discoverable hidden
+	// ============================================================================
+	ctx := WithToolProviders(context.Background(), provider)
+	tools := server.ListToolsWithContext(ctx)
 
-	foundNativeEmail := false
-	foundNativeFile := false
-	for _, tool := range toolsNative {
-		if tool.Name == "email_send" {
-			foundNativeEmail = true
+	foundNative := false
+	foundDiscoverable := false
+	foundToolSearch := false
+	for _, tool := range tools {
+		switch tool.Name {
+		case "native_tool":
+			foundNative = true
+		case "discoverable_tool":
+			foundDiscoverable = true
+		case ToolSearchName:
+			foundToolSearch = true
 		}
-		if tool.Name == "file_upload" {
-			foundNativeFile = true
-		}
 	}
 
-	if !foundNativeEmail {
-		t.Error("Stage 1 (Native): email_send should be visible in tools/list")
+	if !foundNative {
+		t.Error("Normal mode: native_tool should be visible in tools/list")
 	}
-	if !foundNativeFile {
-		t.Error("Stage 1 (Native): file_upload should be visible in tools/list")
+	if foundDiscoverable {
+		t.Error("Normal mode: discoverable_tool should NOT be in tools/list")
+	}
+	if !foundToolSearch {
+		t.Error("Normal mode: tool_search should be available")
 	}
 
-	// Verify tools are callable in native mode
-	resp, err := server.CallTool(ctxNative, "email_send", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("Stage 1 (Native): failed to call email_send: %v", err)
+	// Both tools should still be callable
+	resp, err := server.CallTool(ctx, "native_tool", nil)
+	if err != nil || resp == nil {
+		t.Error("Normal mode: native_tool should be callable")
 	}
-	if resp == nil {
-		t.Error("Stage 1 (Native): expected response from email_send")
+
+	resp, err = server.CallTool(ctx, "discoverable_tool", nil)
+	if err != nil || resp == nil {
+		t.Error("Normal mode: discoverable_tool should be callable")
 	}
 
 	// ============================================================================
-	// STAGE 2: Transition to OnDemand Mode - Hide tools, only discoverable
+	// SHOW-ALL MODE: All tools visible
 	// ============================================================================
-	// Switch to force ondemand mode with the same provider
-	ctxOnDemand := WithForceOnDemandMode(context.Background(), provider)
-	toolsOnDemand := server.ListToolsWithContext(ctxOnDemand)
+	showAllCtx := WithToolProviders(context.Background(), provider)
+	showAllCtx = WithShowAllTools(showAllCtx)
+	showAllTools := server.ListToolsWithContext(showAllCtx)
 
-	// In force ondemand mode, only discovery tools should be visible
-	if len(toolsOnDemand) != 2 {
-		t.Fatalf("Stage 2 (OnDemand): expected 2 tools (discovery tools), got %d", len(toolsOnDemand))
-	}
-
-	foundOnDemandSearch := false
-	foundOnDemandExecute := false
-	for _, tool := range toolsOnDemand {
-		if tool.Name == ToolSearchName {
-			foundOnDemandSearch = true
-		}
-		if tool.Name == ExecuteToolName {
-			foundOnDemandExecute = true
-		}
-		// Provider tools should NOT be in the list
-		if tool.Name == "email_send" || tool.Name == "file_upload" {
-			t.Errorf("Stage 2 (OnDemand): tool %s should NOT be in tools/list", tool.Name)
+	foundNativeShowAll := false
+	foundDiscoverableShowAll := false
+	for _, tool := range showAllTools {
+		switch tool.Name {
+		case "native_tool":
+			foundNativeShowAll = true
+		case "discoverable_tool":
+			foundDiscoverableShowAll = true
 		}
 	}
 
-	if !foundOnDemandSearch {
-		t.Error("Stage 2 (OnDemand): tool_search should be in list")
+	if !foundNativeShowAll {
+		t.Error("Show-all mode: native_tool should be visible")
 	}
-	if !foundOnDemandExecute {
-		t.Error("Stage 2 (OnDemand): execute_tool should be in list")
-	}
-
-	// Tools are still callable, just hidden
-	resp, err = server.CallTool(ctxOnDemand, "email_send", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("Stage 2 (OnDemand): failed to call email_send: %v", err)
-	}
-	if resp == nil {
-		t.Error("Stage 2 (OnDemand): expected response from email_send")
-	}
-
-	// Tools should be discoverable via tool_search
-	searchResp, err := server.CallTool(ctxOnDemand, ToolSearchName, map[string]interface{}{
-		"query":       "email",
-		"max_results": 10,
-	})
-	if err != nil {
-		t.Fatalf("Stage 2 (OnDemand): tool_search failed: %v", err)
-	}
-	if searchResp == nil {
-		t.Error("Stage 2 (OnDemand): expected response from tool_search")
-	}
-
-	// ============================================================================
-	// STAGE 3: Return to Native Mode - Tools visible again
-	// ============================================================================
-	// Switch back to native mode with the provider
-	ctxNativeAgain := WithToolProviders(context.Background(), provider)
-	toolsNativeAgain := server.ListToolsWithContext(ctxNativeAgain)
-
-	foundNativeEmail2 := false
-	foundNativeFile2 := false
-	for _, tool := range toolsNativeAgain {
-		if tool.Name == "email_send" {
-			foundNativeEmail2 = true
-		}
-		if tool.Name == "file_upload" {
-			foundNativeFile2 = true
-		}
-	}
-
-	if !foundNativeEmail2 {
-		t.Error("Stage 3 (Native): email_send should be visible in tools/list again")
-	}
-	if !foundNativeFile2 {
-		t.Error("Stage 3 (Native): file_upload should be visible in tools/list again")
-	}
-
-	// Verify tools are still callable
-	resp, err = server.CallTool(ctxNativeAgain, "email_send", map[string]interface{}{})
-	if err != nil {
-		t.Fatalf("Stage 3 (Native): failed to call email_send: %v", err)
-	}
-	if resp == nil {
-		t.Error("Stage 3 (Native): expected response from email_send")
+	if !foundDiscoverableShowAll {
+		t.Error("Show-all mode: discoverable_tool should be visible")
 	}
 }
 
-// TestDynamicToolStateTransition_PerRequest demonstrates transitioning tools
-// for different requests simultaneously without cross-contamination
+// TestDynamicToolStateTransition_PerRequest demonstrates that different requests
+// can have different visibility modes simultaneously
 func TestDynamicToolStateTransition_PerRequest(t *testing.T) {
 	server := NewServer("per-request-test", "1.0.0")
 
 	provider := &mockToolProvider{
 		tools: []MCPTool{
-			{Name: "admin_tools", Description: "Admin functionality", Keywords: []string{"admin"}},
-			{Name: "user_tools", Description: "User functionality", Keywords: []string{"user"}},
+			{Name: "admin_tools", Description: "Admin functionality", Visibility: ToolVisibilityNative},
+			{Name: "hidden_tools", Description: "Hidden functionality", Visibility: ToolVisibilityDiscoverable, Keywords: []string{"hidden"}},
 		},
 		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
 			if name == "admin_tools" {
 				return "admin result", nil
 			}
-			if name == "user_tools" {
-				return "user result", nil
+			if name == "hidden_tools" {
+				return "hidden result", nil
 			}
 			return nil, nil
 		},
 	}
 
-	// Simulate request 1: Admin request in native mode (all tools visible)
-	ctxAdmin := WithToolProviders(context.Background(), provider)
+	// Need a discoverable tool for tool_search to exist
+	server.RegisterTool(
+		NewTool("dummy", "Dummy").Discoverable(),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+	)
 
-	// Simulate request 2: User request in ondemand mode (tools hidden)
-	ctxUser := WithForceOnDemandMode(context.Background(), provider)
+	// Request 1: Normal mode (native tools visible, discoverable hidden)
+	ctxNormal := WithToolProviders(context.Background(), provider)
 
-	// Request 1 (Admin) should see tools in list
-	toolsAdmin := server.ListToolsWithContext(ctxAdmin)
+	// Request 2: Show-all mode (all tools visible)
+	ctxShowAll := WithToolProviders(context.Background(), provider)
+	ctxShowAll = WithShowAllTools(ctxShowAll)
+
+	// Request 1 (Normal) should see only native tools
+	toolsNormal := server.ListToolsWithContext(ctxNormal)
 	foundAdmin := false
-	for _, tool := range toolsAdmin {
+	foundHidden := false
+	for _, tool := range toolsNormal {
 		if tool.Name == "admin_tools" {
 			foundAdmin = true
 		}
-	}
-	if !foundAdmin {
-		t.Error("Admin request should see admin_tools in native mode")
-	}
-
-	// Request 2 (User) should NOT see tools in list (only discovery tools)
-	toolsUser := server.ListToolsWithContext(ctxUser)
-	for _, tool := range toolsUser {
-		if tool.Name == "admin_tools" || tool.Name == "user_tools" {
-			t.Errorf("User request should not see %s in ondemand mode", tool.Name)
+		if tool.Name == "hidden_tools" {
+			foundHidden = true
 		}
 	}
-
-	// Both requests can still call their tools
-	resp1, err := server.CallTool(ctxAdmin, "admin_tools", nil)
-	if err != nil {
-		t.Fatalf("Admin: failed to call admin_tools: %v", err)
+	if !foundAdmin {
+		t.Error("Normal request should see admin_tools")
 	}
-	if resp1 == nil {
-		t.Error("Admin: expected response")
+	if foundHidden {
+		t.Error("Normal request should NOT see hidden_tools in list")
 	}
 
-	resp2, err := server.CallTool(ctxUser, "user_tools", nil)
-	if err != nil {
-		t.Fatalf("User: failed to call user_tools: %v", err)
+	// Request 2 (Show-all) should see ALL tools
+	toolsShowAll := server.ListToolsWithContext(ctxShowAll)
+	foundAdminShowAll := false
+	foundHiddenShowAll := false
+	for _, tool := range toolsShowAll {
+		if tool.Name == "admin_tools" {
+			foundAdminShowAll = true
+		}
+		if tool.Name == "hidden_tools" {
+			foundHiddenShowAll = true
+		}
 	}
-	if resp2 == nil {
-		t.Error("User: expected response")
+	if !foundAdminShowAll {
+		t.Error("Show-all request should see admin_tools")
+	}
+	if !foundHiddenShowAll {
+		t.Error("Show-all request should see hidden_tools")
 	}
 
-	// Request 1 cannot access user request's mode
-	toolsAdminCheck := server.ListToolsWithContext(ctxAdmin)
-	if len(toolsAdminCheck) < 2 { // Should have admin_tools, user_tools, etc.
-		t.Error("Admin context should not be affected by user context")
+	// Both requests can call all tools
+	resp1, err := server.CallTool(ctxNormal, "admin_tools", nil)
+	if err != nil || resp1 == nil {
+		t.Error("Normal: failed to call admin_tools")
+	}
+
+	resp2, err := server.CallTool(ctxNormal, "hidden_tools", nil)
+	if err != nil || resp2 == nil {
+		t.Error("Normal: failed to call hidden_tools (should be callable)")
 	}
 }
 
 // TestDynamicToolStateTransition_ConditionalVisibility shows implementing
-// conditional tool visibility based on request attributes
+// conditional tool visibility based on tool's Visibility field
 func TestDynamicToolStateTransition_ConditionalVisibility(t *testing.T) {
 	server := NewServer("conditional-test", "1.0.0")
 
+	// Provider with native and discoverable tools
 	provider := &mockToolProvider{
 		tools: []MCPTool{
-			{Name: "sensitive_data", Description: "Access sensitive data", Keywords: []string{"sensitive"}},
-			{Name: "public_data", Description: "Access public data", Keywords: []string{"public"}},
+			{Name: "public_data", Description: "Access public data", Visibility: ToolVisibilityNative},
+			{Name: "sensitive_data", Description: "Access sensitive data", Visibility: ToolVisibilityDiscoverable, Keywords: []string{"sensitive"}},
 		},
 		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
 			if name == "sensitive_data" {
@@ -801,69 +772,60 @@ func TestDynamicToolStateTransition_ConditionalVisibility(t *testing.T) {
 		},
 	}
 
-	// Helper to determine if request has elevated privileges
-	hasElevatedPrivileges := func(userRole string) bool {
-		return userRole == "admin" || userRole == "power_user"
-	}
+	// Register a discoverable tool so tool_search exists
+	server.RegisterTool(
+		NewTool("dummy", "Dummy").Discoverable(),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("OK"), nil
+		},
+	)
 
-	// Request 1: Regular user - tools in ondemand (hidden)
-	userRole1 := "regular_user"
-	var ctx1 context.Context
-	if hasElevatedPrivileges(userRole1) {
-		ctx1 = WithToolProviders(context.Background(), provider)
-	} else {
-		ctx1 = WithForceOnDemandMode(context.Background(), provider)
-	}
+	// Normal request - only sees native tools
+	ctx := WithToolProviders(context.Background(), provider)
+	tools := server.ListToolsWithContext(ctx)
 
-	tools1 := server.ListToolsWithContext(ctx1)
-	for _, tool := range tools1 {
-		if tool.Name == "sensitive_data" {
-			t.Error("Regular user should not see sensitive_data in list")
-		}
-	}
-
-	// Request 2: Admin user - tools in native (visible)
-	userRole2 := "admin"
-	var ctx2 context.Context
-	if hasElevatedPrivileges(userRole2) {
-		ctx2 = WithToolProviders(context.Background(), provider)
-	} else {
-		ctx2 = WithForceOnDemandMode(context.Background(), provider)
-	}
-
-	tools2 := server.ListToolsWithContext(ctx2)
+	foundPublic := false
 	foundSensitive := false
-	for _, tool := range tools2 {
+	for _, tool := range tools {
+		if tool.Name == "public_data" {
+			foundPublic = true
+		}
 		if tool.Name == "sensitive_data" {
 			foundSensitive = true
 		}
 	}
-	if !foundSensitive {
-		t.Error("Admin user should see sensitive_data in list")
+
+	if !foundPublic {
+		t.Error("Normal user should see public_data in list")
+	}
+	if foundSensitive {
+		t.Error("Normal user should NOT see sensitive_data in list (it's discoverable)")
 	}
 
-	// Both users can search for tools (at different levels of access)
-	// The search would typically filter results based on permissions
-	// but in this test we're just verifying the visibility mode works
-	resp1, err := server.CallTool(ctx1, ToolSearchName, map[string]interface{}{
-		"query":       "",
+	// Admin request with show-all - sees all tools
+	adminCtx := WithToolProviders(context.Background(), provider)
+	adminCtx = WithShowAllTools(adminCtx)
+	adminTools := server.ListToolsWithContext(adminCtx)
+
+	foundSensitiveAdmin := false
+	for _, tool := range adminTools {
+		if tool.Name == "sensitive_data" {
+			foundSensitiveAdmin = true
+		}
+	}
+	if !foundSensitiveAdmin {
+		t.Error("Admin user with show-all should see sensitive_data")
+	}
+
+	// Both can search for tools
+	resp1, err := server.CallTool(ctx, ToolSearchName, map[string]interface{}{
+		"query":       "sensitive",
 		"max_results": 10,
 	})
 	if err != nil {
-		t.Fatalf("Regular user: tool_search failed: %v", err)
+		t.Fatalf("Normal user: tool_search failed: %v", err)
 	}
 	if resp1 == nil {
-		t.Error("Regular user: expected response from tool_search")
-	}
-
-	resp2, err := server.CallTool(ctx2, ToolSearchName, map[string]interface{}{
-		"query":       "",
-		"max_results": 10,
-	})
-	if err != nil {
-		t.Fatalf("Admin user: tool_search failed: %v", err)
-	}
-	if resp2 == nil {
-		t.Error("Admin user: expected response from tool_search")
+		t.Error("Normal user: expected response from tool_search")
 	}
 }

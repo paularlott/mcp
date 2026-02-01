@@ -16,8 +16,8 @@ import (
 // Implement this interface to create custom session stores (Redis, Database, etc.)
 type SessionManager interface {
 	// CreateSession creates a new session and returns its ID
-	// toolMode specifies whether this session uses discovery mode (ToolListModeForceOnDemand)
-	CreateSession(ctx context.Context, protocolVersion string, toolMode ToolListMode) (sessionID string, err error)
+	// showAll specifies whether this session shows all tools regardless of visibility
+	CreateSession(ctx context.Context, protocolVersion string, showAll bool) (sessionID string, err error)
 
 	// ValidateSession checks if a session exists and is valid
 	// Returns true if valid, updates lastUsed timestamp if applicable
@@ -26,9 +26,9 @@ type SessionManager interface {
 	// GetProtocolVersion returns the negotiated protocol version for a session
 	GetProtocolVersion(ctx context.Context, sessionID string) (version string, err error)
 
-	// GetToolMode returns the tool mode for a session
-	// Returns ToolListModeDefault if not set or session is invalid
-	GetToolMode(ctx context.Context, sessionID string) (ToolListMode, error)
+	// GetShowAll returns whether show-all mode is enabled for a session
+	// Returns false if not set or session is invalid
+	GetShowAll(ctx context.Context, sessionID string) (bool, error)
 
 	// DeleteSession removes a session
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -51,10 +51,10 @@ type JWTSessionManager struct {
 }
 
 type jwtClaims struct {
-	Protocol  string       `json:"protocol"`
-	ToolMode  ToolListMode `json:"tool_mode,omitempty"`
-	IssuedAt  int64        `json:"iat"`
-	ExpiresAt int64        `json:"exp"`
+	Protocol  string `json:"protocol"`
+	ShowAll   bool   `json:"show_all,omitempty"`
+	IssuedAt  int64  `json:"iat"`
+	ExpiresAt int64  `json:"exp"`
 }
 
 // NewJWTSessionManager creates a new JWT-based session manager
@@ -90,11 +90,11 @@ func NewJWTSessionManagerWithAutoKey(ttl time.Duration) (*JWTSessionManager, err
 }
 
 // CreateSession generates a new JWT session token
-func (m *JWTSessionManager) CreateSession(ctx context.Context, protocolVersion string, toolMode ToolListMode) (string, error) {
+func (m *JWTSessionManager) CreateSession(ctx context.Context, protocolVersion string, showAll bool) (string, error) {
 	now := time.Now()
 	claims := jwtClaims{
 		Protocol:  protocolVersion,
-		ToolMode:  toolMode,
+		ShowAll:   showAll,
 		IssuedAt:  now.Unix(),
 		ExpiresAt: now.Add(m.ttl).Unix(),
 	}
@@ -184,24 +184,24 @@ func (m *JWTSessionManager) GetProtocolVersion(ctx context.Context, sessionID st
 	return claims.Protocol, nil
 }
 
-// GetToolMode extracts the tool mode from a JWT session token
-func (m *JWTSessionManager) GetToolMode(ctx context.Context, sessionID string) (ToolListMode, error) {
+// GetShowAll extracts the show-all flag from a JWT session token
+func (m *JWTSessionManager) GetShowAll(ctx context.Context, sessionID string) (bool, error) {
 	parts := strings.Split(sessionID, ".")
 	if len(parts) != 3 {
-		return ToolListModeDefault, fmt.Errorf("invalid token format")
+		return false, fmt.Errorf("invalid token format")
 	}
 
 	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return ToolListModeDefault, fmt.Errorf("failed to decode claims: %w", err)
+		return false, fmt.Errorf("failed to decode claims: %w", err)
 	}
 
 	var claims jwtClaims
 	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return ToolListModeDefault, fmt.Errorf("failed to unmarshal claims: %w", err)
+		return false, fmt.Errorf("failed to unmarshal claims: %w", err)
 	}
 
-	return claims.ToolMode, nil
+	return claims.ShowAll, nil
 }
 
 // DeleteSession is a no-op for JWT sessions (cannot revoke before expiry)

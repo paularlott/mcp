@@ -38,102 +38,96 @@ Example workflow:
 	)
 
 	// =========================================================================
-	// 2. Register ondemand tools (searchable via tool_search, not in tools/list)
+	// 2. Register discoverable tools (searchable via tool_search, not in tools/list)
 	// =========================================================================
 
 	// Database tools
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("sql_query", "Execute SQL queries against the database",
 			mcp.String("query", "SQL query to execute", mcp.Required()),
 			mcp.String("database", "Database name (default: main)"),
-		),
+		).Discoverable("database", "sql", "query", "select", "insert", "update", "delete"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			query, _ := req.String("query")
 			db := req.StringOr("database", "main")
 			return mcp.NewToolResponseText(fmt.Sprintf("Executed on %s: %s\n(simulated result)", db, query)), nil
 		},
-		"database", "sql", "query", "select", "insert", "update", "delete",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("database_backup", "Create a backup of the database",
 			mcp.String("database", "Database to backup", mcp.Required()),
 			mcp.String("destination", "Backup destination path"),
-		),
+		).Discoverable("database", "backup", "export", "save"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			db, _ := req.String("database")
 			dest := req.StringOr("destination", "/backups")
 			return mcp.NewToolResponseText(fmt.Sprintf("Backup of %s created at %s", db, dest)), nil
 		},
-		"database", "backup", "export", "save",
 	)
 
 	// Email tools
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("send_email", "Send an email message",
 			mcp.String("to", "Recipient email address", mcp.Required()),
 			mcp.String("subject", "Email subject", mcp.Required()),
 			mcp.String("body", "Email body content", mcp.Required()),
 			mcp.StringArray("cc", "CC recipients"),
 			mcp.Boolean("html", "Send as HTML email"),
-		),
+		).Discoverable("email", "mail", "send", "notification", "smtp", "message"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			to, _ := req.String("to")
 			subject, _ := req.String("subject")
 			return mcp.NewToolResponseText(fmt.Sprintf("Email sent to %s: %s", to, subject)), nil
 		},
-		"email", "mail", "send", "notification", "smtp", "message",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("list_emails", "List emails from inbox",
 			mcp.Number("limit", "Maximum number of emails to return"),
 			mcp.String("folder", "Folder to list (inbox, sent, drafts)"),
 			mcp.Boolean("unread_only", "Only show unread emails"),
-		),
+		).Discoverable("email", "mail", "inbox", "list", "read"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			folder := req.StringOr("folder", "inbox")
 			limit := req.IntOr("limit", 10)
 			return mcp.NewToolResponseText(fmt.Sprintf("Listing %d emails from %s (simulated)", limit, folder)), nil
 		},
-		"email", "mail", "inbox", "list", "read",
 	)
 
 	// Document tools
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("create_pdf", "Generate a PDF document",
 			mcp.String("title", "Document title", mcp.Required()),
 			mcp.String("content", "Document content (markdown supported)", mcp.Required()),
 			mcp.String("output", "Output filename"),
-		),
+		).Discoverable("pdf", "document", "export", "generate", "report"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			title, _ := req.String("title")
 			output := req.StringOr("output", "document.pdf")
 			return mcp.NewToolResponseText(fmt.Sprintf("PDF '%s' created: %s", title, output)), nil
 		},
-		"pdf", "document", "export", "generate", "report",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("convert_document", "Convert documents between formats",
 			mcp.String("input", "Input file path", mcp.Required()),
 			mcp.String("output_format", "Output format (pdf, docx, html, md)", mcp.Required()),
-		),
+		).Discoverable("convert", "document", "pdf", "docx", "html", "markdown", "transform"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			input, _ := req.String("input")
 			format, _ := req.String("output_format")
 			return mcp.NewToolResponseText(fmt.Sprintf("Converted %s to %s format", input, format)), nil
 		},
-		"convert", "document", "pdf", "docx", "html", "markdown", "transform",
 	)
 
 	// DevOps tools
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("kubernetes_deploy", "Deploy application to Kubernetes",
 			mcp.String("manifest", "Kubernetes manifest YAML", mcp.Required()),
 			mcp.String("namespace", "Target namespace"),
 			mcp.Boolean("dry_run", "Perform a dry run without applying"),
-		),
+		).Discoverable("kubernetes", "k8s", "deploy", "container", "orchestration", "devops"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			ns := req.StringOr("namespace", "default")
 			dryRun := req.BoolOr("dry_run", false)
@@ -143,15 +137,14 @@ Example workflow:
 			}
 			return mcp.NewToolResponseText(fmt.Sprintf("%s to namespace: %s", action, ns)), nil
 		},
-		"kubernetes", "k8s", "deploy", "container", "orchestration", "devops",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("docker_build", "Build a Docker image",
 			mcp.String("dockerfile", "Path to Dockerfile", mcp.Required()),
 			mcp.String("tag", "Image tag", mcp.Required()),
 			mcp.Boolean("push", "Push to registry after build"),
-		),
+		).Discoverable("docker", "container", "build", "image", "devops"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			tag, _ := req.String("tag")
 			push := req.BoolOr("push", false)
@@ -161,65 +154,59 @@ Example workflow:
 			}
 			return mcp.NewToolResponseText(result), nil
 		},
-		"docker", "container", "build", "image", "devops",
 	)
 
 	// Analytics tools
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("analyze_data", "Perform statistical analysis on data",
 			mcp.String("dataset", "Dataset name or path", mcp.Required()),
 			mcp.StringArray("columns", "Columns to analyze"),
 			mcp.String("operation", "Analysis type (mean, median, std, correlation)"),
-		),
+		).Discoverable("analytics", "statistics", "data", "analysis", "pandas", "numpy"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			dataset, _ := req.String("dataset")
 			op := req.StringOr("operation", "summary")
 			return mcp.NewToolResponseText(fmt.Sprintf("Analysis (%s) of %s: (simulated results)", op, dataset)), nil
 		},
-		"analytics", "statistics", "data", "analysis", "pandas", "numpy",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("create_chart", "Generate charts and visualizations",
 			mcp.String("type", "Chart type (bar, line, pie, scatter)", mcp.Required()),
 			mcp.String("data", "Data in JSON format", mcp.Required()),
 			mcp.String("title", "Chart title"),
-		),
+		).Discoverable("chart", "graph", "visualization", "plot", "matplotlib"),
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			chartType, _ := req.String("type")
 			title := req.StringOr("title", "Chart")
 			return mcp.NewToolResponseText(fmt.Sprintf("Created %s chart: %s", chartType, title)), nil
 		},
-		"chart", "graph", "visualization", "plot", "matplotlib",
 	)
 
 	// Script-based tools
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("run_backup_script", "Run the automated backup script",
 			mcp.String("target", "Backup target (database, files, all)"),
 			mcp.Boolean("compress", "Compress backup files"),
-		),
+		).Discoverable("backup", "script", "database", "files", "automation"),
 		handleRunBackupScript,
-		"backup", "script", "database", "files", "automation",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("cleanup_logs", "Clean up old log files to free disk space",
 			mcp.Number("days", "Delete logs older than this many days (default: 30)"),
 			mcp.String("log_type", "Type of logs to clean (application, access, error, all)"),
 			mcp.Boolean("dry_run", "Show what would be deleted without actually deleting"),
-		),
+		).Discoverable("cleanup", "logs", "disk", "space", "maintenance", "script"),
 		handleCleanupLogs,
-		"cleanup", "logs", "disk", "space", "maintenance", "script",
 	)
 
-	server.RegisterOnDemandTool(
+	server.RegisterTool(
 		mcp.NewTool("system_health_check", "Run comprehensive system health checks",
 			mcp.StringArray("checks", "Specific checks to run (disk, memory, cpu, network)"),
 			mcp.Boolean("verbose", "Include detailed metrics in the output"),
-		),
+		).Discoverable("health", "monitoring", "status", "check", "disk", "memory", "cpu", "network", "system", "diagnostics"),
 		handleHealthCheck,
-		"health", "monitoring", "status", "check", "disk", "memory", "cpu", "network", "system", "diagnostics",
 	)
 
 	// =========================================================================

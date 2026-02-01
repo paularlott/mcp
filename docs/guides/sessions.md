@@ -70,10 +70,10 @@ The session management system is fully pluggable via the `SessionManager` interf
 ```go
 // SessionManager interface for pluggable session storage
 type SessionManager interface {
-    CreateSession(ctx context.Context, protocolVersion string, toolMode ToolListMode) (string, error)
+    CreateSession(ctx context.Context, protocolVersion string, showAll bool) (string, error)
     ValidateSession(ctx context.Context, sessionID string) (bool, error)
     GetProtocolVersion(ctx context.Context, sessionID string) (string, error)
-    GetToolMode(ctx context.Context, sessionID string) (ToolListMode, error)
+    GetShowAll(ctx context.Context, sessionID string) (bool, error)
     DeleteSession(ctx context.Context, sessionID string) error
     CleanupExpiredSessions(ctx context.Context) error
 }
