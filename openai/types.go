@@ -95,11 +95,22 @@ type Choice struct {
 
 // Delta represents a streaming delta
 type Delta struct {
-	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	Role             string          `json:"role,omitempty"`
-	Content          string          `json:"content,omitempty"`
-	Refusal          string          `json:"refusal,omitempty"`
-	ToolCalls        []DeltaToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent supports OpenAI's o1-style reasoning_content field
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// Reasoning supports alternative reasoning field from some providers (e.g., vLLM)
+	Reasoning string          `json:"reasoning,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	Refusal   string          `json:"refusal,omitempty"`
+	ToolCalls []DeltaToolCall `json:"tool_calls,omitempty"`
+}
+
+// GetReasoningContent returns the reasoning content, supporting both field names
+func (d *Delta) GetReasoningContent() string {
+	if d.ReasoningContent != "" {
+		return d.ReasoningContent
+	}
+	return d.Reasoning
 }
 
 // Usage represents token usage
