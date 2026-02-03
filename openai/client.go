@@ -226,18 +226,23 @@ func (c *Client) GetModels(ctx context.Context) (*ModelsResponse, error) {
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
 	currentMessages := req.Messages
 
-	// Add tools from all servers
-	tools, err := c.GetAllTools(ctx)
-	if err == nil && len(tools) > 0 {
-		req.Tools = MCPToolsToOpenAI(tools)
-	}
+	// Skip tool injection if request already has tools (caller is handling tools)
+	requestHasTools := len(req.Tools) > 0
 
-	// Add custom tools
-	c.customToolsMu.RLock()
-	if len(c.customTools) > 0 {
-		req.Tools = append(req.Tools, c.customTools...)
+	if !requestHasTools {
+		// Add tools from all servers
+		tools, err := c.GetAllTools(ctx)
+		if err == nil && len(tools) > 0 {
+			req.Tools = MCPToolsToOpenAI(tools)
+		}
+
+		// Add custom tools
+		c.customToolsMu.RLock()
+		if len(c.customTools) > 0 {
+			req.Tools = append(req.Tools, c.customTools...)
+		}
+		c.customToolsMu.RUnlock()
 	}
-	c.customToolsMu.RUnlock()
 
 	toolHandler := ToolHandlerFromContext(ctx)
 
@@ -251,6 +256,11 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		response, err := c.nonStreamingChatCompletion(ctx, req)
 		if err != nil {
 			return nil, err
+		}
+
+		// If request had tools, caller handles execution - return immediately
+		if requestHasTools {
+			return response, nil
 		}
 
 		// If no servers, no tool calls, or no choices, we're done
@@ -327,21 +337,27 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 
 		currentMessages := req.Messages
 
-		// Add tools from all servers
-		tools, err := c.GetAllTools(ctx)
+		// Skip tool injection if request already has tools (caller is handling tools)
+		requestHasTools := len(req.Tools) > 0
 		hasServers := c.localServer != nil || len(c.remoteServers) > 0
+		var hasCustomTools bool
 
-		if err == nil && hasServers && len(tools) > 0 {
-			req.Tools = MCPToolsToOpenAI(tools)
-		}
+		if !requestHasTools {
+			// Add tools from all servers
+			tools, err := c.GetAllTools(ctx)
 
-		// Add custom tools
-		c.customToolsMu.RLock()
-		if len(c.customTools) > 0 {
-			req.Tools = append(req.Tools, c.customTools...)
+			if err == nil && hasServers && len(tools) > 0 {
+				req.Tools = MCPToolsToOpenAI(tools)
+			}
+
+			// Add custom tools
+			c.customToolsMu.RLock()
+			if len(c.customTools) > 0 {
+				req.Tools = append(req.Tools, c.customTools...)
+			}
+			hasCustomTools = len(c.customTools) > 0
+			c.customToolsMu.RUnlock()
 		}
-		hasCustomTools := len(c.customTools) > 0
-		c.customToolsMu.RUnlock()
 
 		toolHandler := ToolHandlerFromContext(ctx)
 
@@ -354,6 +370,11 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 			finalResponse, err := c.streamSingleCompletion(ctx, req, responseChan)
 			if err != nil {
 				errorChan <- err
+				return
+			}
+
+			// If request had tools, caller handles execution - return immediately
+			if requestHasTools {
 				return
 			}
 
