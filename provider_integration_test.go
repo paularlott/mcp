@@ -20,12 +20,11 @@ func TestProviderIntegration_NativeMode(t *testing.T) {
 		"greeting", "hello",
 	)
 
-	server.RegisterOnDemandTool(
-		NewTool("search_docs", "Search documentation", String("query", "Search query", Required())),
+	server.RegisterTool(
+		NewTool("search_docs", "Search documentation", String("query", "Search query", Required())).Discoverable("search", "docs"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("Found matching docs"), nil
 		},
-		"search", "docs",
 	)
 
 	// Create two providers
@@ -64,7 +63,7 @@ func TestProviderIntegration_NativeMode(t *testing.T) {
 	// Test 1: List tools without providers
 	toolsWithoutProviders := server.ListTools()
 	if len(toolsWithoutProviders) == 0 {
-		t.Error("should have at least native and ondemand tools without providers")
+		t.Error("should have at least native and discoverable tools without providers")
 	}
 
 	// Test 2: List tools with one provider
@@ -127,8 +126,8 @@ func TestProviderIntegration_NativeMode(t *testing.T) {
 	}
 }
 
-// TestProviderIntegration_OnDemandMode tests complete workflow with providers in force ondemand mode
-func TestProviderIntegration_OnDemandMode(t *testing.T) {
+// TestProviderIntegration_ShowAllMode tests complete workflow with providers in show-all mode
+func TestProviderIntegration_ShowAllMode(t *testing.T) {
 	server := NewServer("integration-test", "1.0.0")
 
 	// Register native tool with keywords
@@ -141,18 +140,17 @@ func TestProviderIntegration_OnDemandMode(t *testing.T) {
 		"greeting", "hello", "salute",
 	)
 
-	server.RegisterOnDemandTool(
-		NewTool("search_docs", "Search documentation", String("query", "Search query", Required())),
+	server.RegisterTool(
+		NewTool("search_docs", "Search documentation", String("query", "Search query", Required())).Discoverable("search", "docs", "find"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("Found matching docs"), nil
 		},
-		"search", "docs", "find",
 	)
 
-	// Create provider
+	// Create provider with a native tool
 	provider := &mockToolProvider{
 		tools: []MCPTool{
-			{Name: "calculate", Description: "Perform math", Keywords: []string{"math", "calculate", "arithmetic"}},
+			{Name: "calculate", Description: "Perform math", Keywords: []string{"math", "calculate", "arithmetic"}, Visibility: ToolVisibilityNative},
 		},
 		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
 			if name == "calculate" {
@@ -162,52 +160,75 @@ func TestProviderIntegration_OnDemandMode(t *testing.T) {
 		},
 	}
 
-	// Test 1: In force ondemand mode, only discovery tools appear in list
-	ctxOnDemand := WithForceOnDemandMode(context.Background(), provider)
-	toolsInList := server.ListToolsWithContext(ctxOnDemand)
+	// Test 1: In show-all mode, ALL tools appear in list (but not meta-tools)
+	ctxShowAll := WithToolProviders(context.Background(), provider)
+	ctxShowAll = WithShowAllTools(ctxShowAll)
+	toolsInList := server.ListToolsWithContext(ctxShowAll)
 
-	if len(toolsInList) != 2 {
-		t.Fatalf("expected exactly 2 tools (tool_search, execute_tool), got %d", len(toolsInList))
+	// Should have: greet, search_docs, calculate (meta-tools excluded)
+	if len(toolsInList) != 3 {
+		t.Errorf("expected 3 tools in show-all mode, got %d", len(toolsInList))
+		for _, tool := range toolsInList {
+			t.Logf("  - %s", tool.Name)
+		}
 	}
 
+	foundGreet := false
+	foundSearchDocs := false
+	foundCalculate := false
 	foundSearch := false
 	foundExecute := false
 	for _, tool := range toolsInList {
-		if tool.Name == ToolSearchName {
+		switch tool.Name {
+		case "greet":
+			foundGreet = true
+		case "search_docs":
+			foundSearchDocs = true
+		case "calculate":
+			foundCalculate = true
+		case ToolSearchName:
 			foundSearch = true
-		}
-		if tool.Name == ExecuteToolName {
+		case ExecuteToolName:
 			foundExecute = true
 		}
 	}
 
-	if !foundSearch {
-		t.Error("tool_search should be in list")
+	if !foundGreet {
+		t.Error("greet should be in show-all list")
 	}
-	if !foundExecute {
-		t.Error("execute_tool should be in list")
+	if !foundSearchDocs {
+		t.Error("search_docs should be in show-all list")
+	}
+	if !foundCalculate {
+		t.Error("calculate should be in show-all list")
+	}
+	if foundSearch {
+		t.Error("tool_search should NOT be in list")
+	}
+	if foundExecute {
+		t.Error("execute_tool should NOT be in list")
 	}
 
-	// Test 2: Native tools are callable but not in list
-	resp, err := server.CallTool(ctxOnDemand, "greet", map[string]interface{}{"name": "World"})
+	// Test 2: All tools are callable
+	resp, err := server.CallTool(ctxShowAll, "greet", map[string]interface{}{"name": "World"})
 	if err != nil {
-		t.Fatalf("native tool should be callable: %v", err)
+		t.Fatalf("greet should be callable: %v", err)
 	}
 	if resp == nil {
-		t.Error("expected response from native tool")
+		t.Error("expected response from greet")
 	}
 
 	// Test 3: Provider tools are callable
-	resp, err = server.CallTool(ctxOnDemand, "calculate", nil)
+	resp, err = server.CallTool(ctxShowAll, "calculate", nil)
 	if err != nil {
-		t.Fatalf("provider tool should be callable: %v", err)
+		t.Fatalf("calculate should be callable: %v", err)
 	}
 	if resp == nil {
-		t.Error("expected response from provider tool")
+		t.Error("expected response from calculate")
 	}
 
-	// Test 4: All tools should be searchable
-	searchResp, err := server.CallTool(ctxOnDemand, ToolSearchName, map[string]interface{}{
+	// Test 4: Discoverable tools should be searchable
+	searchResp, err := server.CallTool(ctxShowAll, ToolSearchName, map[string]interface{}{
 		"query":       "",
 		"max_results": 100,
 	})
@@ -221,30 +242,16 @@ func TestProviderIntegration_OnDemandMode(t *testing.T) {
 			t.Fatalf("failed to parse search results: %v", err)
 		}
 
-		foundGreet := false
-		foundSearch := false
-		foundCalculate := false
-
+		// Only discoverable tools should be in search results
+		foundSearchDocs = false
 		for _, result := range results {
-			if result.Name == "greet" {
-				foundGreet = true
-			}
 			if result.Name == "search_docs" {
-				foundSearch = true
-			}
-			if result.Name == "calculate" {
-				foundCalculate = true
+				foundSearchDocs = true
 			}
 		}
 
-		if !foundGreet {
-			t.Error("native tool 'greet' should be searchable")
-		}
-		if !foundSearch {
-			t.Error("ondemand tool 'search_docs' should be searchable")
-		}
-		if !foundCalculate {
-			t.Error("provider tool 'calculate' should be searchable")
+		if !foundSearchDocs {
+			t.Error("discoverable tool 'search_docs' should be searchable")
 		}
 	}
 }
@@ -309,8 +316,8 @@ func TestProviderIntegration_MixedProviders(t *testing.T) {
 	}
 }
 
-// TestProviderIntegration_ContextReplacement tests that new provider contexts replace old ones
-func TestProviderIntegration_ContextReplacement(t *testing.T) {
+// TestProviderIntegration_ContextAccumulation tests that provider contexts accumulate when nested
+func TestProviderIntegration_ContextAccumulation(t *testing.T) {
 	provider1 := &mockToolProvider{
 		tools: []MCPTool{
 			{Name: "tool1", Description: "From provider 1"},
@@ -324,9 +331,9 @@ func TestProviderIntegration_ContextReplacement(t *testing.T) {
 	}
 
 	ctx1 := WithToolProviders(context.Background(), provider1)
-	ctx2 := WithToolProviders(ctx1, provider2)
+	ctx2 := WithToolProviders(ctx1, provider2) // Accumulates on ctx1
 
-	// ctx1 should have provider1
+	// ctx1 should have provider1 only
 	providers1 := GetToolProviders(ctx1)
 	if len(providers1) != 1 {
 		t.Errorf("ctx1 should have 1 provider, got %d", len(providers1))
@@ -341,16 +348,16 @@ func TestProviderIntegration_ContextReplacement(t *testing.T) {
 		t.Error("ctx1 should not have tool2 from provider2")
 	}
 
-	// ctx2 should have provider2 only (not provider1)
+	// ctx2 should have both providers (accumulated)
 	providers2 := GetToolProviders(ctx2)
-	if len(providers2) != 1 {
-		t.Errorf("ctx2 should have 1 provider, got %d", len(providers2))
+	if len(providers2) != 2 {
+		t.Errorf("ctx2 should have 2 providers (accumulated), got %d", len(providers2))
 	}
 
 	seen2 := make(map[string]bool)
 	_ = listToolsFromProviders(ctx2, seen2)
-	if seen2["tool1"] {
-		t.Error("ctx2 should not have tool1 from provider1")
+	if !seen2["tool1"] {
+		t.Error("ctx2 should have tool1 from provider1")
 	}
 	if !seen2["tool2"] {
 		t.Error("ctx2 should have tool2 from provider2")

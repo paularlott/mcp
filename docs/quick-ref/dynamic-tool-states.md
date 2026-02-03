@@ -1,165 +1,157 @@
-# Dynamic Tool States - Quick Reference
+# Dynamic Tool Visibility - Quick Reference
 
 ## The Problem
 
-You want to dynamically control which tools are visible to different users/requests while keeping them callable in both modes.
+You want to control which tools are visible in `tools/list` vs searchable-only, and optionally show all tools for MCP chaining.
 
 ## The Solution
 
-Use context to switch between visibility modes per request:
+Tools carry their own visibility. Use show-all mode to reveal everything:
 
 ```go
-// Native mode - tools visible in tools/list
+// Native tools visible in tools/list, discoverable tools searchable only
 ctx := mcp.WithToolProviders(context.Background(), provider)
 
-// OnDemand mode - tools hidden from tools/list
-ctx := mcp.WithForceOnDemandMode(context.Background(), provider)
+// Show-all mode - ALL tools visible (for MCP chaining)
+ctx = mcp.WithShowAllTools(ctx)
 ```
 
 ## Quick Start
 
-### Step 1: Define Tool Provider
+### Step 1: Define Tool Provider with Visibility
 
 ```go
-provider := &myToolProvider{
-    tools: []mcp.MCPTool{
-        {Name: "send_email", Description: "Send emails"},
-        {Name: "delete_data", Description: "Delete user data"},
-    },
+type MyProvider struct{}
+
+func (p *MyProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{
+        {
+            Name:       "send_email",
+            Visibility: mcp.ToolVisibilityNative,  // Visible in tools/list
+        },
+        {
+            Name:       "delete_data",
+            Keywords:   []string{"danger", "delete"},
+            Visibility: mcp.ToolVisibilityDiscoverable,  // Only via tool_search
+        },
+    }, nil
 }
 ```
 
-### Step 2: Choose Visibility Based on User
+### Step 2: Use Providers in Handler
 
 ```go
-// In HTTP handler
-user := getUser(r)
-var ctx context.Context
+func handler(w http.ResponseWriter, r *http.Request) {
+    provider := &MyProvider{}
+    ctx := mcp.WithToolProviders(r.Context(), provider)
 
-if user.IsAdmin {
-    // Admins see all tools
-    ctx = mcp.WithToolProviders(r.Context(), provider)
-} else {
-    // Users see only search/execute tools
-    ctx = mcp.WithForceOnDemandMode(r.Context(), provider)
+    // Check for show-all mode (MCP chaining)
+    if mcp.GetShowAllFromRequest(r) {
+        ctx = mcp.WithShowAllTools(ctx)
+    }
+
+    server.HandleRequest(w, r.WithContext(ctx))
 }
-
-server.HandleRequest(w, r.WithContext(ctx))
 ```
 
-### Step 3: Both Modes Remain Functional
+### Step 3: Visibility Behaviors
 
 ```go
-// Admin can see and call tools normally
-adminTools := server.ListToolsWithContext(adminCtx)  // Shows tools
-adminResp := server.CallTool(adminCtx, "send_email", args)  // Works
+// Normal mode - native tools visible, discoverable hidden
+tools := server.ListToolsWithContext(ctx)
+// Result: ["send_email", "tool_search", "execute_tool"]
 
-// User cannot see tools in list, but can search and call
-userTools := server.ListToolsWithContext(userCtx)  // Shows only discovery tools
-userResp := server.CallTool(userCtx, "send_email", args)  // Still works!
-userSearch := server.CallTool(userCtx, "tool_search", {"query": "email"})  // Finds tools
-```
+// Show-all mode - ALL tools visible
+ctxShowAll := mcp.WithShowAllTools(ctx)
+tools := server.ListToolsWithContext(ctxShowAll)
+// Result: ["send_email", "delete_data", "tool_search", "execute_tool"]
 
-## Three-Stage Transition Example
-
-```go
-server := mcp.NewServer("test", "1.0.0")
-provider := getProvider()
-
-// Stage 1: Native - tools visible
-ctx1 := mcp.WithToolProviders(background, provider)
-tools1 := server.ListToolsWithContext(ctx1)  // See all tools
-
-// Stage 2: OnDemand - tools hidden
-ctx2 := mcp.WithForceOnDemandMode(background, provider)
-tools2 := server.ListToolsWithContext(ctx2)  // See only discovery tools
-
-// Stage 3: Back to Native
-ctx3 := mcp.WithToolProviders(background, provider)
-tools3 := server.ListToolsWithContext(ctx3)  // See all tools again
+// Both tools always callable via execute_tool
+server.CallTool(ctx, "delete_data", args)  // Works!
 ```
 
 ## Common Patterns
 
-### Pattern: Role-Based Access
+### Pattern: Context Window Reduction
+
+Mark rarely-used tools as discoverable:
 
 ```go
-func getContext(user *User, provider ToolProvider) context.Context {
-    if user.Role == "admin" || user.Role == "power_user" {
-        return mcp.WithToolProviders(context.Background(), provider)
-    }
-    return mcp.WithForceOnDemandMode(context.Background(), provider)
+func (p *Provider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{
+        {Name: "common_tool", Visibility: mcp.ToolVisibilityNative},
+        {Name: "rare_tool", Keywords: []string{"special"}, Visibility: mcp.ToolVisibilityDiscoverable},
+    }, nil
 }
 ```
 
-### Pattern: Feature Flags
+### Pattern: MCP Server Chaining
+
+When connecting to upstream MCP server:
 
 ```go
-func getContext(userID string, flags FeatureFlags, provider ToolProvider) context.Context {
-    if flags.IsEnabled("show_tools", userID) {
-        return mcp.WithToolProviders(context.Background(), provider)
-    }
-    return mcp.WithForceOnDemandMode(context.Background(), provider)
-}
+// Set show-all header to see all tools
+client.SetHeader(mcp.ShowAllHeader, "true")
+// Or use query param: ?show_all=true
 ```
 
-### Pattern: Subscription Tier
+### Pattern: Role-Based Provider
+
+Different providers for different roles:
 
 ```go
-func getContext(user *User, provider ToolProvider) context.Context {
-    if user.SubscriptionTier == "free" {
-        // Free users: tools hidden
-        return mcp.WithForceOnDemandMode(context.Background(), provider)
+func getProviderForUser(user *User) mcp.ToolProvider {
+    if user.IsAdmin {
+        return adminProvider  // Has more native tools
     }
-    // Paid users: tools visible
-    return mcp.WithToolProviders(context.Background(), provider)
+    return basicProvider
 }
 ```
 
 ### Pattern: Middleware
 
 ```go
-func visibilityMiddleware(next http.Handler) http.Handler {
+func mcpMiddleware(server *mcp.Server, provider mcp.ToolProvider) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        user := extractUser(r)
-        ctx := getContextForUser(user, provider)
-        next.ServeHTTP(w, r.WithContext(ctx))
+        ctx := mcp.WithToolProviders(r.Context(), provider)
+
+        if mcp.GetShowAllFromRequest(r) {
+            ctx = mcp.WithShowAllTools(ctx)
+        }
+
+        server.HandleRequest(w, r.WithContext(ctx))
     })
 }
 ```
 
 ## Key Facts
 
-| Aspect                         | Native Mode              | OnDemand Mode                |
-| ------------------------------ | ------------------------ | ---------------------------- |
-| **In tools/list**              | ✅ Yes                   | ❌ No (only discovery tools) |
-| **Callable via CallTool()**    | ✅ Yes                   | ✅ Yes                       |
-| **Searchable via tool_search** | ✅ Yes (if keywords set) | ✅ Yes                       |
-| **Use Case**                   | Full tool visibility     | Progressive disclosure       |
+| Aspect                         | Native Visibility        | Discoverable Visibility | Show-All Mode |
+| ------------------------------ | ------------------------ | ----------------------- | ------------- |
+| **In tools/list**              | ✅ Yes                   | ❌ No                   | ✅ All tools  |
+| **Callable via execute_tool**  | ✅ Yes                   | ✅ Yes                  | ✅ Yes        |
+| **Searchable via tool_search** | ✅ Yes (if keywords set) | ✅ Yes                  | ✅ Yes        |
+| **Use Case**                   | Core functionality       | Context reduction       | MCP chaining  |
 
 ## Testing
 
-Three tests demonstrate state transitions:
+Tests demonstrate visibility behaviors:
 
 ```bash
-# Run all state transition tests
-go test -run "TestDynamicToolState" -v
-
-# Outputs:
-# - TestDynamicToolStateTransition (complete cycle)
-# - TestDynamicToolStateTransition_PerRequest (per-request isolation)
-# - TestDynamicToolStateTransition_ConditionalVisibility (role-based)
+# Run visibility tests
+go test -run "TestVisibility" -v
+go test -run "TestShowAll" -v
 ```
 
 ## Important Notes
 
 1. **Visibility ≠ Security**: Always validate permissions in tool handlers
-2. **Context Per Request**: Create new context for each request, don't reuse
-3. **Tools Still Work**: Hidden tools can still be called, just not listed
-4. **No Merging**: `WithToolProviders(ctx, p2)` replaces, not adds to `ctx`
+2. **Providers Accumulate**: Multiple `WithToolProviders()` calls stack providers
+3. **Tools Always Callable**: Discoverable tools still work via `execute_tool`
+4. **Show-All via HTTP**: Use `X-MCP-Show-All: true` header or `?show_all=true` param
 
 ## See Also
 
 - [Dynamic Tool States Guide](../guides/dynamic-tool-states.md) - Full implementation guide
 - Provider tests - Check `provider_dynamic_test.go` for test examples
-- Tool visibility tests - See `mode_behavior_test.go`
+- Tool visibility tests - See `visibility_test.go`

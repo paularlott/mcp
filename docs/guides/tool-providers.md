@@ -2,9 +2,9 @@
 
 For multi-tenant or multi-user applications where tools need to be dynamically loaded per-request, use `ToolProvider` to inject tools into the request context. This allows a single MCP server to serve different tools to different users/tenants while maintaining complete isolation.
 
-The `ToolProvider` interface is the unified way to add dynamic tools from external sources. It works with both normal mode and force ondemand mode.
+The `ToolProvider` interface is the unified way to add dynamic tools from external sources. Tools carry their own visibility (`Native` or `Discoverable`) and providers accumulate when chained.
 
-**Important:** Tools registered via `RegisterTool()` or `RegisterOnDemandTool()` are **global** and visible to all requests. For per-tenant/user tool visibility, you **must** use the `ToolProvider` pattern as shown in `examples/per-user-tools/`.
+**Important:** Tools registered via `RegisterTool()` are **global** and visible to all requests. For per-tenant/user tool visibility, you **must** use the `ToolProvider` pattern as shown in `examples/per-user-tools/`.
 
 ## When to Use Tool Providers
 
@@ -25,21 +25,31 @@ type UserToolProvider struct {
 func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
     var tools []mcp.MCPTool
 
-    // All users get basic tools
+    // All users get basic tools (native = visible in tools/list)
     tools = append(tools, mcp.MCPTool{
-        Name: "get_profile",
+        Name:        "get_profile",
         Description: "Get user profile",
         InputSchema: schema,
+        Visibility:  mcp.ToolVisibilityNative,
     })
 
     // Admin users get additional tools
     if p.hasRole("admin") {
         tools = append(tools, mcp.MCPTool{
-            Name: "admin_panel",
+            Name:        "admin_panel",
             Description: "Access admin panel",
             InputSchema: adminSchema,
+            Visibility:  mcp.ToolVisibilityNative,
         })
     }
+
+    // Discoverable tools - searchable but not in tools/list
+    tools = append(tools, mcp.MCPTool{
+        Name:        "advanced_settings",
+        Description: "Advanced configuration options",
+        Keywords:    []string{"config", "settings", "advanced"},
+        Visibility:  mcp.ToolVisibilityDiscoverable,
+    })
 
     return tools, nil
 }
@@ -53,6 +63,8 @@ func (p *UserToolProvider) ExecuteTool(ctx context.Context, name string, params 
             return nil, fmt.Errorf("access denied")
         }
         return p.getAdminData(), nil
+    case "advanced_settings":
+        return p.getAdvancedSettings(), nil
     }
     return nil, mcp.ErrUnknownTool
 }
@@ -69,36 +81,68 @@ func handler(w http.ResponseWriter, r *http.Request) {
     // Create provider with user's tools
     provider := NewUserToolProvider(user.ID, user.Roles)
 
-    // Normal mode: all tools visible in tools/list
+    // Normal mode: native tools visible, discoverable tools searchable
     ctx := mcp.WithToolProviders(r.Context(), provider)
-    server.HandleRequest(w, r.WithContext(ctx))
 
-    // OR force ondemand mode: only tool_search/execute_tool visible
-    // All tools (native, provider, remote) are searchable and callable
-    ctx = mcp.WithForceOnDemandMode(r.Context(), provider)
+    // Check for show-all mode (MCP chaining)
+    if mcp.GetShowAllFromRequest(r) {
+        ctx = mcp.WithShowAllTools(ctx)  // ALL tools visible
+    }
+
     server.HandleRequest(w, r.WithContext(ctx))
 }
 ```
 
-## Tool Visibility Modes
+## Tool Visibility
 
-### Normal Mode (`WithToolProviders`)
+Each tool carries its own visibility setting:
 
-- Native tools appear in `tools/list`
-- Provider tools appear in `tools/list`
-- OnDemand tools are hidden but searchable via `tool_search`
-- All tools are directly callable
+### Native Tools (`ToolVisibilityNative`)
 
-### Force OnDemand Mode (`WithForceOnDemandMode`)
+- Appear in `tools/list`
+- Directly callable
+- Ideal for core, frequently-used functionality
 
-- Only `tool_search` and `execute_tool` appear in `tools/list`
-- ALL tools (native, ondemand, provider, remote) are searchable via `tool_search`
-- ALL tools remain callable (either directly or via `execute_tool`)
-- Useful for AI clients that work better with minimal initial context
+### Discoverable Tools (`ToolVisibilityDiscoverable`)
+
+- Hidden from `tools/list`
+- Searchable via `tool_search`
+- Callable via `execute_tool`
+- When any discoverable tools exist, `tool_search` and `execute_tool` are auto-registered
+- Ideal for specialized, rarely-used, or context-reducing tools
+
+### Show-All Mode (`WithShowAllTools`)
+
+- ALL tools (native and discoverable) appear in `tools/list`
+- Used for MCP server chaining when an upstream server needs full visibility
+- Triggered by `X-MCP-Show-All: true` header or `?show_all=true` query param
 
 ## Keywords for Discovery
 
-When using tool providers, you can add keywords to your tools for better search results with `tool_search`:
+When creating tools with the fluent builder that need keywords, use `.Discoverable()` before converting to MCPTool:
+
+```go
+type UserToolProvider struct {
+    userID string
+}
+
+func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    // Native tool - no .Discoverable() call
+    profileTool := mcp.NewTool("get_profile", "Get user profile",
+        mcp.String("user_id", "User ID"),
+    ).ToMCPTool()
+
+    // Discoverable tool - use .Discoverable() to add keywords
+    emailTool := mcp.NewTool("send_email", "Send an email",
+        mcp.String("to", "Recipient", mcp.Required()),
+        mcp.String("subject", "Subject"),
+    ).Discoverable("email", "communication", "smtp").ToMCPTool()
+
+    return []mcp.MCPTool{profileTool, emailTool}, nil
+}
+```
+
+Alternatively, construct MCPTool structs directly:
 
 ```go
 func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
@@ -107,6 +151,7 @@ func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) 
             Name:        "send_email",
             Description: "Send an email",
             Keywords:    []string{"email", "communication", "smtp"},
+            Visibility:  mcp.ToolVisibilityDiscoverable,
             InputSchema: schema,
         },
     }, nil
@@ -114,6 +159,32 @@ func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) 
 ```
 
 The `Keywords` field is used by `tool_search` but is not exposed in the MCP protocol response.
+
+### Using ToMCPTool() Helper
+
+The `ToMCPTool()` method converts a ToolBuilder to an MCPTool struct for use in providers:
+
+```go
+func (p *MyProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    // Native tool (appears in tools/list)
+    nativeTool := mcp.NewTool("basic_tool", "A basic tool",
+        mcp.String("input", "Input parameter"),
+    ).ToMCPTool()
+
+    // Discoverable tool (searchable only)
+    discoverableTool := mcp.NewTool("advanced_tool", "An advanced tool",
+        mcp.String("query", "Search query"),
+    ).Discoverable("advanced", "search", "special").ToMCPTool()
+
+    return []mcp.MCPTool{nativeTool, discoverableTool}, nil
+}
+```
+
+**Key points:**
+
+- Call `.ToMCPTool()` without arguments (keywords are set via `.Discoverable()`)
+- Use `.Discoverable(keywords...)` to mark as discoverable and add keywords
+- Without `.Discoverable()`, tools are native (visible in tools/list)
 
 ## Security
 
@@ -147,44 +218,57 @@ type ToolProvider interface {
     ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error)
 }
 
-// Add native providers to request context (tools appear in tools/list)
+// Add providers to request context (tools visibility per-tool)
 ctx := mcp.WithToolProviders(ctx, provider1, provider2)
 
-// Add ondemand providers to request context (tools searchable but hidden from list)
-ctx := mcp.WithOnDemandToolProviders(ctx, ondemandProvider)
+// Enable show-all mode (reveals ALL tools including discoverable)
+ctx = mcp.WithShowAllTools(ctx)
+
+// Check if show-all requested via HTTP header/query param
+showAll := mcp.GetShowAllFromRequest(r)
 
 // Get providers from context (internal use)
 providers := mcp.GetToolProviders(ctx)
-ondemandProviders := mcp.GetOnDemandToolProviders(ctx)
 ```
 
-### OnDemand Tool Providers (`WithOnDemandToolProviders`)
+### Discoverable Tools
 
-For tools that should be searchable via `tool_search` but NOT appear in `tools/list`, use `WithOnDemandToolProviders`:
+For tools that should be searchable via `tool_search` but NOT appear in `tools/list`, set `Visibility: mcp.ToolVisibilityDiscoverable`:
 
 ```go
 func handler(w http.ResponseWriter, r *http.Request) {
-    // Native provider - tools appear in tools/list
-    nativeProvider := NewNativeToolProvider(user)
+    provider := &MyProvider{}
 
-    // OnDemand provider - tools searchable but hidden from list
-    ondemandProvider := NewOnDemandToolProvider(user)
+    ctx := mcp.WithToolProviders(r.Context(), provider)
 
-    ctx := mcp.WithToolProviders(r.Context(), nativeProvider)
-    ctx = mcp.WithOnDemandToolProviders(ctx, ondemandProvider)
-
-    // When ondemand providers are present, tool_search and execute_tool
+    // When any discoverable tools are present, tool_search and execute_tool
     // are automatically available
     server.HandleRequest(w, r.WithContext(ctx))
+}
+
+type MyProvider struct{}
+
+func (p *MyProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) {
+    return []mcp.MCPTool{
+        {
+            Name:       "visible_tool",
+            Visibility: mcp.ToolVisibilityNative,  // Appears in tools/list
+        },
+        {
+            Name:       "hidden_tool",
+            Keywords:   []string{"search", "keywords"},
+            Visibility: mcp.ToolVisibilityDiscoverable,  // Only via tool_search
+        },
+    }, nil
 }
 ```
 
 **Key behaviors:**
 
-- OnDemand provider tools do NOT appear in `tools/list`
-- OnDemand provider tools ARE searchable via `tool_search`
-- OnDemand provider tools ARE callable directly or via `execute_tool`
-- When any ondemand providers are present, `tool_search` and `execute_tool` are automatically registered
+- Discoverable tools do NOT appear in `tools/list`
+- Discoverable tools ARE searchable via `tool_search`
+- Discoverable tools ARE callable via `execute_tool`
+- When any discoverable tools exist, `tool_search` and `execute_tool` are automatically registered
 
 ## ExecuteTool Return Values
 

@@ -1,20 +1,20 @@
 # Tool Discovery Example
 
-This example demonstrates how to use searchable tools to reduce context window usage while maintaining access to a large tool library.
+This example demonstrates how to use discoverable tools to reduce context window usage while maintaining access to a large tool library.
 
 ## Overview
 
 When you have many tools, sending all their definitions to an LLM consumes significant tokens from the context window. This example shows how to:
 
 1. **Register native tools** (`RegisterTool`) - Essential tools that always appear in `tools/list`
-2. **Register ondemand tools** (`RegisterOnDemandTool`) - Specialized tools that are hidden but searchable via `tool_search`
+2. **Register discoverable tools** (`RegisterTool` with `.Discoverable()`) - Specialized tools that are hidden but searchable via `tool_search`
 
 ## How It Works
 
-- `RegisterTool(tool, handler)` - Tool is visible in `tools/list`, NOT searchable (except in force ondemand mode)
-- `RegisterOnDemandTool(tool, handler, keywords...)` - Tool is hidden from `tools/list` but searchable via `tool_search`
-- The server automatically provides `tool_search` and `execute_tool` when any ondemand tools are registered
-- LLMs can discover ondemand tools by keyword and get full schemas before calling them
+- `RegisterTool(tool, handler)` - Tool is visible in `tools/list`, NOT searchable
+- `RegisterTool(tool.Discoverable(keywords...), handler)` - Tool is hidden from `tools/list` but searchable via `tool_search`
+- The server automatically provides `tool_search` and `execute_tool` when any discoverable tools are registered
+- LLMs can discover tools by keyword and get full schemas before calling them
 
 ## Running the Example
 
@@ -35,7 +35,7 @@ curl -X POST http://localhost:8088/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-This returns all tools plus `tool_search` and `execute_tool`.
+This returns native tools plus `tool_search` and `execute_tool`.
 
 ### Search for Tools
 
@@ -98,21 +98,20 @@ server.RegisterTool(
 
 - Always visible in `tools/list`
 - Directly callable by name
-- NOT searchable via `tool_search` (unless using force ondemand mode)
+- NOT searchable via `tool_search`
 - Use for essential tools the LLM should always know about
 
-### RegisterOnDemandTool - Searchable Tools
+### RegisterTool with Discoverable() - Searchable Tools
 
 Specialized tools hidden from `tools/list` but discoverable via search:
 
 ```go
-server.RegisterOnDemandTool(
+server.RegisterTool(
     mcp.NewTool("send_email", "Send an email",
         mcp.String("to", "Recipient", mcp.Required()),
         mcp.String("subject", "Subject", mcp.Required()),
-    ),
+    ).Discoverable("email", "notification", "smtp", "message"),
     handler,
-    "email", "notification", "smtp", "message", // keywords for search relevance
 )
 ```
 

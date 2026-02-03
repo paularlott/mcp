@@ -50,12 +50,12 @@ type serverInfo struct {
 }
 
 type MCPTool struct {
-	Name          string      `json:"name"`
-	Description   string      `json:"description"`
-	InputSchema   interface{} `json:"inputSchema"`
-	OutputSchema  interface{} `json:"outputSchema,omitempty"`
-	Keywords      []string    `json:"-"` // For discovery search, not serialized to clients
-	AlwaysVisible bool        `json:"-"` // Visible even in force on-demand mode
+	Name          string         `json:"name"`
+	Description   string         `json:"description"`
+	InputSchema   interface{}    `json:"inputSchema"`
+	OutputSchema  interface{}    `json:"outputSchema,omitempty"`
+	Keywords      []string       `json:"-"` // For discovery search, not serialized to clients
+	Visibility    ToolVisibility `json:"-"` // Native or Discoverable
 }
 
 type ToolCallParams struct {

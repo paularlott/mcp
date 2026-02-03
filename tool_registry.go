@@ -48,7 +48,6 @@ func (r *internalRegistry) RegisterTool(tool *ToolBuilder, handler ToolHandler, 
 		Description:   tool.Description(),
 		InputSchema:   schema,
 		Keywords:      keywords,
-		AlwaysVisible: tool.alwaysVisible,
 	}
 	if outputSchema != nil {
 		mcpTool.OutputSchema = outputSchema
@@ -94,7 +93,8 @@ func (r *internalRegistry) Search(ctx context.Context, query string, maxResults 
 	return r.SearchWithAdditionalTools(ctx, query, maxResults, nil)
 }
 
-// SearchWithAdditionalTools finds tools matching the query, including additional tools passed in
+// SearchWithAdditionalTools finds tools matching the query, including additional tools passed in.
+// The additional tools are typically discoverable tools from providers.
 func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query string, maxResults int, additionalTools []MCPTool) []SearchResult {
 	r.mu.RLock()
 	toolsCopy := make(map[string]*internalRegisteredTool, len(r.tools))
@@ -108,7 +108,7 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 	listAll := queryLower == ""
 	seen := make(map[string]bool)
 
-	// Search registered tools
+	// Search registered tools (statically registered discoverable tools)
 	for _, dt := range toolsCopy {
 		var score float64
 		if listAll {
@@ -127,69 +127,7 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 		}
 	}
 
-	// Provider tools are NOT searched in normal mode (they appear in tools/list as native)
-	// But ARE searched in force ondemand mode
-	if GetToolListMode(ctx) == ToolListModeForceOnDemand {
-		// Force ondemand mode - include provider tools in search
-		providers := GetToolProviders(ctx)
-		for _, provider := range providers {
-			tools, err := provider.GetTools(ctx)
-			if err != nil {
-				continue
-			}
-			for _, tool := range tools {
-				if seen[tool.Name] {
-					continue
-				}
-				var score float64
-				if listAll {
-					score = 1.0
-				} else {
-					score = calculateScore(queryLower, tool.Name, tool.Description, tool.Keywords)
-				}
-				if score > 0 {
-					results = append(results, SearchResult{
-						Name:        tool.Name,
-						Description: tool.Description,
-						Score:       score,
-						InputSchema: tool.InputSchema,
-					})
-					seen[tool.Name] = true
-				}
-			}
-		}
-	}
-
-	// OnDemand provider tools are ALWAYS searched (they don't appear in tools/list)
-	onDemandProviders := GetOnDemandToolProviders(ctx)
-	for _, provider := range onDemandProviders {
-		tools, err := provider.GetTools(ctx)
-		if err != nil {
-			continue
-		}
-		for _, tool := range tools {
-			if seen[tool.Name] {
-				continue
-			}
-			var score float64
-			if listAll {
-				score = 1.0
-			} else {
-				score = calculateScore(queryLower, tool.Name, tool.Description, tool.Keywords)
-			}
-			if score > 0 {
-				results = append(results, SearchResult{
-					Name:        tool.Name,
-					Description: tool.Description,
-					Score:       score,
-					InputSchema: tool.InputSchema,
-				})
-				seen[tool.Name] = true
-			}
-		}
-	}
-
-	// Search additional tools (e.g., native tools in force ondemand mode)
+	// Search additional tools (discoverable tools from providers)
 	for _, tool := range additionalTools {
 		if seen[tool.Name] {
 			continue
@@ -235,21 +173,8 @@ func (r *internalRegistry) GetTool(ctx context.Context, name string) (*MCPTool, 
 	}
 	r.mu.RUnlock()
 
-	// Check context providers (native)
+	// Check context providers
 	for _, provider := range GetToolProviders(ctx) {
-		tools, err := provider.GetTools(ctx)
-		if err != nil {
-			continue
-		}
-		for _, tool := range tools {
-			if tool.Name == name {
-				return &tool, nil
-			}
-		}
-	}
-
-	// Check ondemand providers
-	for _, provider := range GetOnDemandToolProviders(ctx) {
 		tools, err := provider.GetTools(ctx)
 		if err != nil {
 			continue
@@ -275,7 +200,7 @@ func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[s
 	}
 	r.mu.RUnlock()
 
-	// Try context providers (native)
+	// Try context providers
 	for _, provider := range GetToolProviders(ctx) {
 		result, err := provider.ExecuteTool(ctx, name, args)
 		if err == ErrUnknownTool {
@@ -287,33 +212,7 @@ func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[s
 		return convertToToolResponse(result), nil
 	}
 
-	// Try ondemand providers
-	for _, provider := range GetOnDemandToolProviders(ctx) {
-		result, err := provider.ExecuteTool(ctx, name, args)
-		if err == ErrUnknownTool {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		return convertToToolResponse(result), nil
-	}
-
 	return nil, ErrUnknownTool
-}
-
-// convertToToolResponse converts various return types to ToolResponse
-func convertToToolResponse(result interface{}) *ToolResponse {
-	switch v := result.(type) {
-	case *ToolResponse:
-		return v
-	case string:
-		return NewToolResponseText(v)
-	case map[string]interface{}, []interface{}:
-		return NewToolResponseJSON(v)
-	default:
-		return NewToolResponseJSON(v)
-	}
 }
 
 // Search scoring functions

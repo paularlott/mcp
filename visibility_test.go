@@ -34,20 +34,19 @@ func TestNativeToolRegistration(t *testing.T) {
 	}
 }
 
-// TestOnDemandToolRegistration tests that ondemand tools don't appear in tools/list
+// TestDiscoverableToolRegistration tests that discoverable tools don't appear in tools/list
 // but tool_search and execute_tool do
-func TestOnDemandToolRegistration(t *testing.T) {
+func TestDiscoverableToolRegistration(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register an ondemand tool
-	server.RegisterOnDemandTool(
+	// Register a discoverable tool
+	server.RegisterTool(
 		NewTool("search_database", "Search the database",
 			String("query", "Search query", Required()),
-		),
+		).Discoverable("database", "search", "query"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("Found 10 results"), nil
 		},
-		"database", "search", "query",
 	)
 
 	// List tools should NOT include search_database
@@ -70,19 +69,19 @@ func TestOnDemandToolRegistration(t *testing.T) {
 	}
 
 	if !hasToolSearch {
-		t.Error("tool_search should be in tools/list when ondemand tools exist")
+		t.Error("tool_search should be in tools/list when discoverable tools exist")
 	}
 	if !hasExecuteTool {
-		t.Error("execute_tool should be in tools/list when ondemand tools exist")
+		t.Error("execute_tool should be in tools/list when discoverable tools exist")
 	}
 	if hasSearchDatabase {
-		t.Error("search_database should NOT be in tools/list (it's ondemand)")
+		t.Error("search_database should NOT be in tools/list (it's discoverable)")
 	}
 }
 
-// TestNoDiscoveryToolsWithoutOnDemand tests that tool_search/execute_tool
-// are NOT registered when there are no ondemand tools
-func TestNoDiscoveryToolsWithoutOnDemand(t *testing.T) {
+// TestNoDiscoveryToolsWithoutDiscoverable tests that tool_search/execute_tool
+// are NOT registered when there are no discoverable tools
+func TestNoDiscoveryToolsWithoutDiscoverable(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
 	// Register only native tools
@@ -97,7 +96,7 @@ func TestNoDiscoveryToolsWithoutOnDemand(t *testing.T) {
 
 	for _, tool := range tools {
 		if tool.Name == ToolSearchName || tool.Name == ExecuteToolName {
-			t.Errorf("discovery tools should NOT exist without ondemand tools, found: %s", tool.Name)
+			t.Errorf("discovery tools should NOT exist without discoverable tools, found: %s", tool.Name)
 		}
 	}
 
@@ -106,8 +105,8 @@ func TestNoDiscoveryToolsWithoutOnDemand(t *testing.T) {
 	}
 }
 
-// TestMixedNativeAndOnDemand tests registration of both native and ondemand tools
-func TestMixedNativeAndOnDemand(t *testing.T) {
+// TestMixedNativeAndDiscoverable tests registration of both native and discoverable tools
+func TestMixedNativeAndDiscoverable(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
 	// Register native tool
@@ -118,15 +117,14 @@ func TestMixedNativeAndOnDemand(t *testing.T) {
 		},
 	)
 
-	// Register ondemand tool
-	server.RegisterOnDemandTool(
+	// Register discoverable tool
+	server.RegisterTool(
 		NewTool("complex_analysis", "Perform complex analysis",
 			String("data", "Data to analyze", Required()),
-		),
+		).Discoverable("analysis", "complex", "data"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("Analysis complete"), nil
 		},
-		"analysis", "complex", "data",
 	)
 
 	tools := server.ListTools()
@@ -155,21 +153,20 @@ func TestMixedNativeAndOnDemand(t *testing.T) {
 	}
 }
 
-// TestToolSearchFindsOnDemandTools tests that tool_search can find ondemand tools
-func TestToolSearchFindsOnDemandTools(t *testing.T) {
+// TestToolSearchFindsDiscoverableTools tests that tool_search can find discoverable tools
+func TestToolSearchFindsDiscoverableTools(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register ondemand tool
-	server.RegisterOnDemandTool(
+	// Register discoverable tool
+	server.RegisterTool(
 		NewTool("send_email", "Send an email to a recipient",
 			String("to", "Recipient email", Required()),
 			String("subject", "Email subject", Required()),
 			String("body", "Email body", Required()),
-		),
+		).Discoverable("email", "send", "notification", "message"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("Email sent"), nil
 		},
-		"email", "send", "notification", "message",
 	)
 
 	// Call tool_search
@@ -192,19 +189,18 @@ func TestToolSearchFindsOnDemandTools(t *testing.T) {
 	}
 }
 
-// TestExecuteToolCallsOnDemandTool tests that execute_tool can call ondemand tools
-func TestExecuteToolCallsOnDemandTool(t *testing.T) {
+// TestExecuteToolCallsDiscoverableTool tests that execute_tool can call discoverable tools
+func TestExecuteToolCallsDiscoverableTool(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register ondemand tool
+	// Register discoverable tool
 	callCount := 0
-	server.RegisterOnDemandTool(
-		NewTool("count_calls", "Count how many times this is called"),
+	server.RegisterTool(
+		NewTool("count_calls", "Count how many times this is called").Discoverable("count", "test"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			callCount++
 			return NewToolResponseText("Called!"), nil
 		},
-		"count", "test",
 	)
 
 	// Call via execute_tool
@@ -225,8 +221,8 @@ func TestExecuteToolCallsOnDemandTool(t *testing.T) {
 	}
 }
 
-// TestForceOnDemandMode tests that WithForceOnDemandMode hides all tools except discovery tools
-func TestForceOnDemandMode(t *testing.T) {
+// TestShowAllMode tests that WithShowAllTools shows ALL tools including discoverable ones
+func TestShowAllMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
 	// Register a mix of tools
@@ -237,81 +233,122 @@ func TestForceOnDemandMode(t *testing.T) {
 		},
 	)
 
-	server.RegisterOnDemandTool(
-		NewTool("ondemand_hidden", "An ondemand tool"),
+	server.RegisterTool(
+		NewTool("discoverable_tool", "A discoverable tool").Discoverable("test"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
-		"test",
 	)
 
-	// Normal mode - should have native_visible, tool_search, execute_tool
+	// Normal mode - should have native_visible, tool_search, execute_tool (NOT discoverable_tool)
 	normalTools := server.ListToolsWithContext(context.Background())
 	hasNativeVisible := false
+	hasDiscoverable := false
 	for _, tool := range normalTools {
 		if tool.Name == "native_visible" {
 			hasNativeVisible = true
+		}
+		if tool.Name == "discoverable_tool" {
+			hasDiscoverable = true
 		}
 	}
 	if !hasNativeVisible {
 		t.Error("native_visible should appear in normal mode")
 	}
+	if hasDiscoverable {
+		t.Error("discoverable_tool should NOT appear in normal mode list")
+	}
 
-	// Force ondemand mode - should only have tool_search, execute_tool
-	forceCtx := WithForceOnDemandMode(context.Background())
-	forceTools := server.ListToolsWithContext(forceCtx)
+	// Show-all mode - should have ALL tools including discoverable ones
+	showAllCtx := WithShowAllTools(context.Background())
+	showAllTools := server.ListToolsWithContext(showAllCtx)
 
-	for _, tool := range forceTools {
-		if tool.Name != ToolSearchName && tool.Name != ExecuteToolName {
-			t.Errorf("in force ondemand mode, only discovery tools should appear, found: %s", tool.Name)
+	foundNative := false
+	foundDiscoverable := false
+	foundToolSearch := false
+	foundExecuteTool := false
+
+	for _, tool := range showAllTools {
+		switch tool.Name {
+		case "native_visible":
+			foundNative = true
+		case "discoverable_tool":
+			foundDiscoverable = true
+		case ToolSearchName:
+			foundToolSearch = true
+		case ExecuteToolName:
+			foundExecuteTool = true
 		}
 	}
 
-	if len(forceTools) != 2 {
-		t.Errorf("expected 2 tools in force ondemand mode, got %d", len(forceTools))
+	if !foundNative {
+		t.Error("native_visible should appear in show-all mode")
+	}
+	if !foundDiscoverable {
+		t.Error("discoverable_tool should appear in show-all mode")
+	}
+	if foundToolSearch {
+		t.Error("tool_search should NOT appear in show-all mode")
+	}
+	if foundExecuteTool {
+		t.Error("execute_tool should NOT appear in show-all mode")
+	}
+
+	if len(showAllTools) != 2 {
+		t.Errorf("expected 2 tools in show-all mode, got %d", len(showAllTools))
 	}
 }
 
-// TestForceOnDemandModeSearchIncludesNativeTools tests that in force ondemand mode,
-// tool_search can find native tools
-func TestForceOnDemandModeSearchIncludesNativeTools(t *testing.T) {
+// TestShowAllModeShowsNativeAndDiscoverable tests that in show-all mode,
+// both native and discoverable tools appear in the list
+func TestShowAllModeShowsNativeAndDiscoverable(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register a native tool - but we also need at least one ondemand tool
-	// to trigger discovery tools registration
-	server.RegisterOnDemandTool(
-		NewTool("dummy_ondemand", "Dummy tool"),
+	// Register a discoverable tool
+	server.RegisterTool(
+		NewTool("discoverable_tool", "A discoverable tool").Discoverable("dummy"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
-		"dummy",
 	)
 
-	// The native tool should be searchable in force ondemand mode
+	// Register a native tool
 	server.RegisterTool(
-		NewTool("native_searchable", "A native tool that should be searchable"),
+		NewTool("native_tool", "A native tool"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("Found me!"), nil
 		},
 	)
 
-	// In force ondemand mode, native_searchable should NOT appear in list
-	forceCtx := WithForceOnDemandMode(context.Background())
-	forceTools := server.ListToolsWithContext(forceCtx)
+	// In show-all mode, BOTH tools should appear in list
+	showAllCtx := WithShowAllTools(context.Background())
+	showAllTools := server.ListToolsWithContext(showAllCtx)
 
-	for _, tool := range forceTools {
-		if tool.Name == "native_searchable" {
-			t.Error("native_searchable should NOT appear in force ondemand mode list")
+	foundNative := false
+	foundDiscoverable := false
+	for _, tool := range showAllTools {
+		if tool.Name == "native_tool" {
+			foundNative = true
+		}
+		if tool.Name == "discoverable_tool" {
+			foundDiscoverable = true
 		}
 	}
 
-	// But it should still be callable directly (native tools are always callable)
-	response, err := server.CallTool(context.Background(), "native_searchable", nil)
+	if !foundNative {
+		t.Error("native_tool should appear in show-all mode list")
+	}
+	if !foundDiscoverable {
+		t.Error("discoverable_tool should appear in show-all mode list")
+	}
+
+	// Both should also be callable directly
+	response, err := server.CallTool(context.Background(), "native_tool", nil)
 	if err != nil {
-		t.Fatalf("native_searchable should be callable: %v", err)
+		t.Fatalf("native_tool should be callable: %v", err)
 	}
 	if response.Content[0].Text != "Found me!" {
-		t.Error("unexpected response from native_searchable")
+		t.Error("unexpected response from native_tool")
 	}
 }
 
@@ -370,8 +407,8 @@ func TestRemoteServerNativeVisibility(t *testing.T) {
 	}
 }
 
-// TestRemoteServerOnDemandVisibility tests registering remote server with ondemand visibility
-func TestRemoteServerOnDemandVisibility(t *testing.T) {
+// TestRemoteServerDiscoverableVisibility tests registering remote server with discoverable visibility
+func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 	// Create a mock remote MCP server
 	remoteMux := http.NewServeMux()
 	remoteServer := NewServer("remote", "1.0.0")
@@ -387,14 +424,14 @@ func TestRemoteServerOnDemandVisibility(t *testing.T) {
 	ts := httptest.NewServer(remoteMux)
 	defer ts.Close()
 
-	// Create main server and register remote with ondemand visibility
+	// Create main server and register remote with discoverable visibility
 	mainServer := NewServer("main", "1.0.0")
 	client := NewClient(ts.URL+"/mcp", nil, "analytics")
 	if err := client.Initialize(context.Background()); err != nil {
 		t.Fatalf("failed to initialize client: %v", err)
 	}
 
-	if err := mainServer.RegisterRemoteServerOnDemand(client); err != nil {
+	if err := mainServer.RegisterRemoteServerDiscoverable(client); err != nil {
 		t.Fatalf("failed to register remote server: %v", err)
 	}
 
@@ -402,7 +439,7 @@ func TestRemoteServerOnDemandVisibility(t *testing.T) {
 	tools := mainServer.ListTools()
 	for _, tool := range tools {
 		if strings.Contains(tool.Name, "remote_analyze") {
-			t.Error("remote_analyze should NOT appear in tools/list with ondemand visibility")
+			t.Error("remote_analyze should NOT appear in tools/list with discoverable visibility")
 		}
 	}
 
@@ -419,7 +456,7 @@ func TestRemoteServerOnDemandVisibility(t *testing.T) {
 	}
 
 	if !hasToolSearch || !hasExecuteTool {
-		t.Error("discovery tools should exist when ondemand remote server is registered")
+		t.Error("discovery tools should exist when discoverable remote server is registered")
 	}
 
 	// The remote tool should be searchable
@@ -464,16 +501,15 @@ func NewMockToolProvider() *MockToolProvider {
 }
 
 func (p *MockToolProvider) AddTool(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), keywords ...string) {
-	p.AddToolWithOptions(name, description, handler, false, keywords...)
+	p.AddToolWithOptions(name, description, handler, keywords...)
 }
 
-func (p *MockToolProvider) AddToolWithOptions(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), alwaysVisible bool, keywords ...string) {
+func (p *MockToolProvider) AddToolWithOptions(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), keywords ...string) {
 	p.tools = append(p.tools, MCPTool{
 		Name:          name,
 		Description:   description,
 		InputSchema:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		Keywords:      keywords,
-		AlwaysVisible: alwaysVisible,
 	})
 	p.handlers[name] = handler
 }
@@ -493,8 +529,8 @@ func (p *MockToolProvider) ExecuteTool(ctx context.Context, name string, params 
 func TestToolProviderInNormalMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register at least one ondemand tool so discovery works
-	server.RegisterOnDemandTool(
+	// Register at least one discoverable tool so discovery works
+	server.RegisterTool(
 		NewTool("dummy", "Dummy"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
@@ -523,60 +559,73 @@ func TestToolProviderInNormalMode(t *testing.T) {
 	}
 }
 
-// TestToolProviderInForceOnDemandMode tests that provider tools are hidden in force ondemand mode
-func TestToolProviderInForceOnDemandMode(t *testing.T) {
+// TestToolProviderInShowAllMode tests that all provider tools appear in show-all mode
+func TestToolProviderInShowAllMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register at least one ondemand tool so discovery works
-	server.RegisterOnDemandTool(
-		NewTool("dummy", "Dummy"),
+	// Register a discoverable tool so discovery tools exist
+	server.RegisterTool(
+		NewTool("dummy", "Dummy").Discoverable(),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
 	)
 
-	// Create provider with a tool
+	// Create provider with a native tool
 	provider := NewMockToolProvider()
 	provider.AddTool("provider_tool", "Tool from provider", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 		return NewToolResponseText("Provider result"), nil
 	})
 
-	// Use provider with force ondemand mode
-	ctx := WithForceOnDemandMode(context.Background(), provider)
+	// In show-all mode, provider tool should appear (regardless of visibility)
+	ctx := WithToolProviders(context.Background(), provider)
+	ctx = WithShowAllTools(ctx)
 	tools := server.ListToolsWithContext(ctx)
 
+	hasProviderTool := false
 	for _, tool := range tools {
 		if tool.Name == "provider_tool" {
-			t.Error("provider_tool should NOT appear in force ondemand mode")
+			hasProviderTool = true
 		}
 	}
 
-	// Should only have tool_search and execute_tool
+	if !hasProviderTool {
+		t.Error("provider_tool should appear in show-all mode")
+	}
+
+	// Should have: provider_tool, dummy (meta-tools excluded)
 	if len(tools) != 2 {
-		t.Errorf("expected 2 tools in force ondemand mode, got %d", len(tools))
+		t.Errorf("expected 2 tools in show-all mode, got %d", len(tools))
 	}
 }
 
-// TestToolProviderToolsAreSearchable tests that provider tools can be found via tool_search in force ondemand mode
+// TestToolProviderToolsAreSearchable tests that discoverable provider tools can be found via tool_search
 func TestToolProviderToolsAreSearchable(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register an ondemand tool so discovery is enabled
-	server.RegisterOnDemandTool(
-		NewTool("dummy", "Dummy"),
+	// Register a discoverable tool so discovery is enabled
+	server.RegisterTool(
+		NewTool("dummy", "Dummy").Discoverable(),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
 	)
 
-	// Create provider with a tool that has keywords
+	// Create provider with a discoverable tool that has keywords
 	provider := NewMockToolProvider()
-	provider.AddTool("user_preferences", "Get user preferences", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	tool := MCPTool{
+		Name:        "user_preferences",
+		Description: "Get user preferences",
+		Keywords:    []string{"user", "settings", "preferences", "config"},
+		Visibility:  ToolVisibilityDiscoverable,
+	}
+	provider.tools = append(provider.tools, tool)
+	provider.handlers["user_preferences"] = func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
 		return NewToolResponseText("Preferences loaded"), nil
-	}, "user", "settings", "preferences", "config")
+	}
 
-	// Search for the provider tool in force ondemand mode (provider tools are searchable in force ondemand mode)
-	ctx := WithForceOnDemandMode(context.Background(), provider)
+	// Search for the provider tool - only discoverable tools are searchable
+	ctx := WithToolProviders(context.Background(), provider)
 	response, err := server.CallTool(ctx, ToolSearchName, map[string]interface{}{
 		"query": "preferences",
 	})
@@ -585,7 +634,7 @@ func TestToolProviderToolsAreSearchable(t *testing.T) {
 	}
 
 	if !strings.Contains(response.Content[0].Text, "user_preferences") {
-		t.Errorf("tool_search should find user_preferences in force ondemand mode, got: %s", response.Content[0].Text)
+		t.Errorf("tool_search should find user_preferences, got: %s", response.Content[0].Text)
 	}
 }
 
@@ -630,9 +679,9 @@ func TestHTTPHandlerRespectsModes(t *testing.T) {
 		},
 	)
 
-	// Register ondemand tool
-	server.RegisterOnDemandTool(
-		NewTool("ondemand", "Ondemand tool"),
+	// Register discoverable tool
+	server.RegisterTool(
+		NewTool("discoverable_tool", "Discoverable tool").Discoverable(),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
@@ -671,12 +720,12 @@ func TestHTTPHandlerRespectsModes(t *testing.T) {
 		t.Error("native tool should appear in normal mode")
 	}
 	if !hasToolSearch {
-		t.Error("tool_search should appear when ondemand tools exist")
+		t.Error("tool_search should appear when discoverable tools exist")
 	}
 
-	// Test force ondemand mode
+	// Test show-all mode
 	forceHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := WithForceOnDemandMode(r.Context())
+		ctx := WithShowAllTools(r.Context())
 		server.HandleRequest(w, r.WithContext(ctx))
 	})
 
@@ -689,25 +738,44 @@ func TestHTTPHandlerRespectsModes(t *testing.T) {
 	result = resp.Result.(map[string]interface{})
 	tools = result["tools"].([]interface{})
 
-	// Should only have tool_search and execute_tool
+	// In show-all mode, all tools should appear including native and discoverable
+	hasNativeInShowAll := false
+	hasDiscoverableInShowAll := false
+	hasToolSearchInShowAll := false
 	for _, toolItem := range tools {
 		tool := toolItem.(map[string]interface{})
 		name := tool["name"].(string)
-		if name != ToolSearchName && name != ExecuteToolName {
-			t.Errorf("in force ondemand mode, only discovery tools should appear, found: %s", name)
+		if name == "native" {
+			hasNativeInShowAll = true
 		}
+		if name == "discoverable_tool" {
+			hasDiscoverableInShowAll = true
+		}
+		if name == ToolSearchName {
+			hasToolSearchInShowAll = true
+		}
+	}
+
+	if !hasNativeInShowAll {
+		t.Error("native should appear in show-all mode")
+	}
+	if !hasDiscoverableInShowAll {
+		t.Error("discoverable tool should appear in show-all mode")
+	}
+	if hasToolSearchInShowAll {
+		t.Error("tool_search should NOT appear in show-all mode")
 	}
 }
 
-// TestToolSearchEmptyQueryListsAllOnDemandTools tests that empty query lists all tools
-func TestToolSearchEmptyQueryListsAllOnDemandTools(t *testing.T) {
+// TestToolSearchEmptyQueryListsAllDiscoverableTools tests that empty query lists all tools
+func TestToolSearchEmptyQueryListsAllDiscoverableTools(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register multiple ondemand tools
+	// Register multiple discoverable tools
 	for i := 0; i < 5; i++ {
 		name := "tool_" + string(rune('a'+i))
-		server.RegisterOnDemandTool(
-			NewTool(name, "Tool "+name),
+		server.RegisterTool(
+			NewTool(name, "Tool "+name).Discoverable(),
 			func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 				return NewToolResponseText("OK"), nil
 			},
@@ -716,7 +784,7 @@ func TestToolSearchEmptyQueryListsAllOnDemandTools(t *testing.T) {
 
 	// Search with empty query - request enough results to get all tools
 	response, err := server.CallTool(context.Background(), ToolSearchName, map[string]interface{}{
-		"max_results": 10, // Request more than the 5 ondemand + 2 native tools
+		"max_results": 10, // Request more than the 5 discoverable + 2 native tools
 	})
 	if err != nil {
 		t.Fatalf("tool_search failed: %v", err)
@@ -735,9 +803,9 @@ func TestToolSearchEmptyQueryListsAllOnDemandTools(t *testing.T) {
 func TestExecuteToolWithUnknownTool(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register an ondemand tool to enable discovery
-	server.RegisterOnDemandTool(
-		NewTool("exists", "Tool that exists"),
+	// Register a discoverable tool to enable discovery
+	server.RegisterTool(
+		NewTool("exists", "Tool that exists").Discoverable(),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
@@ -763,7 +831,7 @@ func TestVisibilityStringMethod(t *testing.T) {
 		want string
 	}{
 		{ToolVisibilityNative, "native"},
-		{ToolVisibilityOnDemand, "ondemand"},
+		{ToolVisibilityDiscoverable, "discoverable"},
 		{ToolVisibility(99), "unknown"},
 	}
 
@@ -775,192 +843,188 @@ func TestVisibilityStringMethod(t *testing.T) {
 	}
 }
 
-// TestAlwaysVisibleInForceOnDemandMode tests that tools with AlwaysVisible=true
-// appear in tools/list even in force on-demand mode
-func TestAlwaysVisibleInForceOnDemandMode(t *testing.T) {
+// TestShowAllModeShowsAllToolTypes tests that show-all mode shows all tool types
+func TestShowAllModeShowsAllToolTypes(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register a tool that is NOT always visible
+	// Register a native tool
 	server.RegisterTool(
-		NewTool("native_hidden", "A normal native tool"),
+		NewTool("native_tool", "A normal native tool"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
 	)
 
-	// Register a tool that IS always visible
+	// Register a discoverable tool
 	server.RegisterTool(
-		NewTool("always_visible_tool", "A tool that should always be visible").WithAlwaysVisible(),
+		NewTool("discoverable_tool", "A discoverable tool").Discoverable("test"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
 	)
 
-	// Register an ondemand tool to trigger discovery mode
-	server.RegisterOnDemandTool(
-		NewTool("dummy_ondemand", "Dummy tool"),
-		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-			return NewToolResponseText("OK"), nil
-		},
-		"dummy",
-	)
-
-	// Normal mode - should have all tools except ondemand
+	// Normal mode - should have native_tool, tool_search, execute_tool (NOT discoverable_tool)
 	normalTools := server.ListToolsWithContext(context.Background())
-	hasNativeHidden := false
-	hasAlwaysVisible := false
+	hasNative := false
+	hasDiscoverable := false
 	for _, tool := range normalTools {
-		if tool.Name == "native_hidden" {
-			hasNativeHidden = true
+		if tool.Name == "native_tool" {
+			hasNative = true
 		}
-		if tool.Name == "always_visible_tool" {
-			hasAlwaysVisible = true
+		if tool.Name == "discoverable_tool" {
+			hasDiscoverable = true
 		}
 	}
-	if !hasNativeHidden {
-		t.Error("native_hidden should appear in normal mode")
+	if !hasNative {
+		t.Error("native_tool should appear in normal mode")
 	}
-	if !hasAlwaysVisible {
-		t.Error("always_visible_tool should appear in normal mode")
+	if hasDiscoverable {
+		t.Error("discoverable_tool should NOT appear in normal mode list")
 	}
 
-	// Force ondemand mode - should have tool_search, execute_tool, AND always_visible_tool
-	forceCtx := WithForceOnDemandMode(context.Background())
-	forceTools := server.ListToolsWithContext(forceCtx)
+	// Show-all mode - should have ALL tools
+	showAllCtx := WithShowAllTools(context.Background())
+	showAllTools := server.ListToolsWithContext(showAllCtx)
 
+	foundNative := false
+	foundDiscoverable := false
 	foundToolSearch := false
 	foundExecuteTool := false
-	foundAlwaysVisible := false
-	for _, tool := range forceTools {
-		if tool.Name == ToolSearchName {
+	for _, tool := range showAllTools {
+		switch tool.Name {
+		case "native_tool":
+			foundNative = true
+		case "discoverable_tool":
+			foundDiscoverable = true
+		case ToolSearchName:
 			foundToolSearch = true
-		}
-		if tool.Name == ExecuteToolName {
+		case ExecuteToolName:
 			foundExecuteTool = true
 		}
-		if tool.Name == "always_visible_tool" {
-			foundAlwaysVisible = true
+	}
+
+	if !foundNative {
+		t.Error("native_tool should appear in show-all mode")
+	}
+	if !foundDiscoverable {
+		t.Error("discoverable_tool should appear in show-all mode")
+	}
+	if foundToolSearch {
+		t.Error("tool_search should NOT appear in show-all mode")
+	}
+	if foundExecuteTool {
+		t.Error("execute_tool should NOT appear in show-all mode")
+	}
+
+	// Should have exactly 2 tools (meta-tools excluded)
+	if len(showAllTools) != 2 {
+		t.Errorf("expected 2 tools in show-all mode, got %d", len(showAllTools))
+		for _, tool := range showAllTools {
+			t.Logf("  - %s", tool.Name)
 		}
-		// native_hidden should NOT appear
-		if tool.Name == "native_hidden" {
-			t.Error("native_hidden should NOT appear in force ondemand mode")
-		}
 	}
 
-	if !foundToolSearch {
-		t.Error("tool_search should appear in force ondemand mode")
-	}
-	if !foundExecuteTool {
-		t.Error("execute_tool should appear in force ondemand mode")
-	}
-	if !foundAlwaysVisible {
-		t.Error("always_visible_tool should appear in force ondemand mode")
-	}
-
-	// Should have exactly 3 tools: tool_search, execute_tool, always_visible_tool
-	if len(forceTools) != 3 {
-		t.Errorf("expected 3 tools in force ondemand mode, got %d", len(forceTools))
-	}
-
-	// Verify the always visible tool is still callable
-	response, err := server.CallTool(forceCtx, "always_visible_tool", nil)
+	// All tools should still be callable in show-all mode
+	response, err := server.CallTool(showAllCtx, "native_tool", nil)
 	if err != nil {
-		t.Fatalf("always_visible_tool should be callable in force ondemand mode: %v", err)
+		t.Fatalf("native_tool should be callable in show-all mode: %v", err)
 	}
 	if response.Content[0].Text != "OK" {
-		t.Errorf("unexpected response from always_visible_tool: %s", response.Content[0].Text)
+		t.Errorf("unexpected response from native_tool: %s", response.Content[0].Text)
 	}
 }
 
-// TestProviderAlwaysVisibleInForceOnDemandMode tests that provider tools with AlwaysVisible=true
-// appear in tools/list even in force on-demand mode
-func TestProviderAlwaysVisibleInForceOnDemandMode(t *testing.T) {
+// TestProviderToolsInShowAllMode tests that provider tools appear in show-all mode
+func TestProviderToolsInShowAllMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
-	// Register an ondemand tool to trigger discovery mode
-	server.RegisterOnDemandTool(
-		NewTool("dummy_ondemand", "Dummy tool"),
+	// Register a discoverable tool to trigger discovery mode
+	server.RegisterTool(
+		NewTool("server_discoverable", "Server discoverable tool").Discoverable("dummy"),
 		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return NewToolResponseText("OK"), nil
 		},
-		"dummy",
 	)
 
-	// Create provider with a tool that is NOT always visible
+	// Create provider with both native and discoverable tools
 	provider := NewMockToolProvider()
-	provider.AddToolWithOptions("provider_hidden", "A provider tool that should be hidden", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-		return NewToolResponseText("Hidden"), nil
-	}, false, "hidden", "test")
+	provider.AddTool("provider_native", "A native provider tool", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		return NewToolResponseText("Provider Native"), nil
+	})
 
-	// Create provider with a tool that IS always visible
-	provider.AddToolWithOptions("provider_always_visible", "A provider tool that should always be visible", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-		return NewToolResponseText("Always Visible"), nil
-	}, true, "always", "visible", "test")
+	// Add a discoverable provider tool
+	discoverableTool := MCPTool{
+		Name:        "provider_discoverable",
+		Description: "A discoverable provider tool",
+		Keywords:    []string{"discoverable", "test"},
+		Visibility:  ToolVisibilityDiscoverable,
+	}
+	provider.tools = append(provider.tools, discoverableTool)
+	provider.handlers["provider_discoverable"] = func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+		return NewToolResponseText("Provider Discoverable"), nil
+	}
 
-	// Normal mode - should have all provider tools
+	// Normal mode - should have native provider tool, NOT discoverable provider tool
 	normalCtx := WithToolProviders(context.Background(), provider)
 	normalTools := server.ListToolsWithContext(normalCtx)
-	hasProviderHidden := false
-	hasProviderAlwaysVisible := false
+	hasProviderNative := false
+	hasProviderDiscoverable := false
 	for _, tool := range normalTools {
-		if tool.Name == "provider_hidden" {
-			hasProviderHidden = true
+		if tool.Name == "provider_native" {
+			hasProviderNative = true
 		}
-		if tool.Name == "provider_always_visible" {
-			hasProviderAlwaysVisible = true
+		if tool.Name == "provider_discoverable" {
+			hasProviderDiscoverable = true
 		}
 	}
-	if !hasProviderHidden {
-		t.Error("provider_hidden should appear in normal mode")
+	if !hasProviderNative {
+		t.Error("provider_native should appear in normal mode")
 	}
-	if !hasProviderAlwaysVisible {
-		t.Error("provider_always_visible should appear in normal mode")
+	if hasProviderDiscoverable {
+		t.Error("provider_discoverable should NOT appear in normal mode list")
 	}
 
-	// Force ondemand mode - should have tool_search, execute_tool, AND provider_always_visible
-	forceCtx := WithForceOnDemandMode(context.Background(), provider)
-	forceTools := server.ListToolsWithContext(forceCtx)
+	// Show-all mode - should have ALL provider tools
+	showAllCtx := WithToolProviders(context.Background(), provider)
+	showAllCtx = WithShowAllTools(showAllCtx)
+	showAllTools := server.ListToolsWithContext(showAllCtx)
 
+	foundProviderNative := false
+	foundProviderDiscoverable := false
 	foundToolSearch := false
 	foundExecuteTool := false
-	foundProviderAlwaysVisible := false
-	for _, tool := range forceTools {
-		if tool.Name == ToolSearchName {
+	for _, tool := range showAllTools {
+		switch tool.Name {
+		case "provider_native":
+			foundProviderNative = true
+		case "provider_discoverable":
+			foundProviderDiscoverable = true
+		case ToolSearchName:
 			foundToolSearch = true
-		}
-		if tool.Name == ExecuteToolName {
+		case ExecuteToolName:
 			foundExecuteTool = true
 		}
-		if tool.Name == "provider_always_visible" {
-			foundProviderAlwaysVisible = true
-		}
-		// provider_hidden should NOT appear
-		if tool.Name == "provider_hidden" {
-			t.Error("provider_hidden should NOT appear in force ondemand mode")
-		}
 	}
 
-	if !foundToolSearch {
-		t.Error("tool_search should appear in force ondemand mode")
+	if !foundProviderNative {
+		t.Error("provider_native should appear in show-all mode")
 	}
-	if !foundExecuteTool {
-		t.Error("execute_tool should appear in force ondemand mode")
+	if !foundProviderDiscoverable {
+		t.Error("provider_discoverable should appear in show-all mode")
 	}
-	if !foundProviderAlwaysVisible {
-		t.Error("provider_always_visible should appear in force ondemand mode")
+	if foundToolSearch {
+		t.Error("tool_search should NOT appear in show-all mode (it's a meta-tool)")
 	}
-
-	// Should have exactly 3 tools: tool_search, execute_tool, provider_always_visible
-	if len(forceTools) != 3 {
-		t.Errorf("expected 3 tools in force ondemand mode, got %d", len(forceTools))
+	if foundExecuteTool {
+		t.Error("execute_tool should NOT appear in show-all mode (it's a meta-tool)")
 	}
 
-	// Verify the provider always visible tool is still callable
-	response, err := server.CallTool(forceCtx, "provider_always_visible", nil)
+	// Both provider tools should be callable
+	response, err := server.CallTool(showAllCtx, "provider_native", nil)
 	if err != nil {
-		t.Fatalf("provider_always_visible should be callable in force ondemand mode: %v", err)
+		t.Fatalf("provider_native should be callable in show-all mode: %v", err)
 	}
-	if response.Content[0].Text != "Always Visible" {
-		t.Errorf("unexpected response from provider_always_visible: %s", response.Content[0].Text)
+	if response.Content[0].Text != "Provider Native" {
+		t.Errorf("unexpected response from provider_native: %s", response.Content[0].Text)
 	}
 }
