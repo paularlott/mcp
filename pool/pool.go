@@ -38,7 +38,7 @@ func DefaultPoolConfig() *PoolConfig {
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
-		Timeout:             5 * time.Minute, // Longer timeout for AI/MCP operations
+		Timeout:             5 * time.Minute, // Extended timeout for slow AI/LLM operations
 	}
 }
 
@@ -161,7 +161,16 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 		ResponseHeaderTimeout: cfg.Timeout, // Use the Timeout value for response headers only
 	}
 
-	http2.ConfigureTransport(transport)
+	// Configure HTTP/2 with extended idle timeout for streaming connections
+	// This prevents HTTP/2 from closing connections during long-running streams
+	http2Transport, err := http2.ConfigureTransports(transport)
+	if err == nil && http2Transport != nil {
+		// ReadIdleTimeout is how long to wait before sending a ping if no frame is received
+		// Set to 30 seconds to detect dead connections but not interfere with slow streams
+		http2Transport.ReadIdleTimeout = 30 * time.Second
+		// PingTimeout is how long to wait for a ping response
+		http2Transport.PingTimeout = 15 * time.Second
+	}
 
 	return &DefaultPool{
 		httpClient: &http.Client{
