@@ -154,10 +154,11 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 			InsecureSkipVerify: cfg.InsecureSkipVerify,
 			MinVersion:         tls.VersionTLS13,
 		},
-		MaxIdleConns:        cfg.MaxIdleConns,
-		MaxIdleConnsPerHost: cfg.MaxIdleConnsPerHost,
-		IdleConnTimeout:     cfg.IdleConnTimeout,
-		ForceAttemptHTTP2:   true,
+		MaxIdleConns:          cfg.MaxIdleConns,
+		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
+		IdleConnTimeout:       cfg.IdleConnTimeout,
+		ForceAttemptHTTP2:     true,
+		ResponseHeaderTimeout: cfg.Timeout, // Use the Timeout value for response headers only
 	}
 
 	http2.ConfigureTransport(transport)
@@ -165,7 +166,9 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 	return &DefaultPool{
 		httpClient: &http.Client{
 			Transport: transport,
-			Timeout:   cfg.Timeout,
+			// NOTE: Don't set Timeout here - it applies to entire request including
+			// body reading, which breaks streaming. Use ResponseHeaderTimeout instead
+			// for initial response, and context timeouts for overall request control.
 		},
 	}
 }
