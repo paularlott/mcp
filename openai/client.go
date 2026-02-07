@@ -51,15 +51,14 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 
 // Client represents an OpenAI API client using the shared HTTP pool
 type Client struct {
-	baseURL         string
-	apiKey          string
-	localServer     MCPServer     // Local MCP server (no namespace)
-	remoteServers   []*mcp.Client // Remote MCP servers (each has their own namespace)
-	remoteServersMu sync.RWMutex
-	customTools     []Tool        // Custom tools (not executed by client)
-	customToolsMu   sync.RWMutex
-	extraHeaders    http.Header   // Custom headers added to all requests
-	httpPool        pool.HTTPPool // Optional custom HTTP pool
+	baseURL       string
+	apiKey        string
+	localServer   MCPServer     // Local MCP server (no namespace)
+	remoteServers []*mcp.Client // Remote MCP servers (each has their own namespace)
+	customTools   []Tool        // Custom tools (not executed by client)
+	customToolsMu sync.RWMutex
+	extraHeaders  http.Header   // Custom headers added to all requests
+	httpPool      pool.HTTPPool // Optional custom HTTP pool
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -116,30 +115,6 @@ func New(config Config) (*Client, error) {
 	}, nil
 }
 
-// AddRemoteServer adds a remote MCP server.
-// The namespace is derived from the client's namespace.
-func (c *Client) AddRemoteServer(config RemoteServerConfig) {
-	client := mcp.NewClient(config.BaseURL, config.Auth, config.Namespace)
-	c.remoteServersMu.Lock()
-	defer c.remoteServersMu.Unlock()
-	c.remoteServers = append(c.remoteServers, client)
-}
-
-// RemoveRemoteServer removes a remote MCP server by namespace
-func (c *Client) RemoveRemoteServer(namespace string) {
-	c.remoteServersMu.Lock()
-	defer c.remoteServersMu.Unlock()
-
-	// Find and remove the client with matching namespace
-	// The namespace is already normalized by the MCP client
-	for i, client := range c.remoteServers {
-		if client.Namespace() == namespace {
-			c.remoteServers = append(c.remoteServers[:i], c.remoteServers[i+1:]...)
-			return
-		}
-	}
-}
-
 // SetCustomTools sets custom tools that will be sent to the AI but not executed by the client.
 // These tools are returned to the caller for manual execution.
 func (c *Client) SetCustomTools(tools []Tool) {
@@ -155,11 +130,6 @@ func (c *Client) GetCustomTools() []Tool {
 	return c.customTools
 }
 
-// GetLocalServer returns the local MCP server
-func (c *Client) GetLocalServer() MCPServer {
-	return c.localServer
-}
-
 // GetAllTools returns all tools from local and remote servers
 // Local server tools are returned as-is
 // Remote server tools are already namespaced by their client
@@ -172,9 +142,6 @@ func (c *Client) GetAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
 	}
 
 	// Add remote server tools (already namespaced by their client)
-	c.remoteServersMu.RLock()
-	defer c.remoteServersMu.RUnlock()
-
 	for _, client := range c.remoteServers {
 		tools, err := client.ListTools(ctx)
 		if err != nil {
@@ -191,9 +158,6 @@ func (c *Client) GetAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
 // Otherwise, routes to the local server
 func (c *Client) callTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error) {
 	// Check if tool name matches a remote server's namespace
-	c.remoteServersMu.RLock()
-	defer c.remoteServersMu.RUnlock()
-
 	// Try to find a remote client whose namespace matches the tool name
 	for _, client := range c.remoteServers {
 		namespace := client.Namespace()
@@ -540,8 +504,8 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		// 3. This chunk doesn't signal tool_calls finish (which would make client think stream is done)
 		shouldSendToClient := !hasServers ||
 			(len(response.Choices) > 0 &&
-			 len(response.Choices[0].Delta.ToolCalls) == 0 &&
-			 response.Choices[0].FinishReason != "tool_calls")
+				len(response.Choices[0].Delta.ToolCalls) == 0 &&
+				response.Choices[0].FinishReason != "tool_calls")
 
 		if shouldSendToClient {
 			// Send the response to the channel

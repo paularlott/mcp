@@ -48,13 +48,6 @@ client, err := openai.New(openai.Config{
     },
 })
 
-// Add more remote servers dynamically
-client.AddRemoteServer(openai.RemoteServerConfig{
-    BaseURL: "http://localhost:8081",
-    Auth:    anotherAuthProvider,
-    Namespace: "remote2",
-})
-
 // Set custom tools (sent to AI but not executed)
 client.SetCustomTools([]openai.Tool{...})
 ```
