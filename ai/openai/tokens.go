@@ -2,54 +2,23 @@ package openai
 
 import (
 	"encoding/json"
-	"strings"
-	"unicode"
 )
 
 // EstimateTokens returns a rough token count for a given input string.
-// This uses a simple heuristic based on word boundaries and punctuation.
+// This uses a character-based heuristic of ~4 characters per token, which
+// is a widely used approximation for LLM tokenizers (GPT, Claude, Gemini).
+// It handles code, JSON, and long words better than word-based counting.
 func EstimateTokens(text string) int {
 	if text == "" {
 		return 0
 	}
 
-	words := strings.Fields(text)
-
-	// If there are no words, check if it's just punctuation/whitespace
-	if len(words) == 0 {
-		// Count non-whitespace characters as potential punctuation tokens
-		tokens := 0
-		for _, r := range text {
-			if !unicode.IsSpace(r) {
-				tokens++
-			}
-		}
-		return tokens
+	// Using byte length works well since non-ASCII characters
+	// typically map to multiple tokens anyway.
+	tokens := (len(text) + 3) / 4
+	if tokens < 1 {
+		tokens = 1
 	}
-
-	tokens := 0
-	for _, word := range words {
-		// Check if this "word" is pure punctuation
-		isPurePunct := true
-		punctCount := 0
-
-		for _, r := range word {
-			if unicode.IsPunct(r) {
-				punctCount++
-			} else {
-				isPurePunct = false
-			}
-		}
-
-		if isPurePunct {
-			// Pure punctuation: count each punctuation mark as 1 token
-			tokens += punctCount
-		} else {
-			// Mixed word: 1 token for the word + additional tokens for punctuation
-			tokens += 1 + punctCount
-		}
-	}
-
 	return tokens
 }
 
@@ -153,7 +122,8 @@ func (tc *TokenCounter) Reset() {
 	tc.completionTokens = 0
 }
 
-// InjectUsageIfMissing injects estimated usage into a chat completion response if it's missing or incomplete
+// InjectUsageIfMissing injects estimated usage into a chat completion response
+// if it's missing, incomplete, or the estimated total exceeds the reported total.
 func (tc *TokenCounter) InjectUsageIfMissing(resp *ChatCompletionResponse) {
 	if resp == nil {
 		return
@@ -167,23 +137,22 @@ func (tc *TokenCounter) InjectUsageIfMissing(resp *ChatCompletionResponse) {
 		return
 	}
 
-	// If prompt or completion tokens are missing/zero, fill them in with estimates
+	// Fill in any zero components with estimates
 	if resp.Usage.PromptTokens == 0 || resp.Usage.CompletionTokens == 0 {
-		if resp.Usage.PromptTokens == 0 {
-			resp.Usage.PromptTokens = estimated.PromptTokens
-		}
-		if resp.Usage.CompletionTokens == 0 {
-			resp.Usage.CompletionTokens = estimated.CompletionTokens
-		}
-		resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+		resp.Usage.PromptTokens = estimated.PromptTokens
+		resp.Usage.CompletionTokens = estimated.CompletionTokens
+	}
+
+	// If estimated total exceeds reported total, use estimated values
+	// (indicates API is underreporting, e.g. Gemini or missing fields)
+	estimatedTotal := estimated.PromptTokens + estimated.CompletionTokens
+	reportedTotal := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+	if estimatedTotal > reportedTotal {
+		resp.Usage = &estimated
 		return
 	}
 
-	// If our estimate for prompt is more than double what's reported, use our estimate
-	// (indicates API is returning incorrect values, e.g., Gemini)
-	if estimated.PromptTokens > resp.Usage.PromptTokens*2 {
-		resp.Usage = &estimated
-	}
+	resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 }
 
 // estimateContentTokens estimates tokens from message content (string or array format)

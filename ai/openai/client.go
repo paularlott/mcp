@@ -247,6 +247,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		req.Temperature = c.temperature
 	}
 
+	var cumulativeUsage Usage
 	for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
 		req.Messages = currentMessages
 		req.Stream = false
@@ -256,13 +257,18 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 			return nil, err
 		}
 
+		// Accumulate usage across tool call iterations
+		cumulativeUsage.Add(response.Usage)
+
 		// If request had tools, caller handles execution - return immediately
 		if requestHasTools {
+			response.Usage = &cumulativeUsage
 			return response, nil
 		}
 
 		// If no servers, no tool calls, or no choices, we're done
 		if !hasServers || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
+			response.Usage = &cumulativeUsage
 			return response, nil
 		}
 
@@ -353,6 +359,16 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 
 		toolHandler := ToolHandlerFromContext(ctx)
 
+		var cumulativeUsage Usage
+		sendCumulativeUsage := func(id, model string) {
+			if cumulativeUsage.TotalTokens > 0 {
+				select {
+				case responseChan <- ChatCompletionResponse{ID: id, Model: model, Usage: &cumulativeUsage}:
+				case <-ctx.Done():
+				}
+			}
+		}
+
 		// Multi-turn tool processing loop if any servers are available
 		for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
 			req.Messages = currentMessages
@@ -365,13 +381,24 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 				return
 			}
 
-			// If request had tools, caller handles execution - return immediately
+			// Accumulate usage across tool call iterations
+			if finalResponse != nil {
+				cumulativeUsage.Add(finalResponse.Usage)
+			}
+
+			// If request had tools, caller handles execution - send usage and return
 			if requestHasTools {
+				if finalResponse != nil {
+					sendCumulativeUsage(finalResponse.ID, finalResponse.Model)
+				}
 				return
 			}
 
-			// If no servers, no tool calls, or no choices, we're done
+			// If no servers, no tool calls, or no choices, send usage and we're done
 			if !hasServers || finalResponse == nil || len(finalResponse.Choices) == 0 || len(finalResponse.Choices[0].Message.ToolCalls) == 0 {
+				if finalResponse != nil {
+					sendCumulativeUsage(finalResponse.ID, finalResponse.Model)
+				}
 				return
 			}
 
@@ -581,26 +608,15 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		tc.AddPromptTokensFromMessages(req.Messages)
 		tc.AddCompletionTokensFromText(assistantContent.String())
 		// Add tool call tokens if any
-		for _, toolCall := range toolAccumulator.Finalize() {
-			tc.AddCompletionTokensFromText(toolCall.Function.Name)
-			if args, err := json.Marshal(toolCall.Function.Arguments); err == nil {
-				tc.AddCompletionTokensFromText(string(args))
+		if len(finalResponse.Choices) > 0 {
+			for _, toolCall := range finalResponse.Choices[0].Message.ToolCalls {
+				tc.AddCompletionTokensFromText(toolCall.Function.Name)
+				if args, err := json.Marshal(toolCall.Function.Arguments); err == nil {
+					tc.AddCompletionTokensFromText(string(args))
+				}
 			}
 		}
 		tc.InjectUsageIfMissing(finalResponse)
-
-		// Send a final chunk with usage information through the stream
-		if finalResponse.Usage != nil {
-			usageChunk := ChatCompletionResponse{
-				ID:    finalResponse.ID,
-				Model: finalResponse.Model,
-				Usage: finalResponse.Usage,
-			}
-			select {
-			case responseChan <- usageChunk:
-			case <-ctx.Done():
-			}
-		}
 	}
 
 	return finalResponse, nil

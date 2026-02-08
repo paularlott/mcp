@@ -122,6 +122,18 @@ type Usage struct {
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
+// Add accumulates the token counts from another Usage into this one.
+// This is useful for tracking cumulative usage across multiple API calls
+// in multi-turn tool call loops.
+func (u *Usage) Add(other *Usage) {
+	if other == nil {
+		return
+	}
+	u.PromptTokens += other.PromptTokens
+	u.CompletionTokens += other.CompletionTokens
+	u.TotalTokens = u.PromptTokens + u.CompletionTokens
+}
+
 // PromptTokensDetails represents detailed prompt token usage
 type PromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`

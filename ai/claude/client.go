@@ -85,6 +85,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 		req.Temperature = c.temperature
 	}
 
+	var cumulativeUsage openai.Usage
 	for iteration := 0; iteration < openai.MAX_TOOL_CALL_ITERATIONS; iteration++ {
 		req.Messages = currentMessages
 		claudeReq := c.convertToClaudeRequest(req)
@@ -96,17 +97,19 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 
 		response := c.convertToOpenAIResponse(&claudeResp)
 
-		// Ensure usage is present (estimate if missing)
-		if response.Usage == nil || (response.Usage.PromptTokens == 0 && response.Usage.CompletionTokens == 0) {
-			tc := openai.NewTokenCounter()
-			tc.AddPromptTokensFromMessages(req.Messages)
-			if len(response.Choices) > 0 {
-				tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
-			}
-			tc.InjectUsageIfMissing(response)
+		// Always calculate estimated usage
+		tc := openai.NewTokenCounter()
+		tc.AddPromptTokensFromMessages(req.Messages)
+		if len(response.Choices) > 0 {
+			tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
 		}
+		tc.InjectUsageIfMissing(response)
+
+		// Accumulate usage across tool call iterations
+		cumulativeUsage.Add(response.Usage)
 
 		if requestHasTools || !hasServers || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
+			response.Usage = &cumulativeUsage
 			return response, nil
 		}
 
@@ -209,6 +212,16 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 			req.Temperature = c.temperature
 		}
 
+		var cumulativeUsage openai.Usage
+		sendCumulativeUsage := func(id, model string) {
+			if cumulativeUsage.TotalTokens > 0 {
+				select {
+				case responseChan <- openai.ChatCompletionResponse{ID: id, Model: model, Usage: &cumulativeUsage}:
+				case <-ctx.Done():
+				}
+			}
+		}
+
 		for iteration := 0; iteration < openai.MAX_TOOL_CALL_ITERATIONS; iteration++ {
 			req.Messages = currentMessages
 			claudeReq := c.convertToClaudeRequest(req)
@@ -220,7 +233,15 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 				return
 			}
 
+			// Accumulate usage across tool call iterations
+			if finalResponse != nil {
+				cumulativeUsage.Add(finalResponse.Usage)
+			}
+
 			if requestHasTools || !hasServers || finalResponse == nil || len(finalResponse.Choices) == 0 || len(finalResponse.Choices[0].Message.ToolCalls) == 0 {
+				if finalResponse != nil {
+					sendCumulativeUsage(finalResponse.ID, finalResponse.Model)
+				}
 				return
 			}
 
@@ -336,29 +357,17 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 		},
 	}
 
-	// Ensure usage is present (estimate if missing)
-	if finalResponse.Usage == nil || (finalResponse.Usage.PromptTokens == 0 && finalResponse.Usage.CompletionTokens == 0) {
-		tokenCounter := openai.NewTokenCounter()
-		tokenCounter.AddPromptTokensFromMessages(originalMessages)
-		tokenCounter.AddCompletionTokensFromText(assistantContent.String())
-		for _, toolCall := range toolCalls {
-			tokenCounter.AddCompletionTokensFromText(toolCall.Function.Name)
-		}
-		tokenCounter.InjectUsageIfMissing(finalResponse)
-	}
-
-	// Send a final chunk with usage information through the stream
-	if finalResponse.Usage != nil {
-		usageChunk := openai.ChatCompletionResponse{
-			ID:    finalResponse.ID,
-			Model: finalResponse.Model,
-			Usage: finalResponse.Usage,
-		}
-		select {
-		case responseChan <- usageChunk:
-		case <-ctx.Done():
+	// Always calculate estimated usage
+	tokenCounter := openai.NewTokenCounter()
+	tokenCounter.AddPromptTokensFromMessages(originalMessages)
+	tokenCounter.AddCompletionTokensFromText(assistantContent.String())
+	for _, toolCall := range toolCalls {
+		tokenCounter.AddCompletionTokensFromText(toolCall.Function.Name)
+		if args, err := json.Marshal(toolCall.Function.Arguments); err == nil {
+			tokenCounter.AddCompletionTokensFromText(string(args))
 		}
 	}
+	tokenCounter.InjectUsageIfMissing(finalResponse)
 
 	return finalResponse, nil
 }
