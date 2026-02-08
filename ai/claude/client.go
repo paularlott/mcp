@@ -368,11 +368,36 @@ func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {
 	claudeMessages := make([]ClaudeMessage, 0, len(messages))
 
 	for _, msg := range messages {
+		// Handle tool results (role="tool")
+		if msg.ToolCallID != "" {
+			claudeMsg := ClaudeMessage{
+				Role: "user",
+				Content: []ContentBlock{
+					{
+						Type:      "tool_result",
+						ToolUseID: msg.ToolCallID,
+						Content:   msg.Content,
+					},
+				},
+			}
+			claudeMessages = append(claudeMessages, claudeMsg)
+			continue
+		}
+
 		claudeMsg := ClaudeMessage{
 			Role: msg.Role,
 		}
 
-		// Handle tool calls
+		// Add text content first (if any)
+		content := msg.GetContentAsString()
+		if content != "" {
+			claudeMsg.Content = append(claudeMsg.Content, ContentBlock{
+				Type: "text",
+				Text: content,
+			})
+		}
+
+		// Add tool calls (if any)
 		if len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
 				claudeMsg.Content = append(claudeMsg.Content, ContentBlock{
@@ -380,25 +405,6 @@ func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {
 					ID:    tc.ID,
 					Name:  tc.Function.Name,
 					Input: tc.Function.Arguments,
-				})
-			}
-		}
-
-		// Handle tool results
-		if msg.ToolCallID != "" {
-			claudeMsg.Role = "user"
-			claudeMsg.Content = append(claudeMsg.Content, ContentBlock{
-				Type:      "tool_result",
-				ToolUseID: msg.ToolCallID,
-				Content:   msg.Content,
-			})
-		} else {
-			// Regular text content
-			content := msg.GetContentAsString()
-			if content != "" {
-				claudeMsg.Content = append(claudeMsg.Content, ContentBlock{
-					Type: "text",
-					Text: content,
 				})
 			}
 		}
