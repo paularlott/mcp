@@ -9,12 +9,7 @@ import (
 )
 
 // NewClient creates a new LLM client for the specified provider
-func NewClient(config Config, opts ...Option) (Client, error) {
-	// Apply options
-	for _, opt := range opts {
-		opt(&config)
-	}
-
+func NewClient(config Config) (Client, error) {
 	// Validate configuration
 	if err := validateConfig(&config); err != nil {
 		return nil, err
