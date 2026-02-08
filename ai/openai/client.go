@@ -64,6 +64,8 @@ type Client struct {
 	remoteServers []*mcp.Client // Remote MCP servers (each has their own namespace)
 	extraHeaders  http.Header   // Custom headers added to all requests
 	httpPool      pool.HTTPPool // Optional custom HTTP pool
+	maxTokens     int           // Default max_tokens
+	temperature   float32       // Default temperature
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -83,6 +85,8 @@ type Config struct {
 	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
 	ExtraHeaders        http.Header          // Custom headers added to all requests
 	HTTPPool            pool.HTTPPool        // Optional custom HTTP pool (nil = use default secure pool)
+	MaxTokens           int                  // Default max_tokens for requests (0 = no default)
+	Temperature         float32              // Default temperature for requests (0 = no default)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -135,6 +139,8 @@ func New(config Config) (*Client, error) {
 		remoteServers: remoteServers,
 		extraHeaders:  config.ExtraHeaders,
 		httpPool:      config.HTTPPool, // Store the pool (nil = use default)
+		maxTokens:     config.MaxTokens,
+		temperature:   config.Temperature,
 	}, nil
 }
 
@@ -233,6 +239,14 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	// Multi-turn tool processing loop if any servers are available
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
+	// Apply client defaults if not set in request
+	if req.MaxTokens == 0 && c.maxTokens > 0 {
+		req.MaxTokens = c.maxTokens
+	}
+	if req.Temperature == 0 && c.temperature > 0 {
+		req.Temperature = c.temperature
+	}
+
 	for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
 		req.Messages = currentMessages
 		req.Stream = false
@@ -319,6 +333,14 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		// Skip tool injection if request already has tools (caller is handling tools)
 		requestHasTools := len(req.Tools) > 0
 		hasServers := c.localServer != nil || len(c.remoteServers) > 0
+
+		// Apply client defaults if not set in request
+		if req.MaxTokens == 0 && c.maxTokens > 0 {
+			req.MaxTokens = c.maxTokens
+		}
+		if req.Temperature == 0 && c.temperature > 0 {
+			req.Temperature = c.temperature
+		}
 
 		if !requestHasTools {
 			// Add tools from all servers

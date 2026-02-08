@@ -112,12 +112,36 @@ type Config struct {
     Provider          Provider
     APIKey            string
     BaseURL           string               // Optional: custom endpoint
+    MaxTokens         int                  // Optional: default max_tokens for all requests
+    Temperature       float32              // Optional: default temperature for all requests
     ExtraHeaders      http.Header          // Optional: custom headers
     HTTPPool          pool.HTTPPool        // Optional: custom HTTP client pool
     LocalServer       MCPServer            // Optional: local MCP server
     MCPServerConfigs  []RemoteServerConfig // Optional: remote MCP servers
 }
 ```
+
+### Default Parameters
+
+You can set default `MaxTokens` and `Temperature` at the client level. These will be applied to all requests that don't explicitly set these values:
+
+```go
+client, err := ai.NewClient(ai.Config{
+    Provider:    ai.ProviderClaude,
+    APIKey:      "sk-ant-...",
+    MaxTokens:   2048,      // Default for all requests
+    Temperature: 0.7,       // Default for all requests
+})
+
+// Uses client defaults (2048 tokens, 0.7 temperature)
+response, err := client.ChatCompletion(ctx, req)
+
+// Override per request
+req.MaxTokens = 4096
+response, err := client.ChatCompletion(ctx, req)
+```
+
+**Note:** Claude requires `max_tokens` to be set. If not provided in the config, it defaults to 4096.
 
 ## Provider-Specific Details
 

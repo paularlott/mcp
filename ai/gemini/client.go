@@ -41,6 +41,8 @@ func New(config openai.Config) (*Client, error) {
 		HTTPPool:            config.HTTPPool,
 		LocalServer:         config.LocalServer,
 		RemoteServerConfigs: config.RemoteServerConfigs,
+		MaxTokens:           config.MaxTokens,
+		Temperature:         config.Temperature,
 	})
 	if err != nil {
 		return nil, err

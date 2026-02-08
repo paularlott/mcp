@@ -15,36 +15,21 @@ func NewClient(config Config) (Client, error) {
 		return nil, err
 	}
 
+	// Set provider string for openai-compatible providers
+	config.Config.Provider = string(config.Provider)
+
 	// Create provider-specific client
 	switch config.Provider {
 	case ProviderOpenAI, ProviderOllama, ProviderZAi, ProviderMistral:
-		return openai.New(openai.Config{
-			APIKey:              config.APIKey,
-			BaseURL:             config.BaseURL,
-			Provider:            string(config.Provider),
-			ExtraHeaders:        config.ExtraHeaders,
-			HTTPPool:            config.HTTPPool,
-			LocalServer:         config.LocalServer,
-			RemoteServerConfigs: config.MCPServerConfigs,
-		})
+		return openai.New(config.Config)
 	case ProviderClaude:
-		return claude.New(openai.Config{
-			APIKey:              config.APIKey,
-			BaseURL:             config.BaseURL,
-			ExtraHeaders:        config.ExtraHeaders,
-			HTTPPool:            config.HTTPPool,
-			LocalServer:         config.LocalServer,
-			RemoteServerConfigs: config.MCPServerConfigs,
-		})
+		// Claude requires max_tokens, set default if not provided
+		if config.MaxTokens == 0 {
+			config.MaxTokens = 4096
+		}
+		return claude.New(config.Config)
 	case ProviderGemini:
-		return gemini.New(openai.Config{
-			APIKey:              config.APIKey,
-			BaseURL:             config.BaseURL,
-			ExtraHeaders:        config.ExtraHeaders,
-			HTTPPool:            config.HTTPPool,
-			LocalServer:         config.LocalServer,
-			RemoteServerConfigs: config.MCPServerConfigs,
-		})
+		return gemini.New(config.Config)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", config.Provider)
 	}

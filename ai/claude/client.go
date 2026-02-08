@@ -28,6 +28,8 @@ type Client struct {
 	provider      string
 	localServer   openai.MCPServer // Local MCP server
 	remoteServers []*mcp.Client    // Remote MCP servers
+	maxTokens     int              // Default max_tokens
+	temperature   float32          // Default temperature
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -56,6 +58,8 @@ func New(config openai.Config) (*Client, error) {
 		provider:      providerName,
 		localServer:   config.LocalServer,
 		remoteServers: remoteServers,
+		maxTokens:     config.MaxTokens,
+		temperature:   config.Temperature,
 	}, nil
 }
 
@@ -72,6 +76,14 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 
 	toolHandler := openai.ToolHandlerFromContext(ctx)
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
+
+	// Apply client defaults if not set in request
+	if req.MaxTokens == 0 && c.maxTokens > 0 {
+		req.MaxTokens = c.maxTokens
+	}
+	if req.Temperature == 0 && c.temperature > 0 {
+		req.Temperature = c.temperature
+	}
 
 	for iteration := 0; iteration < openai.MAX_TOOL_CALL_ITERATIONS; iteration++ {
 		req.Messages = currentMessages
@@ -178,6 +190,14 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 		}
 
 		toolHandler := openai.ToolHandlerFromContext(ctx)
+
+		// Apply client defaults if not set in request
+		if req.MaxTokens == 0 && c.maxTokens > 0 {
+			req.MaxTokens = c.maxTokens
+		}
+		if req.Temperature == 0 && c.temperature > 0 {
+			req.Temperature = c.temperature
+		}
 
 		for iteration := 0; iteration < openai.MAX_TOOL_CALL_ITERATIONS; iteration++ {
 			req.Messages = currentMessages
