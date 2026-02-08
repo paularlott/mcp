@@ -40,24 +40,30 @@ func (s *ChatStream) Next() bool {
 		return false
 	}
 
-	select {
-	case <-s.ctx.Done():
-		s.err = s.ctx.Err()
-		s.done = true
-		return false
-	case err, ok := <-s.errorChan:
-		if ok && err != nil {
-			s.err = err
-		}
-		s.done = true
-		return false
-	case resp, ok := <-s.responseChan:
-		if !ok {
+	for {
+		select {
+		case <-s.ctx.Done():
+			s.err = s.ctx.Err()
 			s.done = true
 			return false
+		case err, ok := <-s.errorChan:
+			if ok && err != nil {
+				s.err = err
+				s.done = true
+				return false
+			}
+			// Channel closed with no error — nil it out so we drain
+			// any remaining buffered responses before stopping.
+			s.errorChan = nil
+			continue
+		case resp, ok := <-s.responseChan:
+			if !ok {
+				s.done = true
+				return false
+			}
+			s.current = &resp
+			return true
 		}
-		s.current = &resp
-		return true
 	}
 }
 

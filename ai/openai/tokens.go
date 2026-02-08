@@ -153,16 +153,36 @@ func (tc *TokenCounter) Reset() {
 	tc.completionTokens = 0
 }
 
-// InjectUsageIfMissing injects estimated usage into a chat completion response if it's missing or zero
+// InjectUsageIfMissing injects estimated usage into a chat completion response if it's missing or incomplete
 func (tc *TokenCounter) InjectUsageIfMissing(resp *ChatCompletionResponse) {
 	if resp == nil {
 		return
 	}
 
-	// Only inject if usage is missing or all fields are zero
-	if resp.Usage == nil || (resp.Usage.PromptTokens == 0 && resp.Usage.CompletionTokens == 0 && resp.Usage.TotalTokens == 0) {
-		usage := tc.GetUsage()
-		resp.Usage = &usage
+	estimated := tc.GetUsage()
+
+	// Inject if usage is missing entirely
+	if resp.Usage == nil {
+		resp.Usage = &estimated
+		return
+	}
+
+	// If prompt or completion tokens are missing/zero, fill them in with estimates
+	if resp.Usage.PromptTokens == 0 || resp.Usage.CompletionTokens == 0 {
+		if resp.Usage.PromptTokens == 0 {
+			resp.Usage.PromptTokens = estimated.PromptTokens
+		}
+		if resp.Usage.CompletionTokens == 0 {
+			resp.Usage.CompletionTokens = estimated.CompletionTokens
+		}
+		resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+		return
+	}
+
+	// If our estimate for prompt is more than double what's reported, use our estimate
+	// (indicates API is returning incorrect values, e.g., Gemini)
+	if estimated.PromptTokens > resp.Usage.PromptTokens*2 {
+		resp.Usage = &estimated
 	}
 }
 

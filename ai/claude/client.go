@@ -96,6 +96,16 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 
 		response := c.convertToOpenAIResponse(&claudeResp)
 
+		// Ensure usage is present (estimate if missing)
+		if response.Usage == nil || (response.Usage.PromptTokens == 0 && response.Usage.CompletionTokens == 0) {
+			tc := openai.NewTokenCounter()
+			tc.AddPromptTokensFromMessages(req.Messages)
+			if len(response.Choices) > 0 {
+				tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
+			}
+			tc.InjectUsageIfMissing(response)
+		}
+
 		if requestHasTools || !hasServers || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
 			return response, nil
 		}
@@ -204,7 +214,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 			claudeReq := c.convertToClaudeRequest(req)
 			claudeReq.Stream = true
 
-			finalResponse, err := c.streamSingleCompletion(ctx, claudeReq, responseChan)
+			finalResponse, err := c.streamSingleCompletion(ctx, claudeReq, currentMessages, responseChan)
 			if err != nil {
 				errorChan <- err
 				return
@@ -262,7 +272,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 	return openai.NewChatStream(ctx, responseChan, errorChan)
 }
 
-func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeRequest, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, error) {
+func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeRequest, originalMessages []openai.Message, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, error) {
 	var assistantContent strings.Builder
 	toolAccumulator := openai.NewStreamingToolCallAccumulator()
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
@@ -324,6 +334,30 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 				FinishReason: finishReason,
 			},
 		},
+	}
+
+	// Ensure usage is present (estimate if missing)
+	if finalResponse.Usage == nil || (finalResponse.Usage.PromptTokens == 0 && finalResponse.Usage.CompletionTokens == 0) {
+		tokenCounter := openai.NewTokenCounter()
+		tokenCounter.AddPromptTokensFromMessages(originalMessages)
+		tokenCounter.AddCompletionTokensFromText(assistantContent.String())
+		for _, toolCall := range toolCalls {
+			tokenCounter.AddCompletionTokensFromText(toolCall.Function.Name)
+		}
+		tokenCounter.InjectUsageIfMissing(finalResponse)
+	}
+
+	// Send a final chunk with usage information through the stream
+	if finalResponse.Usage != nil {
+		usageChunk := openai.ChatCompletionResponse{
+			ID:    finalResponse.ID,
+			Model: finalResponse.Model,
+			Usage: finalResponse.Usage,
+		}
+		select {
+		case responseChan <- usageChunk:
+		case <-ctx.Done():
+		}
 	}
 
 	return finalResponse, nil

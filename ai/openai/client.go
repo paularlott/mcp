@@ -490,15 +490,13 @@ func (c *Client) nonStreamingChatCompletion(ctx context.Context, req ChatComplet
 		response.Choices = []Choice{}
 	}
 
-	// Inject estimated usage if upstream didn't provide it
-	if response.Usage == nil || (response.Usage.PromptTokens == 0 && response.Usage.CompletionTokens == 0) {
-		tc := NewTokenCounter()
-		tc.AddPromptTokensFromMessages(req.Messages)
-		if len(response.Choices) > 0 {
-			tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
-		}
-		tc.InjectUsageIfMissing(&response)
+	// Always calculate estimated usage
+	tc := NewTokenCounter()
+	tc.AddPromptTokensFromMessages(req.Messages)
+	if len(response.Choices) > 0 {
+		tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
 	}
+	tc.InjectUsageIfMissing(&response)
 
 	return &response, nil
 }
@@ -577,9 +575,8 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		return nil, fmt.Errorf("streaming failed: %w", err)
 	}
 
-	// Inject estimated usage if upstream didn't provide it
-	if finalResponse != nil && (finalResponse.Usage == nil ||
-		(finalResponse.Usage.PromptTokens == 0 && finalResponse.Usage.CompletionTokens == 0)) {
+	// Always calculate estimated usage
+	if finalResponse != nil {
 		tc := NewTokenCounter()
 		tc.AddPromptTokensFromMessages(req.Messages)
 		tc.AddCompletionTokensFromText(assistantContent.String())
@@ -591,6 +588,19 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 			}
 		}
 		tc.InjectUsageIfMissing(finalResponse)
+
+		// Send a final chunk with usage information through the stream
+		if finalResponse.Usage != nil {
+			usageChunk := ChatCompletionResponse{
+				ID:    finalResponse.ID,
+				Model: finalResponse.Model,
+				Usage: finalResponse.Usage,
+			}
+			select {
+			case responseChan <- usageChunk:
+			case <-ctx.Done():
+			}
+		}
 	}
 
 	return finalResponse, nil
