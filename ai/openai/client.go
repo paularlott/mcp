@@ -15,6 +15,13 @@ import (
 	"github.com/paularlott/mcp/pool"
 )
 
+const (
+	providerOpenAI  = "openai"
+	providerOllama  = "ollama"
+	providerZAi     = "zai"
+	providerMistral = "mistral"
+)
+
 const MAX_TOOL_CALL_ITERATIONS = 20
 
 // MCPServer interface for MCP server operations (local server)
@@ -52,6 +59,7 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 type Client struct {
 	baseURL       string
 	apiKey        string
+	provider      string        // Provider name for ai.Client interface
 	localServer   MCPServer     // Local MCP server (no namespace)
 	remoteServers []*mcp.Client // Remote MCP servers (each has their own namespace)
 	extraHeaders  http.Header   // Custom headers added to all requests
@@ -70,6 +78,7 @@ type RemoteServerConfig struct {
 type Config struct {
 	APIKey              string
 	BaseURL             string
+	Provider            string               // Provider name (openai, ollama, zai, mistral)
 	LocalServer         MCPServer            // Local MCP server (no namespace)
 	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
 	ExtraHeaders        http.Header          // Custom headers added to all requests
@@ -78,8 +87,24 @@ type Config struct {
 
 // New creates a new OpenAI client using the shared HTTP pool
 func New(config Config) (*Client, error) {
+	if config.Provider == "" {
+		config.Provider = providerOpenAI
+	}
+
+	// Set default base URL based on provider
 	if config.BaseURL == "" {
-		config.BaseURL = "https://api.openai.com/v1"
+		switch config.Provider {
+		case providerOpenAI:
+			config.BaseURL = "https://api.openai.com/v1"
+		case providerOllama:
+			config.BaseURL = "http://localhost:11434/v1"
+		case providerZAi:
+			config.BaseURL = "https://api.z.ai/api/paas/v4/"
+		case providerMistral:
+			config.BaseURL = "https://api.mistral.ai/v1"
+		default:
+			config.BaseURL = "https://api.openai.com/v1"
+		}
 	}
 
 	// Ensure BaseURL has a trailing slash for proper URL resolution
@@ -105,6 +130,7 @@ func New(config Config) (*Client, error) {
 	return &Client{
 		baseURL:       config.BaseURL,
 		apiKey:        config.APIKey,
+		provider:      config.Provider,
 		localServer:   config.LocalServer,
 		remoteServers: remoteServers,
 		extraHeaders:  config.ExtraHeaders,
@@ -166,6 +192,25 @@ func (c *Client) GetModels(ctx context.Context) (*ModelsResponse, error) {
 	}
 
 	return &response, nil
+}
+
+// Provider returns the provider name
+func (c *Client) Provider() string {
+	return c.provider
+}
+
+// SupportsCapability checks if the provider supports a capability
+func (c *Client) SupportsCapability(cap string) bool {
+	if c.provider == providerOpenAI {
+		return true // OpenAI supports everything
+	}
+	// Ollama, ZAi, Mistral support embeddings but not responses API
+	return cap != "responses"
+}
+
+// Close closes the client
+func (c *Client) Close() error {
+	return nil
 }
 
 // ChatCompletion performs a non-streaming chat completion with automatic tool processing
