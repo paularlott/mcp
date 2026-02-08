@@ -68,11 +68,6 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("unknown provider: %s", config.Provider)
 	}
 
-	// Validate APIKey for providers that require it
-	if requiresAPIKey(config.Provider) && config.APIKey == "" {
-		return fmt.Errorf("API key is required for provider: %s", config.Provider)
-	}
-
 	return nil
 }
 
