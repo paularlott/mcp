@@ -766,6 +766,7 @@ func (c *Client) setHeaders(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "mcp-openai-client/1.0.0")
 
 	// Apply extra headers (these can override defaults if needed)
