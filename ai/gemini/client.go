@@ -18,11 +18,11 @@ const (
 )
 
 type Client struct {
-	apiKey       string
-	baseURL      string
-	httpPool     pool.HTTPPool
-	provider     string
-	chatClient   *openai.Client // Use OpenAI client for chat/streaming
+	apiKey     string
+	baseURL    string
+	httpPool   pool.HTTPPool
+	provider   string
+	chatClient *openai.Client // Use OpenAI client for chat/streaming
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -86,25 +86,23 @@ func (c *Client) GetModels(ctx context.Context) (*openai.ModelsResponse, error) 
 			Name string `json:"name"`
 		} `json:"models"`
 	}
-	
+
 	var geminiResp geminiModelResponse
 	endpoint := fmt.Sprintf("models?key=%s", c.apiKey)
 	if err := c.doRequest(ctx, "GET", endpoint, nil, &geminiResp); err != nil {
 		return nil, err
 	}
-	
+
 	models := make([]openai.Model, 0, len(geminiResp.Models))
 	for _, m := range geminiResp.Models {
 		modelID := m.Name
-		if strings.HasPrefix(modelID, "models/") {
-			modelID = strings.TrimPrefix(modelID, "models/")
-		}
+		modelID = strings.TrimPrefix(modelID, "models/")
 		models = append(models, openai.Model{
 			ID:     modelID,
 			Object: "model",
 		})
 	}
-	
+
 	return &openai.ModelsResponse{
 		Object: "list",
 		Data:   models,
