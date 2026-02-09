@@ -9,11 +9,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/paularlott/mcp"
 	"github.com/paularlott/mcp/pool"
+)
+
+const (
+	providerOpenAI  = "openai"
+	providerOllama  = "ollama"
+	providerZAi     = "zai"
+	providerMistral = "mistral"
 )
 
 const MAX_TOOL_CALL_ITERATIONS = 20
@@ -51,14 +57,16 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 
 // Client represents an OpenAI API client using the shared HTTP pool
 type Client struct {
-	baseURL       string
-	apiKey        string
-	localServer   MCPServer     // Local MCP server (no namespace)
-	remoteServers []*mcp.Client // Remote MCP servers (each has their own namespace)
-	customTools   []Tool        // Custom tools (not executed by client)
-	customToolsMu sync.RWMutex
-	extraHeaders  http.Header   // Custom headers added to all requests
-	httpPool      pool.HTTPPool // Optional custom HTTP pool
+	baseURL        string
+	apiKey         string
+	provider       string        // Provider name for ai.Client interface
+	localServer    MCPServer     // Local MCP server (no namespace)
+	remoteServers  []*mcp.Client // Remote MCP servers (each has their own namespace)
+	extraHeaders   http.Header   // Custom headers added to all requests
+	httpPool       pool.HTTPPool // Optional custom HTTP pool
+	maxTokens      int           // Default max_tokens
+	temperature    float32       // Default temperature
+	requestTimeout time.Duration // Timeout for AI requests (0 = use caller's context)
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -73,16 +81,41 @@ type RemoteServerConfig struct {
 type Config struct {
 	APIKey              string
 	BaseURL             string
+	Provider            string               // Provider name (openai, ollama, zai, mistral)
 	LocalServer         MCPServer            // Local MCP server (no namespace)
 	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
 	ExtraHeaders        http.Header          // Custom headers added to all requests
 	HTTPPool            pool.HTTPPool        // Optional custom HTTP pool (nil = use default secure pool)
+	MaxTokens           int                  // Default max_tokens for requests (0 = no default)
+	Temperature         float32              // Default temperature for requests (0 = no default)
+	RequestTimeout      time.Duration        // Timeout for AI requests using a detached context (0 = use caller's context, default 10m)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
 func New(config Config) (*Client, error) {
+	if config.Provider == "" {
+		config.Provider = providerOpenAI
+	}
+
+	// Default request timeout for AI operations
+	if config.RequestTimeout == 0 {
+		config.RequestTimeout = DefaultRequestTimeout
+	}
+
+	// Set default base URL based on provider
 	if config.BaseURL == "" {
-		config.BaseURL = "https://api.openai.com/v1"
+		switch config.Provider {
+		case providerOpenAI:
+			config.BaseURL = "https://api.openai.com/v1"
+		case providerOllama:
+			config.BaseURL = "http://localhost:11434/v1"
+		case providerZAi:
+			config.BaseURL = "https://api.z.ai/api/paas/v4/"
+		case providerMistral:
+			config.BaseURL = "https://api.mistral.ai/v1"
+		default:
+			config.BaseURL = "https://api.openai.com/v1"
+		}
 	}
 
 	// Ensure BaseURL has a trailing slash for proper URL resolution
@@ -106,34 +139,23 @@ func New(config Config) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:       config.BaseURL,
-		apiKey:        config.APIKey,
-		localServer:   config.LocalServer,
-		remoteServers: remoteServers,
-		extraHeaders:  config.ExtraHeaders,
-		httpPool:      config.HTTPPool, // Store the pool (nil = use default)
+		baseURL:        config.BaseURL,
+		apiKey:         config.APIKey,
+		provider:       config.Provider,
+		localServer:    config.LocalServer,
+		remoteServers:  remoteServers,
+		extraHeaders:   config.ExtraHeaders,
+		httpPool:       config.HTTPPool, // Store the pool (nil = use default)
+		maxTokens:      config.MaxTokens,
+		temperature:    config.Temperature,
+		requestTimeout: config.RequestTimeout,
 	}, nil
 }
 
-// SetCustomTools sets custom tools that will be sent to the AI but not executed by the client.
-// These tools are returned to the caller for manual execution.
-func (c *Client) SetCustomTools(tools []Tool) {
-	c.customToolsMu.Lock()
-	defer c.customToolsMu.Unlock()
-	c.customTools = tools
-}
-
-// GetCustomTools returns the custom tools.
-func (c *Client) GetCustomTools() []Tool {
-	c.customToolsMu.RLock()
-	defer c.customToolsMu.RUnlock()
-	return c.customTools
-}
-
-// GetAllTools returns all tools from local and remote servers
+// getAllTools returns all tools from local and remote servers
 // Local server tools are returned as-is
 // Remote server tools are already namespaced by their client
-func (c *Client) GetAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
+func (c *Client) getAllTools(ctx context.Context) ([]mcp.MCPTool, error) {
 	var allTools []mcp.MCPTool
 
 	// Add local server tools (no namespace)
@@ -186,8 +208,34 @@ func (c *Client) GetModels(ctx context.Context) (*ModelsResponse, error) {
 	return &response, nil
 }
 
+// Provider returns the provider name
+func (c *Client) Provider() string {
+	return c.provider
+}
+
+// SupportsCapability checks if the provider supports a capability
+func (c *Client) SupportsCapability(cap string) bool {
+	if c.provider == providerOpenAI {
+		return true // OpenAI supports everything
+	}
+	// Ollama, ZAi, Mistral support embeddings but not responses API
+	return cap != "responses"
+}
+
+// Close closes the client
+func (c *Client) Close() error {
+	return nil
+}
+
 // ChatCompletion performs a non-streaming chat completion with automatic tool processing
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
+	// Detach from parent context so AI operations survive parent cancellation
+	if c.requestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+		defer cancel()
+	}
+
 	currentMessages := req.Messages
 
 	// Skip tool injection if request already has tools (caller is handling tools)
@@ -195,17 +243,10 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 
 	if !requestHasTools {
 		// Add tools from all servers
-		tools, err := c.GetAllTools(ctx)
+		tools, err := c.getAllTools(ctx)
 		if err == nil && len(tools) > 0 {
 			req.Tools = MCPToolsToOpenAI(tools)
 		}
-
-		// Add custom tools
-		c.customToolsMu.RLock()
-		if len(c.customTools) > 0 {
-			req.Tools = append(req.Tools, c.customTools...)
-		}
-		c.customToolsMu.RUnlock()
 	}
 
 	toolHandler := ToolHandlerFromContext(ctx)
@@ -213,6 +254,15 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	// Multi-turn tool processing loop if any servers are available
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
+	// Apply client defaults if not set in request
+	if req.MaxTokens == 0 && c.maxTokens > 0 {
+		req.MaxTokens = c.maxTokens
+	}
+	if req.Temperature == 0 && c.temperature > 0 {
+		req.Temperature = c.temperature
+	}
+
+	var cumulativeUsage Usage
 	for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
 		req.Messages = currentMessages
 		req.Stream = false
@@ -222,18 +272,18 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 			return nil, err
 		}
 
+		// Accumulate usage across tool call iterations
+		cumulativeUsage.Add(response.Usage)
+
 		// If request had tools, caller handles execution - return immediately
 		if requestHasTools {
+			response.Usage = &cumulativeUsage
 			return response, nil
 		}
 
 		// If no servers, no tool calls, or no choices, we're done
-		// Also return if we have custom tools (caller handles execution)
-		c.customToolsMu.RLock()
-		hasCustomTools := len(c.customTools) > 0
-		c.customToolsMu.RUnlock()
-
-		if !hasServers || hasCustomTools || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
+		if !hasServers || len(response.Choices) == 0 || len(response.Choices[0].Message.ToolCalls) == 0 {
+			response.Usage = &cumulativeUsage
 			return response, nil
 		}
 
@@ -295,35 +345,47 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		defer close(responseChan)
 		defer close(errorChan)
 
-		// Add timeout context for the entire operation
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancel()
+		// Detach from parent context so AI operations survive parent cancellation
+		if c.requestTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+			defer cancel()
+		}
 
 		currentMessages := req.Messages
 
 		// Skip tool injection if request already has tools (caller is handling tools)
 		requestHasTools := len(req.Tools) > 0
 		hasServers := c.localServer != nil || len(c.remoteServers) > 0
-		var hasCustomTools bool
+
+		// Apply client defaults if not set in request
+		if req.MaxTokens == 0 && c.maxTokens > 0 {
+			req.MaxTokens = c.maxTokens
+		}
+		if req.Temperature == 0 && c.temperature > 0 {
+			req.Temperature = c.temperature
+		}
 
 		if !requestHasTools {
 			// Add tools from all servers
-			tools, err := c.GetAllTools(ctx)
+			tools, err := c.getAllTools(ctx)
 
 			if err == nil && hasServers && len(tools) > 0 {
 				req.Tools = MCPToolsToOpenAI(tools)
 			}
-
-			// Add custom tools
-			c.customToolsMu.RLock()
-			if len(c.customTools) > 0 {
-				req.Tools = append(req.Tools, c.customTools...)
-			}
-			hasCustomTools = len(c.customTools) > 0
-			c.customToolsMu.RUnlock()
 		}
 
 		toolHandler := ToolHandlerFromContext(ctx)
+
+		var cumulativeUsage Usage
+		sendCumulativeUsage := func(id, model string) {
+			if cumulativeUsage.TotalTokens > 0 {
+				select {
+				case responseChan <- ChatCompletionResponse{ID: id, Model: model, Usage: &cumulativeUsage}:
+				case <-ctx.Done():
+				}
+			}
+		}
 
 		// Multi-turn tool processing loop if any servers are available
 		for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
@@ -337,14 +399,24 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 				return
 			}
 
-			// If request had tools, caller handles execution - return immediately
+			// Accumulate usage across tool call iterations
+			if finalResponse != nil {
+				cumulativeUsage.Add(finalResponse.Usage)
+			}
+
+			// If request had tools, caller handles execution - send usage and return
 			if requestHasTools {
+				if finalResponse != nil {
+					sendCumulativeUsage(finalResponse.ID, finalResponse.Model)
+				}
 				return
 			}
 
-			// If no servers, no tool calls, or no choices, we're done
-			// Also return if we have custom tools (caller handles execution)
-			if !hasServers || hasCustomTools || finalResponse == nil || len(finalResponse.Choices) == 0 || len(finalResponse.Choices[0].Message.ToolCalls) == 0 {
+			// If no servers, no tool calls, or no choices, send usage and we're done
+			if !hasServers || finalResponse == nil || len(finalResponse.Choices) == 0 || len(finalResponse.Choices[0].Message.ToolCalls) == 0 {
+				if finalResponse != nil {
+					sendCumulativeUsage(finalResponse.ID, finalResponse.Model)
+				}
 				return
 			}
 
@@ -463,15 +535,13 @@ func (c *Client) nonStreamingChatCompletion(ctx context.Context, req ChatComplet
 		response.Choices = []Choice{}
 	}
 
-	// Inject estimated usage if upstream didn't provide it
-	if response.Usage == nil || (response.Usage.PromptTokens == 0 && response.Usage.CompletionTokens == 0) {
-		tc := NewTokenCounter()
-		tc.AddPromptTokensFromMessages(req.Messages)
-		if len(response.Choices) > 0 {
-			tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
-		}
-		tc.InjectUsageIfMissing(&response)
+	// Always calculate estimated usage
+	tc := NewTokenCounter()
+	tc.AddPromptTokensFromMessages(req.Messages)
+	if len(response.Choices) > 0 {
+		tc.AddCompletionTokensFromMessage(&response.Choices[0].Message)
 	}
+	tc.InjectUsageIfMissing(&response)
 
 	return &response, nil
 }
@@ -550,17 +620,18 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		return nil, fmt.Errorf("streaming failed: %w", err)
 	}
 
-	// Inject estimated usage if upstream didn't provide it
-	if finalResponse != nil && (finalResponse.Usage == nil ||
-		(finalResponse.Usage.PromptTokens == 0 && finalResponse.Usage.CompletionTokens == 0)) {
+	// Always calculate estimated usage
+	if finalResponse != nil {
 		tc := NewTokenCounter()
 		tc.AddPromptTokensFromMessages(req.Messages)
 		tc.AddCompletionTokensFromText(assistantContent.String())
 		// Add tool call tokens if any
-		for _, toolCall := range toolAccumulator.Finalize() {
-			tc.AddCompletionTokensFromText(toolCall.Function.Name)
-			if args, err := json.Marshal(toolCall.Function.Arguments); err == nil {
-				tc.AddCompletionTokensFromText(string(args))
+		if len(finalResponse.Choices) > 0 {
+			for _, toolCall := range finalResponse.Choices[0].Message.ToolCalls {
+				tc.AddCompletionTokensFromText(toolCall.Function.Name)
+				if args, err := json.Marshal(toolCall.Function.Arguments); err == nil {
+					tc.AddCompletionTokensFromText(string(args))
+				}
 			}
 		}
 		tc.InjectUsageIfMissing(finalResponse)
@@ -695,6 +766,7 @@ func (c *Client) setHeaders(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "mcp-openai-client/1.0.0")
 
 	// Apply extra headers (these can override defaults if needed)

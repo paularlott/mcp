@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/paularlott/mcp"
-	"github.com/paularlott/mcp/openai"
+	"github.com/paularlott/mcp/ai/openai"
 )
 
 var (
