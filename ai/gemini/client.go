@@ -43,6 +43,7 @@ func New(config openai.Config) (*Client, error) {
 		RemoteServerConfigs: config.RemoteServerConfigs,
 		MaxTokens:           config.MaxTokens,
 		Temperature:         config.Temperature,
+		RequestTimeout:      config.RequestTimeout,
 	})
 	if err != nil {
 		return nil, err

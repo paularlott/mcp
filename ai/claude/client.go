@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/paularlott/mcp"
 	"github.com/paularlott/mcp/ai/openai"
@@ -21,15 +22,16 @@ const (
 )
 
 type Client struct {
-	apiKey        string
-	baseURL       string
-	extraHeaders  http.Header
-	httpPool      pool.HTTPPool
-	provider      string
-	localServer   openai.MCPServer // Local MCP server
-	remoteServers []*mcp.Client    // Remote MCP servers
-	maxTokens     int              // Default max_tokens
-	temperature   float32          // Default temperature
+	apiKey         string
+	baseURL        string
+	extraHeaders   http.Header
+	httpPool       pool.HTTPPool
+	provider       string
+	localServer    openai.MCPServer // Local MCP server
+	remoteServers  []*mcp.Client    // Remote MCP servers
+	maxTokens      int              // Default max_tokens
+	temperature    float32          // Default temperature
+	requestTimeout time.Duration    // Timeout for AI operations
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -38,6 +40,11 @@ func New(config openai.Config) (*Client, error) {
 	}
 	if !strings.HasSuffix(config.BaseURL, "/") {
 		config.BaseURL += "/"
+	}
+
+	// Default request timeout for AI operations
+	if config.RequestTimeout == 0 {
+		config.RequestTimeout = openai.DefaultRequestTimeout
 	}
 
 	// Create remote clients
@@ -51,19 +58,27 @@ func New(config openai.Config) (*Client, error) {
 	}
 
 	return &Client{
-		apiKey:        config.APIKey,
-		baseURL:       config.BaseURL,
-		extraHeaders:  config.ExtraHeaders,
-		httpPool:      config.HTTPPool,
-		provider:      providerName,
-		localServer:   config.LocalServer,
-		remoteServers: remoteServers,
-		maxTokens:     config.MaxTokens,
-		temperature:   config.Temperature,
+		apiKey:         config.APIKey,
+		baseURL:        config.BaseURL,
+		extraHeaders:   config.ExtraHeaders,
+		httpPool:       config.HTTPPool,
+		provider:       providerName,
+		localServer:    config.LocalServer,
+		remoteServers:  remoteServers,
+		maxTokens:      config.MaxTokens,
+		temperature:    config.Temperature,
+		requestTimeout: config.RequestTimeout,
 	}, nil
 }
 
 func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
+	// Detach from parent context so AI operations survive parent cancellation
+	if c.requestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = openai.NewDetachedContext(ctx, c.requestTimeout)
+		defer cancel()
+	}
+
 	currentMessages := req.Messages
 	requestHasTools := len(req.Tools) > 0
 
@@ -190,6 +205,13 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 	go func() {
 		defer close(responseChan)
 		defer close(errorChan)
+
+		// Detach from parent context so AI operations survive parent cancellation
+		if c.requestTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = openai.NewDetachedContext(ctx, c.requestTimeout)
+			defer cancel()
+		}
 
 		currentMessages := req.Messages
 		requestHasTools := len(req.Tools) > 0

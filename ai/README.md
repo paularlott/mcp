@@ -114,12 +114,29 @@ type Config struct {
     BaseURL           string               // Optional: custom endpoint
     MaxTokens         int                  // Optional: default max_tokens for all requests
     Temperature       float32              // Optional: default temperature for all requests
+    RequestTimeout    time.Duration        // Optional: timeout for AI operations (default: 10 minutes)
     ExtraHeaders      http.Header          // Optional: custom headers
     HTTPPool          pool.HTTPPool        // Optional: custom HTTP client pool
     LocalServer       MCPServer            // Optional: local MCP server
     MCPServerConfigs  []RemoteServerConfig // Optional: remote MCP servers
 }
 ```
+
+### Request Timeout & Context Handling
+
+AI completion requests use a **detached context** that preserves the parent's context values (tool providers, user info, etc.) but has an independent cancellation signal. This prevents parent context cancellation (e.g. from script timeouts or request handlers) from killing long-running AI operations.
+
+The default timeout is **10 minutes**. You can customize it:
+
+```go
+client, err := ai.NewClient(ai.Config{
+    Provider:       ai.ProviderOpenAI,
+    APIKey:         "sk-...",
+    RequestTimeout: 30 * time.Minute, // Custom timeout
+})
+```
+
+This applies consistently across all providers (OpenAI, Claude, Gemini, Ollama, ZAi, Mistral).
 
 ### Default Parameters
 

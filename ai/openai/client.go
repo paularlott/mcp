@@ -57,15 +57,16 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 
 // Client represents an OpenAI API client using the shared HTTP pool
 type Client struct {
-	baseURL       string
-	apiKey        string
-	provider      string        // Provider name for ai.Client interface
-	localServer   MCPServer     // Local MCP server (no namespace)
-	remoteServers []*mcp.Client // Remote MCP servers (each has their own namespace)
-	extraHeaders  http.Header   // Custom headers added to all requests
-	httpPool      pool.HTTPPool // Optional custom HTTP pool
-	maxTokens     int           // Default max_tokens
-	temperature   float32       // Default temperature
+	baseURL        string
+	apiKey         string
+	provider       string        // Provider name for ai.Client interface
+	localServer    MCPServer     // Local MCP server (no namespace)
+	remoteServers  []*mcp.Client // Remote MCP servers (each has their own namespace)
+	extraHeaders   http.Header   // Custom headers added to all requests
+	httpPool       pool.HTTPPool // Optional custom HTTP pool
+	maxTokens      int           // Default max_tokens
+	temperature    float32       // Default temperature
+	requestTimeout time.Duration // Timeout for AI requests (0 = use caller's context)
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -87,12 +88,18 @@ type Config struct {
 	HTTPPool            pool.HTTPPool        // Optional custom HTTP pool (nil = use default secure pool)
 	MaxTokens           int                  // Default max_tokens for requests (0 = no default)
 	Temperature         float32              // Default temperature for requests (0 = no default)
+	RequestTimeout      time.Duration        // Timeout for AI requests using a detached context (0 = use caller's context, default 10m)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
 func New(config Config) (*Client, error) {
 	if config.Provider == "" {
 		config.Provider = providerOpenAI
+	}
+
+	// Default request timeout for AI operations
+	if config.RequestTimeout == 0 {
+		config.RequestTimeout = DefaultRequestTimeout
 	}
 
 	// Set default base URL based on provider
@@ -132,15 +139,16 @@ func New(config Config) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:       config.BaseURL,
-		apiKey:        config.APIKey,
-		provider:      config.Provider,
-		localServer:   config.LocalServer,
-		remoteServers: remoteServers,
-		extraHeaders:  config.ExtraHeaders,
-		httpPool:      config.HTTPPool, // Store the pool (nil = use default)
-		maxTokens:     config.MaxTokens,
-		temperature:   config.Temperature,
+		baseURL:        config.BaseURL,
+		apiKey:         config.APIKey,
+		provider:       config.Provider,
+		localServer:    config.LocalServer,
+		remoteServers:  remoteServers,
+		extraHeaders:   config.ExtraHeaders,
+		httpPool:       config.HTTPPool, // Store the pool (nil = use default)
+		maxTokens:      config.MaxTokens,
+		temperature:    config.Temperature,
+		requestTimeout: config.RequestTimeout,
 	}, nil
 }
 
@@ -221,6 +229,13 @@ func (c *Client) Close() error {
 
 // ChatCompletion performs a non-streaming chat completion with automatic tool processing
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
+	// Detach from parent context so AI operations survive parent cancellation
+	if c.requestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+		defer cancel()
+	}
+
 	currentMessages := req.Messages
 
 	// Skip tool injection if request already has tools (caller is handling tools)
@@ -330,9 +345,12 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		defer close(responseChan)
 		defer close(errorChan)
 
-		// Add timeout context for the entire operation
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-		defer cancel()
+		// Detach from parent context so AI operations survive parent cancellation
+		if c.requestTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+			defer cancel()
+		}
 
 		currentMessages := req.Messages
 
