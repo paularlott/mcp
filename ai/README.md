@@ -184,7 +184,7 @@ response, err := client.ChatCompletion(ctx, req)
 
 ### Ollama
 
-- Default base URL: `http://localhost:11434/v1`
+- Default base URL: `https://ollama.com/v1/`
 - OpenAI-compatible API
 - No API key required
 

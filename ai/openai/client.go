@@ -108,7 +108,7 @@ func New(config Config) (*Client, error) {
 		case providerOpenAI:
 			config.BaseURL = "https://api.openai.com/v1"
 		case providerOllama:
-			config.BaseURL = "http://localhost:11434/v1"
+			config.BaseURL = "https://ollama.com/v1/"
 		case providerZAi:
 			config.BaseURL = "https://api.z.ai/api/paas/v4/"
 		case providerMistral:
