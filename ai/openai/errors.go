@@ -1,9 +1,52 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
+
+// ResponseError handles error field that can be either a string or an APIError object
+// Some APIs (like LM Studio) return errors as strings instead of objects
+type ResponseError struct {
+	APIError *APIError
+	Message  string // Fallback for string errors
+}
+
+func (re *ResponseError) UnmarshalJSON(data []byte) error {
+	// Try to unmarshal as APIError object first
+	var apiErr *APIError
+	if err := json.Unmarshal(data, &apiErr); err == nil && apiErr != nil {
+		re.APIError = apiErr
+		return nil
+	}
+
+	// Try to unmarshal as string
+	var str string
+	if err := json.Unmarshal(data, &str); err == nil {
+		re.Message = str
+		return nil
+	}
+
+	// If it's null, that's fine (no error)
+	if string(data) == "null" {
+		return nil
+	}
+
+	return fmt.Errorf("invalid error format: %s", string(data[:min(100, len(data))]))
+}
+
+func (re *ResponseError) Error() string {
+	if re.APIError != nil {
+		return re.APIError.Error()
+	}
+	return re.Message
+}
+
+// IsNil returns true if there's no error
+func (re *ResponseError) IsNil() bool {
+	return re.APIError == nil && re.Message == ""
+}
 
 // APIError represents an error returned by the OpenAI API.
 type APIError struct {

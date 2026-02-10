@@ -23,6 +23,7 @@ type Client struct {
 	httpPool   pool.HTTPPool
 	provider   string
 	chatClient *openai.Client // Use OpenAI client for chat/streaming
+	responseManager *openai.ResponseManager
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -49,12 +50,16 @@ func New(config openai.Config) (*Client, error) {
 		return nil, err
 	}
 
+	// Get the global response manager
+	responseManager := openai.GetManager()
+
 	return &Client{
-		apiKey:     config.APIKey,
-		baseURL:    config.BaseURL,
-		httpPool:   config.HTTPPool,
-		provider:   providerName,
-		chatClient: chatClient,
+		apiKey:          config.APIKey,
+		baseURL:         config.BaseURL,
+		httpPool:        config.HTTPPool,
+		provider:        providerName,
+		chatClient:      chatClient,
+		responseManager: responseManager,
 	}, nil
 }
 
@@ -221,22 +226,24 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 	return nil
 }
 
-// CreateResponse is not supported by Gemini
+// CreateResponse emulates the OpenAI Responses API using chat completions
+// Processes async in the background and returns immediately with an in_progress status
 func (c *Client) CreateResponse(ctx context.Context, req openai.CreateResponseRequest) (*openai.ResponseObject, error) {
-	return nil, fmt.Errorf("responses API not supported by Gemini")
+	return openai.CreateResponseEmulated(ctx, c, c.responseManager, req)
 }
 
-// GetResponse is not supported by Gemini
+// GetResponse retrieves a response by ID (blocking until complete or error)
 func (c *Client) GetResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return nil, fmt.Errorf("responses API not supported by Gemini")
+	return openai.GetResponseEmulated(ctx, c.responseManager, id)
 }
 
-// CancelResponse is not supported by Gemini
+// CancelResponse cancels an in-progress response
 func (c *Client) CancelResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return nil, fmt.Errorf("responses API not supported by Gemini")
+	return openai.CancelResponseEmulated(ctx, c.responseManager, id)
 }
 
 // Close closes the client
+// Note: Response managers persist for 15 minutes after last response expires
 func (c *Client) Close() error {
 	return nil
 }

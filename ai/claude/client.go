@@ -32,6 +32,7 @@ type Client struct {
 	maxTokens      int              // Default max_tokens
 	temperature    float32          // Default temperature
 	requestTimeout time.Duration    // Timeout for AI operations
+	responseManager *openai.ResponseManager
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -57,17 +58,21 @@ func New(config openai.Config) (*Client, error) {
 		}
 	}
 
+	// Get the global response manager
+	responseManager := openai.GetManager()
+
 	return &Client{
-		apiKey:         config.APIKey,
-		baseURL:        config.BaseURL,
-		extraHeaders:   config.ExtraHeaders,
-		httpPool:       config.HTTPPool,
-		provider:       providerName,
-		localServer:    config.LocalServer,
-		remoteServers:  remoteServers,
-		maxTokens:      config.MaxTokens,
-		temperature:    config.Temperature,
-		requestTimeout: config.RequestTimeout,
+		apiKey:          config.APIKey,
+		baseURL:         config.BaseURL,
+		extraHeaders:    config.ExtraHeaders,
+		httpPool:        config.HTTPPool,
+		provider:        providerName,
+		localServer:     config.LocalServer,
+		remoteServers:   remoteServers,
+		maxTokens:       config.MaxTokens,
+		temperature:     config.Temperature,
+		requestTimeout:  config.RequestTimeout,
+		responseManager: responseManager,
 	}, nil
 }
 
@@ -804,22 +809,24 @@ func (c *Client) CreateEmbedding(ctx context.Context, req openai.EmbeddingReques
 	return nil, fmt.Errorf("embeddings not supported by Claude")
 }
 
-// CreateResponse is not supported by Claude
+// CreateResponse emulates the OpenAI Responses API using chat completions
+// Processes async in the background and returns immediately with an in_progress status
 func (c *Client) CreateResponse(ctx context.Context, req openai.CreateResponseRequest) (*openai.ResponseObject, error) {
-	return nil, fmt.Errorf("responses API not supported by Claude")
+	return openai.CreateResponseEmulated(ctx, c, c.responseManager, req)
 }
 
-// GetResponse is not supported by Claude
+// GetResponse retrieves a response by ID (blocking until complete or error)
 func (c *Client) GetResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return nil, fmt.Errorf("responses API not supported by Claude")
+	return openai.GetResponseEmulated(ctx, c.responseManager, id)
 }
 
-// CancelResponse is not supported by Claude
+// CancelResponse cancels an in-progress response
 func (c *Client) CancelResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return nil, fmt.Errorf("responses API not supported by Claude")
+	return openai.CancelResponseEmulated(ctx, c.responseManager, id)
 }
 
 // Close closes the client
+// Note: Response managers persist for 15 minutes after last response expires
 func (c *Client) Close() error {
 	return nil
 }

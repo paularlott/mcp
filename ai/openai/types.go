@@ -113,13 +113,42 @@ func (d *Delta) GetReasoningContent() string {
 	return d.Reasoning
 }
 
-// Usage represents token usage
+// Usage represents token usage (Chat Completions API)
 type Usage struct {
 	PromptTokens            int                      `json:"prompt_tokens"`
 	CompletionTokens        int                      `json:"completion_tokens"`
 	TotalTokens             int                      `json:"total_tokens"`
 	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+// ResponseUsage represents token usage (Responses API)
+type ResponseUsage struct {
+	InputTokens            int                         `json:"input_tokens"`
+	OutputTokens           int                         `json:"output_tokens"`
+	TotalTokens            int                         `json:"total_tokens"`
+	InputTokensDetails     *ResponseInputTokensDetails `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails    *ResponseOutputTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+// Add accumulates the token counts from another ResponseUsage into this one.
+func (u *ResponseUsage) Add(other *ResponseUsage) {
+	if other == nil {
+		return
+	}
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.TotalTokens = u.InputTokens + u.OutputTokens
+}
+
+// ResponseInputTokensDetails represents input token details for Responses API
+type ResponseInputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// ResponseOutputTokensDetails represents output token details for Responses API
+type ResponseOutputTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // Add accumulates the token counts from another Usage into this one.

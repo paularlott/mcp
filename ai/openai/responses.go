@@ -7,7 +7,7 @@ type ResponseObject struct {
 	Object             string                 `json:"object"` // "response"
 	CreatedAt          int64                  `json:"created_at"`
 	Status             string                 `json:"status"` // "completed", "in_progress", "failed", "cancelled", "queued", "incomplete"
-	Error              *APIError              `json:"error,omitempty"`
+	Error              *ResponseError         `json:"error,omitempty"`
 	IncompleteDetails  map[string]interface{} `json:"incomplete_details,omitempty"`
 	Instructions       string                 `json:"instructions,omitempty"`
 	MaxOutputTokens    *int                   `json:"max_output_tokens,omitempty"`
@@ -23,7 +23,7 @@ type ResponseObject struct {
 	Tools              []Tool                 `json:"tools,omitempty"`
 	TopP               *float64               `json:"top_p,omitempty"`
 	Truncation         string                 `json:"truncation,omitempty"`
-	Usage              *Usage                 `json:"usage,omitempty"`
+	Usage              *ResponseUsage          `json:"usage,omitempty"`
 	Metadata           map[string]interface{} `json:"metadata,omitempty"`
 }
 

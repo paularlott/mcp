@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -57,16 +58,17 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 
 // Client represents an OpenAI API client using the shared HTTP pool
 type Client struct {
-	baseURL        string
-	apiKey         string
-	provider       string        // Provider name for ai.Client interface
-	localServer    MCPServer     // Local MCP server (no namespace)
-	remoteServers  []*mcp.Client // Remote MCP servers (each has their own namespace)
-	extraHeaders   http.Header   // Custom headers added to all requests
-	httpPool       pool.HTTPPool // Optional custom HTTP pool
-	maxTokens      int           // Default max_tokens
-	temperature    float32       // Default temperature
-	requestTimeout time.Duration // Timeout for AI requests (0 = use caller's context)
+	baseURL            string
+	apiKey             string
+	provider           string        // Provider name for ai.Client interface
+	localServer        MCPServer     // Local MCP server (no namespace)
+	remoteServers      []*mcp.Client // Remote MCP servers (each has their own namespace)
+	extraHeaders       http.Header   // Custom headers added to all requests
+	httpPool           pool.HTTPPool // Optional custom HTTP pool
+	maxTokens          int           // Default max_tokens
+	temperature        float32       // Default temperature
+	requestTimeout     time.Duration // Timeout for AI requests (0 = use caller's context)
+	useNativeResponses bool          // Use native Responses API endpoint
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -89,6 +91,7 @@ type Config struct {
 	MaxTokens           int                  // Default max_tokens for requests (0 = no default)
 	Temperature         float32              // Default temperature for requests (0 = no default)
 	RequestTimeout      time.Duration        // Timeout for AI requests using a detached context (0 = use caller's context, default 10m)
+	UseNativeResponses  *bool                // Use native Responses API endpoint (nil = auto-detect: true for OpenAI api.openai.com, false otherwise)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -118,6 +121,18 @@ func New(config Config) (*Client, error) {
 		}
 	}
 
+	// Auto-detect native responses support if not explicitly set
+	// Only OpenAI's official API supports native /responses endpoint
+	useNativeResponses := false
+	if config.UseNativeResponses != nil {
+		useNativeResponses = *config.UseNativeResponses
+	} else if config.Provider == providerOpenAI {
+		// Parse URL and check exact domain match to prevent subdomain attacks
+		if u, err := url.Parse(config.BaseURL); err == nil && u.Hostname() == "api.openai.com" {
+			useNativeResponses = true
+		}
+	}
+
 	// Ensure BaseURL has a trailing slash for proper URL resolution
 	if !strings.HasSuffix(config.BaseURL, "/") {
 		config.BaseURL = config.BaseURL + "/"
@@ -139,16 +154,17 @@ func New(config Config) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:        config.BaseURL,
-		apiKey:         config.APIKey,
-		provider:       config.Provider,
-		localServer:    config.LocalServer,
-		remoteServers:  remoteServers,
-		extraHeaders:   config.ExtraHeaders,
-		httpPool:       config.HTTPPool, // Store the pool (nil = use default)
-		maxTokens:      config.MaxTokens,
-		temperature:    config.Temperature,
-		requestTimeout: config.RequestTimeout,
+		baseURL:            config.BaseURL,
+		apiKey:             config.APIKey,
+		provider:           config.Provider,
+		localServer:        config.LocalServer,
+		remoteServers:      remoteServers,
+		extraHeaders:       config.ExtraHeaders,
+		httpPool:           config.HTTPPool, // Store the pool (nil = use default)
+		maxTokens:          config.MaxTokens,
+		temperature:        config.Temperature,
+		requestTimeout:     config.RequestTimeout,
+		useNativeResponses: useNativeResponses,
 	}, nil
 }
 
@@ -241,6 +257,14 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	// Skip tool injection if request already has tools (caller is handling tools)
 	requestHasTools := len(req.Tools) > 0
 
+	// Apply client defaults if not set in request
+	if req.MaxTokens == 0 && c.maxTokens > 0 {
+		req.MaxTokens = c.maxTokens
+	}
+	if req.Temperature == 0 && c.temperature > 0 {
+		req.Temperature = c.temperature
+	}
+
 	if !requestHasTools {
 		// Add tools from all servers
 		tools, err := c.getAllTools(ctx)
@@ -253,14 +277,6 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 
 	// Multi-turn tool processing loop if any servers are available
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
-
-	// Apply client defaults if not set in request
-	if req.MaxTokens == 0 && c.maxTokens > 0 {
-		req.MaxTokens = c.maxTokens
-	}
-	if req.Temperature == 0 && c.temperature > 0 {
-		req.Temperature = c.temperature
-	}
 
 	var cumulativeUsage Usage
 	for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
@@ -476,7 +492,172 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 
 // CreateResponse creates a new response using the OpenAI Responses API
 // https://platform.openai.com/docs/api-reference/responses/create
+// Handles tool injection and multi-turn tool processing similar to ChatCompletion.
+// If tools are provided in the request, tool processing is skipped and returned to caller.
+// Uses emulated responses by default unless UseNativeResponses is explicitly set to true.
 func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
+	// Use emulation unless native responses are explicitly enabled
+	// Only OpenAI's official API supports the native /responses endpoint
+	if !c.useNativeResponses {
+		return CreateResponseEmulated(ctx, c, GetManager(), req)
+	}
+
+	// Handle background processing - if true, run in goroutine and return immediately
+	if req.Background {
+		return c.createResponseBackground(ctx, req)
+	}
+
+	// Synchronous processing - but use goroutines for internal tool processing
+	return c.createResponseSync(ctx, req)
+}
+
+// createResponseBackground creates an async response that processes in background
+func (c *Client) createResponseBackground(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
+	// Detach from parent context so AI operations survive parent cancellation
+	asyncCtx, cancel := NewDetachedContext(ctx, c.requestTimeout)
+
+	// Create response state immediately with in_progress status
+	state := GetManager().Create(cancel)
+
+	// Start async processing
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				state.SetError(fmt.Errorf("panic during response processing: %v", r))
+			}
+		}()
+
+		// Process synchronously in background
+		resp, err := c.createResponseSync(asyncCtx, req)
+		if err != nil {
+			state.SetError(err)
+			return
+		}
+
+		state.SetResult(resp)
+	}()
+
+	// Return immediately with in_progress status
+	return &ResponseObject{
+		ID:        state.ID,
+		Object:    "response",
+		Status:    "in_progress",
+		CreatedAt: time.Now().Unix(),
+		Model:     req.Model,
+	}, nil
+}
+
+// createResponseSync processes the response synchronously with tool handling
+func (c *Client) createResponseSync(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
+	// Detach from parent context so AI operations survive parent cancellation
+	if c.requestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+		defer cancel()
+	}
+
+	// Skip tool injection if request already has tools (caller is handling tools)
+	requestHasTools := len(req.Tools) > 0
+
+	// Apply client defaults if not set in request
+	if req.MaxOutputTokens == nil && c.maxTokens > 0 {
+		req.MaxOutputTokens = &c.maxTokens
+	}
+	if req.Temperature == nil && c.temperature > 0 {
+		temp := float64(c.temperature)
+		req.Temperature = &temp
+	}
+
+	if !requestHasTools {
+		// Add tools from all servers
+		tools, err := c.getAllTools(ctx)
+		if err == nil && len(tools) > 0 {
+			req.Tools = MCPToolsToOpenAI(tools)
+		}
+	}
+
+	// Set background=false for synchronous processing (tool calls happen synchronously)
+	req.Background = false
+
+	toolHandler := ToolHandlerFromContext(ctx)
+
+	// Multi-turn tool processing loop if any servers are available
+	hasServers := c.localServer != nil || len(c.remoteServers) > 0
+
+	var cumulativeUsage ResponseUsage
+	for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
+		response, err := c.createSingleResponse(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		// Accumulate usage across tool call iterations
+		if response.Usage != nil {
+			cumulativeUsage.Add(response.Usage)
+		}
+
+		// If request had tools, caller handles execution - return immediately
+		if requestHasTools {
+			response.Usage = &cumulativeUsage
+			return response, nil
+		}
+
+		// If no servers or no tool calls, we're done
+		if !hasServers || !hasResponseToolCalls(response) {
+			response.Usage = &cumulativeUsage
+			return response, nil
+		}
+
+		// Extract tool calls from response output
+		toolCalls := extractToolCallsFromResponse(response)
+
+		// Notify handler of tool calls
+		if toolHandler != nil {
+			for _, toolCall := range toolCalls {
+				if err := toolHandler.OnToolCall(toolCall); err != nil {
+					return nil, fmt.Errorf("tool handler error: %w", err)
+				}
+			}
+		}
+
+		// Execute tools using our routing callTool
+		toolResults, err := ExecuteToolCalls(toolCalls, func(name string, args map[string]any) (string, error) {
+			response, err := c.callTool(ctx, name, args)
+			if err != nil {
+				return "", err
+			}
+			result, _ := ExtractToolResult(response)
+			return result, nil
+		}, false)
+		if err != nil {
+			return nil, err
+		}
+
+		// Notify handler of tool results
+		if toolHandler != nil {
+			for i, toolCall := range toolCalls {
+				if err := toolHandler.OnToolResult(toolCall.ID, toolCall.Function.Name, toolResults[i].Content.(string)); err != nil {
+					return nil, fmt.Errorf("tool handler error: %w", err)
+				}
+			}
+		}
+
+		// Append tool results to input for next iteration
+		// Convert Messages to Response API input format
+		for _, result := range toolResults {
+			req.Input = append(req.Input, map[string]interface{}{
+				"type":         "tool_call_result",
+				"tool_call_id": result.ToolCallID,
+				"content":      result.Content,
+			})
+		}
+	}
+
+	return nil, NewMaxToolIterationsError(MAX_TOOL_CALL_ITERATIONS)
+}
+
+// createSingleResponse makes a single API call to the /responses endpoint
+func (c *Client) createSingleResponse(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
 	var response ResponseObject
 
 	if err := c.doRequest(ctx, "POST", "responses", req, &response); err != nil {
@@ -486,11 +667,88 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 	return &response, nil
 }
 
+// hasResponseToolCalls checks if a ResponseObject contains any tool calls in its output
+func hasResponseToolCalls(response *ResponseObject) bool {
+	if response == nil || response.Output == nil {
+		return false
+	}
+
+	for _, item := range response.Output {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			if itemType, ok := itemMap["type"].(string); ok {
+				if itemType == "function_call" || itemType == "tool_call" {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// extractToolCallsFromResponse extracts tool calls from a ResponseObject's output
+func extractToolCallsFromResponse(response *ResponseObject) []ToolCall {
+	var toolCalls []ToolCall
+
+	if response == nil || response.Output == nil {
+		return toolCalls
+	}
+
+	for _, item := range response.Output {
+		if itemMap, ok := item.(map[string]interface{}); ok {
+			itemType, _ := itemMap["type"].(string)
+
+			if itemType == "function_call" || itemType == "tool_call" {
+				// Extract tool call information
+				toolCall := ToolCall{
+					Type: "function",
+				}
+
+				// Prefer "id" field, fallback to "call_id" if not present
+				if id, ok := itemMap["id"].(string); ok {
+					toolCall.ID = id
+				} else if callID, ok := itemMap["call_id"].(string); ok {
+					toolCall.ID = callID
+				}
+
+				// Extract function name and arguments
+				if name, ok := itemMap["name"].(string); ok {
+					toolCall.Function.Name = name
+				}
+
+				if args, ok := itemMap["arguments"].(map[string]interface{}); ok {
+					toolCall.Function.Arguments = args
+				} else if argsRaw, ok := itemMap["arguments"].(string); ok && argsRaw != "" {
+					// Arguments might be a JSON string
+					var argsMap map[string]interface{}
+					if err := json.Unmarshal([]byte(argsRaw), &argsMap); err == nil {
+						toolCall.Function.Arguments = argsMap
+					}
+				}
+
+				toolCalls = append(toolCalls, toolCall)
+			}
+		}
+	}
+
+	return toolCalls
+}
+
 // GetResponse retrieves a response by ID using the OpenAI Responses API
 // https://platform.openai.com/docs/api-reference/responses/get
+// Uses emulated responses by default unless UseNativeResponses is explicitly set to true.
 func (c *Client) GetResponse(ctx context.Context, id string) (*ResponseObject, error) {
-	var response ResponseObject
+	// Use emulation unless native responses are explicitly enabled
+	if !c.useNativeResponses {
+		return GetResponseEmulated(ctx, GetManager(), id)
+	}
 
+	// Validate ID to prevent path traversal
+	if strings.Contains(id, "/") || strings.Contains(id, "..") {
+		return nil, fmt.Errorf("invalid response ID: %s", id)
+	}
+
+	var response ResponseObject
 	if err := c.doRequest(ctx, "GET", "responses/"+id, nil, &response); err != nil {
 		return nil, fmt.Errorf("failed to get response: %w", err)
 	}
@@ -500,9 +758,19 @@ func (c *Client) GetResponse(ctx context.Context, id string) (*ResponseObject, e
 
 // CancelResponse cancels a response by ID using the OpenAI Responses API
 // https://platform.openai.com/docs/api-reference/responses/cancel
+// Uses emulated responses by default unless UseNativeResponses is explicitly set to true.
 func (c *Client) CancelResponse(ctx context.Context, id string) (*ResponseObject, error) {
-	var response ResponseObject
+	// Use emulation unless native responses are explicitly enabled
+	if !c.useNativeResponses {
+		return CancelResponseEmulated(ctx, GetManager(), id)
+	}
 
+	// Validate ID to prevent path traversal
+	if strings.Contains(id, "/") || strings.Contains(id, "..") {
+		return nil, fmt.Errorf("invalid response ID: %s", id)
+	}
+
+	var response ResponseObject
 	if err := c.doRequest(ctx, "POST", "responses/"+id+"/cancel", nil, &response); err != nil {
 		return nil, fmt.Errorf("failed to cancel response: %w", err)
 	}
