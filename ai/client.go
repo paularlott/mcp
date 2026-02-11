@@ -26,6 +26,8 @@ type Client interface {
 	CreateResponse(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error)
 	GetResponse(ctx context.Context, id string) (*ResponseObject, error)
 	CancelResponse(ctx context.Context, id string) (*ResponseObject, error)
+	DeleteResponse(ctx context.Context, id string) error
+	CompactResponse(ctx context.Context, id string) (*ResponseObject, error)
 
 	// Close/cleanup
 	Close() error

@@ -121,6 +121,50 @@ func CancelResponseEmulated(ctx context.Context, manager *ResponseManager, id st
 	return GetResponseEmulated(ctx, manager, id)
 }
 
+// DeleteResponseEmulated deletes an in-progress or completed response
+func DeleteResponseEmulated(ctx context.Context, manager *ResponseManager, id string) error {
+	state, ok := manager.Get(id)
+	if !ok {
+		return fmt.Errorf("response not found: %s", id)
+	}
+
+	// Cancel if still in progress
+	if state.GetStatus() == StatusInProgress || state.GetStatus() == StatusQueued {
+		state.Cancel()
+	}
+
+	// Delete from manager
+	manager.Delete(id)
+	return nil
+}
+
+// CompactResponseEmulated compacts a response by removing intermediate reasoning steps
+// For emulated responses, this returns the response with reasoning content removed
+func CompactResponseEmulated(ctx context.Context, manager *ResponseManager, id string) (*ResponseObject, error) {
+	// Get the response first
+	response, err := GetResponseEmulated(ctx, manager, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Remove reasoning items from output
+	if response.Output != nil {
+		compactedOutput := make([]interface{}, 0)
+		for _, item := range response.Output {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				itemType, _ := itemMap["type"].(string)
+				// Keep everything except reasoning type
+				if itemType != "reasoning" {
+					compactedOutput = append(compactedOutput, item)
+				}
+			}
+		}
+		response.Output = compactedOutput
+	}
+
+	return response, nil
+}
+
 // processResponseAsync processes the response request asynchronously
 func processResponseAsync(ctx context.Context, state *ResponseState, req CreateResponseRequest, completer ChatCompleter) {
 	defer func() {

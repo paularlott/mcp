@@ -502,9 +502,27 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 		return CreateResponseEmulated(ctx, c, GetManager(), req)
 	}
 
-	// Handle background processing - if true, run in goroutine and return immediately
+	// Handle background processing
 	if req.Background {
-		return c.createResponseBackground(ctx, req)
+		// Check if we need tool processing
+		hasTools := len(req.Tools) > 0
+		needsToolProcessing := !hasTools && (c.localServer != nil || len(c.remoteServers) > 0)
+
+		if needsToolProcessing {
+			// Use hybrid: local state + goroutine for tool processing
+			return c.createResponseBackground(ctx, req)
+		}
+
+		// Pure native: let API handle background with its own IDs
+		// Apply client defaults before sending to API
+		if req.MaxOutputTokens == nil && c.maxTokens > 0 {
+			req.MaxOutputTokens = &c.maxTokens
+		}
+		if req.Temperature == nil && c.temperature > 0 {
+			temp := float64(c.temperature)
+			req.Temperature = &temp
+		}
+		return c.createSingleResponse(ctx, req)
 	}
 
 	// Synchronous processing - but use goroutines for internal tool processing
@@ -743,6 +761,22 @@ func (c *Client) GetResponse(ctx context.Context, id string) (*ResponseObject, e
 		return GetResponseEmulated(ctx, GetManager(), id)
 	}
 
+	// Check local state manager first (for background responses)
+	if state, ok := GetManager().Get(id); ok {
+		// If still in progress, wait for it
+		if state.GetStatus() == StatusInProgress {
+			return GetResponseEmulated(ctx, GetManager(), id)
+		}
+		// If completed, return the result (which has the native API's ID)
+		if result := state.GetResult(); result != nil {
+			return result, nil
+		}
+		// If failed, return the error
+		if err := state.GetError(); err != nil {
+			return nil, err
+		}
+	}
+
 	// Validate ID to prevent path traversal
 	if strings.Contains(id, "/") || strings.Contains(id, "..") {
 		return nil, fmt.Errorf("invalid response ID: %s", id)
@@ -765,6 +799,11 @@ func (c *Client) CancelResponse(ctx context.Context, id string) (*ResponseObject
 		return CancelResponseEmulated(ctx, GetManager(), id)
 	}
 
+	// Check local state manager first (for background responses)
+	if _, ok := GetManager().Get(id); ok {
+		return CancelResponseEmulated(ctx, GetManager(), id)
+	}
+
 	// Validate ID to prevent path traversal
 	if strings.Contains(id, "/") || strings.Contains(id, "..") {
 		return nil, fmt.Errorf("invalid response ID: %s", id)
@@ -773,6 +812,70 @@ func (c *Client) CancelResponse(ctx context.Context, id string) (*ResponseObject
 	var response ResponseObject
 	if err := c.doRequest(ctx, "POST", "responses/"+id+"/cancel", nil, &response); err != nil {
 		return nil, fmt.Errorf("failed to cancel response: %w", err)
+	}
+
+	return &response, nil
+}
+
+// DeleteResponse deletes a response by ID using the OpenAI Responses API
+// https://platform.openai.com/docs/api-reference/responses/delete
+// Uses emulated responses by default unless UseNativeResponses is explicitly set to true.
+func (c *Client) DeleteResponse(ctx context.Context, id string) error {
+	// Use emulation unless native responses are explicitly enabled
+	if !c.useNativeResponses {
+		return DeleteResponseEmulated(ctx, GetManager(), id)
+	}
+
+	// Check local state manager first (for background responses)
+	if _, ok := GetManager().Get(id); ok {
+		return DeleteResponseEmulated(ctx, GetManager(), id)
+	}
+
+	// Validate ID to prevent path traversal
+	if strings.Contains(id, "/") || strings.Contains(id, "..") {
+		return fmt.Errorf("invalid response ID: %s", id)
+	}
+
+	type DeleteResponse struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Deleted bool   `json:"deleted"`
+	}
+
+	var response DeleteResponse
+	if err := c.doRequest(ctx, "DELETE", "responses/"+id, nil, &response); err != nil {
+		return fmt.Errorf("failed to delete response: %w", err)
+	}
+
+	if !response.Deleted {
+		return fmt.Errorf("failed to delete response: API returned deleted=false")
+	}
+
+	return nil
+}
+
+// CompactResponse compacts a response by ID using the OpenAI Responses API
+// https://platform.openai.com/docs/api-reference/responses/compact
+// Uses emulated responses by default unless UseNativeResponses is explicitly set to true.
+func (c *Client) CompactResponse(ctx context.Context, id string) (*ResponseObject, error) {
+	// Use emulation unless native responses are explicitly enabled
+	if !c.useNativeResponses {
+		return CompactResponseEmulated(ctx, GetManager(), id)
+	}
+
+	// Check local state manager first (for background responses)
+	if _, ok := GetManager().Get(id); ok {
+		return CompactResponseEmulated(ctx, GetManager(), id)
+	}
+
+	// Validate ID to prevent path traversal
+	if strings.Contains(id, "/") || strings.Contains(id, "..") {
+		return nil, fmt.Errorf("invalid response ID: %s", id)
+	}
+
+	var response ResponseObject
+	if err := c.doRequest(ctx, "POST", "responses/"+id+"/compact", nil, &response); err != nil {
+		return nil, fmt.Errorf("failed to compact response: %w", err)
 	}
 
 	return &response, nil

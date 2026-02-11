@@ -242,6 +242,16 @@ func (c *Client) CancelResponse(ctx context.Context, id string) (*openai.Respons
 	return openai.CancelResponseEmulated(ctx, c.responseManager, id)
 }
 
+// DeleteResponse deletes a response by ID
+func (c *Client) DeleteResponse(ctx context.Context, id string) error {
+	return openai.DeleteResponseEmulated(ctx, c.responseManager, id)
+}
+
+// CompactResponse compacts a response by removing intermediate reasoning steps
+func (c *Client) CompactResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
+	return openai.CompactResponseEmulated(ctx, c.responseManager, id)
+}
+
 // Close closes the client
 // Note: Response managers persist for 15 minutes after last response expires
 func (c *Client) Close() error {
