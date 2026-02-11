@@ -44,10 +44,10 @@ func (r *internalRegistry) RegisterTool(tool *ToolBuilder, handler ToolHandler, 
 	outputSchema := tool.BuildOutputSchema()
 
 	mcpTool := &MCPTool{
-		Name:          tool.Name(),
-		Description:   tool.Description(),
-		InputSchema:   schema,
-		Keywords:      keywords,
+		Name:        tool.Name(),
+		Description: tool.Description(),
+		InputSchema: schema,
+		Keywords:    keywords,
 	}
 	if outputSchema != nil {
 		mcpTool.OutputSchema = outputSchema
@@ -195,7 +195,14 @@ func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[s
 	r.mu.RLock()
 	if dt, exists := r.tools[name]; exists {
 		handler := dt.handler
+		tool := dt.tool
 		r.mu.RUnlock()
+
+		// Validate required parameters
+		if err := validateRequiredParameters(tool.InputSchema, args); err != nil {
+			return nil, err
+		}
+
 		return handler(ctx, NewToolRequest(args))
 	}
 	r.mu.RUnlock()
@@ -355,4 +362,41 @@ func levenshteinDistance(s1, s2 string) int {
 	}
 
 	return prev[n]
+}
+
+// validateRequiredParameters checks if all required parameters are present and non-empty
+func validateRequiredParameters(inputSchema interface{}, args map[string]interface{}) error {
+	schema, ok := inputSchema.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	required, ok := schema["required"].([]interface{})
+	if !ok {
+		return nil
+	}
+
+	for _, req := range required {
+		paramName, ok := req.(string)
+		if !ok {
+			continue
+		}
+
+		val, exists := args[paramName]
+		if !exists {
+			return NewToolError(ErrorCodeInvalidParams, "missing required parameter: "+paramName, nil)
+		}
+
+		// Check for empty string
+		if strVal, ok := val.(string); ok && strVal == "" {
+			return NewToolError(ErrorCodeInvalidParams, "required parameter cannot be empty: "+paramName, nil)
+		}
+
+		// Check for nil
+		if val == nil {
+			return NewToolError(ErrorCodeInvalidParams, "required parameter cannot be null: "+paramName, nil)
+		}
+	}
+
+	return nil
 }
