@@ -195,14 +195,7 @@ func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[s
 	r.mu.RLock()
 	if dt, exists := r.tools[name]; exists {
 		handler := dt.handler
-		tool := dt.tool
 		r.mu.RUnlock()
-
-		// Validate required parameters
-		if err := validateRequiredParameters(tool.InputSchema, args); err != nil {
-			return nil, err
-		}
-
 		return handler(ctx, NewToolRequest(args))
 	}
 	r.mu.RUnlock()
@@ -371,17 +364,27 @@ func validateRequiredParameters(inputSchema interface{}, args map[string]interfa
 		return nil
 	}
 
-	required, ok := schema["required"].([]interface{})
+	requiredRaw, ok := schema["required"]
 	if !ok {
 		return nil
 	}
 
-	for _, req := range required {
-		paramName, ok := req.(string)
-		if !ok {
-			continue
+	// Handle both []interface{} and []string
+	var required []string
+	switch v := requiredRaw.(type) {
+	case []interface{}:
+		for _, req := range v {
+			if paramName, ok := req.(string); ok {
+				required = append(required, paramName)
+			}
 		}
+	case []string:
+		required = v
+	default:
+		return nil
+	}
 
+	for _, paramName := range required {
 		val, exists := args[paramName]
 		if !exists {
 			return NewToolError(ErrorCodeInvalidParams, "missing required parameter: "+paramName, nil)

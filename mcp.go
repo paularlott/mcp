@@ -937,7 +937,14 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 	// Try local tools first
 	if tool, exists := s.tools[name]; exists {
 		handler := tool.Handler
+		schema := tool.Schema
 		s.mu.RUnlock()
+		
+		// Validate required parameters
+		if err := validateRequiredParameters(schema, args); err != nil {
+			return nil, err
+		}
+		
 		toolReq := &ToolRequest{args: args}
 		return handler(ctx, toolReq)
 	}
