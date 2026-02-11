@@ -164,10 +164,16 @@ func (acc *StreamingToolCallAccumulator) Finalize() []ToolCall {
 			id = fmt.Sprintf("call_%d", i)
 		}
 
+		// Ensure Type is set - "function" is the only valid value
+		tcType := tc.Type
+		if tcType == "" {
+			tcType = "function"
+		}
+
 		toolCalls = append(toolCalls, ToolCall{
 			Index: i,
 			ID:    id,
-			Type:  tc.Type,
+			Type:  tcType,
 			Function: ToolCallFunction{
 				Name:      tc.Name,
 				Arguments: args,
@@ -195,10 +201,16 @@ func (acc *StreamingToolCallAccumulator) GetToolCall(index int) *ToolCall {
 		args = make(map[string]any)
 	}
 
+	// Ensure Type is set - "function" is the only valid value
+	tcType := tc.Type
+	if tcType == "" {
+		tcType = "function"
+	}
+
 	return &ToolCall{
 		Index: index,
 		ID:    tc.ID,
-		Type:  tc.Type,
+		Type:  tcType,
 		Function: ToolCallFunction{
 			Name:      tc.Name,
 			Arguments: args,

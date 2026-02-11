@@ -185,9 +185,15 @@ func (acc *CompletionAccumulator) buildToolCall(tc *accumulatorToolCall) *ToolCa
 		args = make(map[string]any)
 	}
 
+	// Ensure Type is set - "function" is the only valid value
+	tcType := tc.Type
+	if tcType == "" {
+		tcType = "function"
+	}
+
 	return &ToolCall{
 		ID:   tc.ID,
-		Type: tc.Type,
+		Type: tcType,
 		Function: ToolCallFunction{
 			Name:      tc.Name,
 			Arguments: args,

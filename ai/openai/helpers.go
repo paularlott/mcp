@@ -60,6 +60,13 @@ func BuildToolResultMessage(toolCallID string, result string) Message {
 // BuildAssistantToolCallMessage creates an assistant message with tool calls.
 // This is useful when reconstructing a conversation that included tool calls.
 func BuildAssistantToolCallMessage(content string, toolCalls []ToolCall) Message {
+	// Ensure all tool calls have Type set - "function" is the only valid value
+	for i := range toolCalls {
+		if toolCalls[i].Type == "" {
+			toolCalls[i].Type = "function"
+		}
+	}
+
 	return Message{
 		Role:      "assistant",
 		Content:   content,
