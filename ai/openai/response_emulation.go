@@ -196,14 +196,12 @@ func processResponseAsync(ctx context.Context, state *ResponseState, req CreateR
 // ConvertResponseToChatRequest converts a CreateResponseRequest to a ChatCompletionRequest
 func ConvertResponseToChatRequest(req CreateResponseRequest) (ChatCompletionRequest, error) {
 	chatReq := ChatCompletionRequest{
-		Model:       req.Model,
-		MaxTokens:   4096, // Default
-		Temperature: 0.7,  // Default
+		Model: req.Model,
 	}
 
 	// Apply max output tokens if specified
 	if req.MaxOutputTokens != nil {
-		chatReq.MaxTokens = *req.MaxOutputTokens
+		chatReq.MaxCompletionTokens = *req.MaxOutputTokens
 	}
 
 	// Apply temperature if specified

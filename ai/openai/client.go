@@ -258,8 +258,8 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	requestHasTools := len(req.Tools) > 0
 
 	// Apply client defaults if not set in request
-	if req.MaxTokens == 0 && c.maxTokens > 0 {
-		req.MaxTokens = c.maxTokens
+	if req.MaxCompletionTokens == 0 && c.maxTokens > 0 {
+		req.MaxCompletionTokens = c.maxTokens
 	}
 	if req.Temperature == 0 && c.temperature > 0 {
 		req.Temperature = c.temperature
@@ -375,8 +375,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
 		// Apply client defaults if not set in request
-		if req.MaxTokens == 0 && c.maxTokens > 0 {
-			req.MaxTokens = c.maxTokens
+		if req.MaxCompletionTokens == 0 && c.maxTokens > 0 {
+			req.MaxCompletionTokens = c.maxTokens
 		}
 		if req.Temperature == 0 && c.temperature > 0 {
 			req.Temperature = c.temperature
