@@ -47,6 +47,12 @@ func convertParameter(param ToolParameter) mcp.Parameter {
 			return mcp.Number(param.Name, param.Description, mcp.Required())
 		case "bool", "boolean":
 			return mcp.Boolean(param.Name, param.Description, mcp.Required())
+		case "array:string":
+			return mcp.StringArray(param.Name, param.Description, mcp.Required())
+		case "array:number", "array:int", "array:integer", "array:float":
+			return mcp.NumberArray(param.Name, param.Description, mcp.Required())
+		case "array:bool", "array:boolean":
+			return mcp.BooleanArray(param.Name, param.Description, mcp.Required())
 		default:
 			return mcp.String(param.Name, param.Description, mcp.Required())
 		}
@@ -61,6 +67,12 @@ func convertParameter(param ToolParameter) mcp.Parameter {
 		return mcp.Number(param.Name, param.Description)
 	case "bool", "boolean":
 		return mcp.Boolean(param.Name, param.Description)
+	case "array:string":
+		return mcp.StringArray(param.Name, param.Description)
+	case "array:number", "array:int", "array:integer", "array:float":
+		return mcp.NumberArray(param.Name, param.Description)
+	case "array:bool", "array:boolean":
+		return mcp.BooleanArray(param.Name, param.Description)
 	default:
 		return mcp.String(param.Name, param.Description)
 	}

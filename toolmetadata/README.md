@@ -42,6 +42,12 @@ description = "The shell command to execute"
 required = true
 
 [[parameters]]
+name = "args"
+type = "array:string"
+description = "Command arguments"
+required = false
+
+[[parameters]]
 name = "timeout"
 type = "int"
 description = "Timeout in seconds (default: 30)"
@@ -108,5 +114,8 @@ func main() {
 - `int`, `integer` - Integer/number parameter
 - `float`, `number` - Float/number parameter
 - `bool`, `boolean` - Boolean parameter
+- `array:string` - Array of strings
+- `array:int`, `array:integer`, `array:number`, `array:float` - Array of numbers
+- `array:bool`, `array:boolean` - Array of booleans
 
 Unknown types default to string parameters.
