@@ -870,7 +870,7 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 		seen[tool.Name] = true
 	}
 
-	var allTools []MCPTool
+	allTools := make([]MCPTool, 0)
 
 	// In show-all mode, include discoverable tools from static registration too
 	if showAll {
