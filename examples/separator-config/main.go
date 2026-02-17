@@ -15,8 +15,8 @@ func main() {
 	client1 := mcp.NewClient("https://api1.example.com/mcp", nil, "service1")
 	client2 := mcp.NewClient("https://api2.example.com/mcp", nil, "service2")
 
-	fmt.Printf("Client 1 namespace: %s\n", client1.Namespace()) // service1|
-	fmt.Printf("Client 2 namespace: %s\n", client2.Namespace()) // service2|
+	fmt.Printf("Client 1 namespace: %s\n", client1.Namespace()) // Output: service1|
+	fmt.Printf("Client 2 namespace: %s\n", client2.Namespace()) // Output: service2|
 
 	// You can also change it at runtime for new clients
 	mcp.DefaultNamespaceSeparator = "::"

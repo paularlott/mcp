@@ -28,7 +28,7 @@ func TestRegisterRemoteServerAndCall(t *testing.T) {
 	tools := host.ListTools()
 	found := false
 	for _, tl := range tools {
-		if tl.Name == "ns/rt" {
+		if tl.Name == "ns.rt" {
 			found = true
 			break
 		}
@@ -38,7 +38,7 @@ func TestRegisterRemoteServerAndCall(t *testing.T) {
 	}
 
 	// Call through host with namespace
-	resp, err := host.CallTool(context.Background(), "ns/rt", map[string]any{"x": "y"})
+	resp, err := host.CallTool(context.Background(), "ns.rt", map[string]any{"x": "y"})
 	if err != nil {
 		t.Fatalf("call namespaced: %v", err)
 	}

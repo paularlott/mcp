@@ -18,8 +18,10 @@ const (
 	mcpClientVersion = "1.0.0"
 )
 
-// DefaultNamespaceSeparator is the default separator used for namespacing tool names
-var DefaultNamespaceSeparator = "/"
+// DefaultNamespaceSeparator is the default separator used for namespacing tool names.
+// Uses "." by default for compatibility with OpenAI function naming constraints
+// (which require: a-z, A-Z, 0-9, underscores, dashes, and non-consecutive dots).
+var DefaultNamespaceSeparator = "."
 
 // ToolFilterFunc is a function that determines if a tool should be included.
 // It receives the original tool name (without namespace prefix).
@@ -31,7 +33,7 @@ type Client struct {
 	baseURL     string
 	httpClient  *http.Client
 	auth        AuthProvider
-	namespace   string    // Optional namespace for tool names (e.g., "scriptling/")
+	namespace   string    // Optional namespace for tool names (e.g., "scriptling.")
 	separator   string    // Separator for namespace
 	cachedTools []MCPTool // Cached tools with namespace already applied
 	toolFilter  ToolFilterFunc // Optional filter for tools (applied to original name without namespace)
@@ -47,7 +49,7 @@ type AuthProvider interface {
 }
 
 // NewClient creates a new MCP client using the shared HTTP pool.
-// The namespace will be added to all tool names (e.g., namespace "scriptling" makes tool "search" available as "scriptling/search").
+// The namespace will be added to all tool names (e.g., namespace "scriptling" makes tool "search" available as "scriptling.search").
 // Use an empty namespace for no namespacing.
 //
 // The namespace should be a simple identifier (letters, numbers, hyphens, underscores).
@@ -244,7 +246,7 @@ func (c *Client) RefreshToolCache(ctx context.Context) error {
 }
 
 // CallTool executes a tool on the remote server.
-// If the client has a namespace, the tool name should include it (e.g., "scriptling/search").
+// If the client has a namespace, the tool name should include it (e.g., "scriptling.search").
 // The namespace will be stripped before calling the underlying tool.
 // If a tool filter is set and the tool is filtered out, returns ErrToolFiltered.
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {

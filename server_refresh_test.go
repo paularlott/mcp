@@ -60,10 +60,10 @@ func TestRefreshTools_SkipsFailingRemote(t *testing.T) {
 	foundGood := false
 	foundBad := false
 	for _, tl := range tools {
-		if tl.Name == "g/ok" {
+		if tl.Name == "g.ok" {
 			foundGood = true
 		}
-		if tl.Name == "b/whatever" {
+		if tl.Name == "b.whatever" {
 			foundBad = true
 		}
 	}

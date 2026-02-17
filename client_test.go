@@ -295,12 +295,12 @@ func TestClient_NamespaceNormalization(t *testing.T) {
 		want      string
 	}{
 		{name: "empty", namespace: "", want: ""},
-		{name: "simple", namespace: "myns", want: "myns/"},
-		{name: "with-trailing-slash", namespace: "myns/", want: "myns/"},
+		{name: "simple", namespace: "myns", want: "myns."},
+		{name: "with-trailing-dot", namespace: "myns.", want: "myns."},
 		{name: "whitespace-only", namespace: "   ", want: ""},
-		{name: "whitespace-padded", namespace: "  myns  ", want: "myns/"},
-		{name: "with-hyphen", namespace: "my-namespace", want: "my-namespace/"},
-		{name: "with-underscore", namespace: "my_namespace", want: "my_namespace/"},
+		{name: "whitespace-padded", namespace: "  myns  ", want: "myns."},
+		{name: "with-hyphen", namespace: "my-namespace", want: "my-namespace."},
+		{name: "with-underscore", namespace: "my_namespace", want: "my_namespace."},
 	}
 
 	for _, tt := range tests {
@@ -355,7 +355,7 @@ func TestClient_ToolFilter(t *testing.T) {
 			t.Errorf("expected 2 tools, got %d", len(tools))
 		}
 		for _, tool := range tools {
-			if tool.Name == "ns/delete" {
+			if tool.Name == "ns.delete" {
 				t.Error("delete tool should have been filtered out")
 			}
 		}
@@ -368,13 +368,13 @@ func TestClient_ToolFilter(t *testing.T) {
 		})
 
 		// Should work for allowed tool
-		_, err := c.CallTool(ctx, "ns/search", map[string]any{"q": "test"})
+		_, err := c.CallTool(ctx, "ns.search", map[string]any{"q": "test"})
 		if err != nil {
 			t.Fatalf("CallTool for allowed tool: %v", err)
 		}
 
 		// Should fail for filtered tool
-		_, err = c.CallTool(ctx, "ns/delete", map[string]any{"id": "123"})
+		_, err = c.CallTool(ctx, "ns.delete", map[string]any{"id": "123"})
 		if err != ErrToolFiltered {
 			t.Errorf("expected ErrToolFiltered, got %v", err)
 		}
@@ -390,8 +390,8 @@ func TestClient_ToolFilter(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListTools: %v", err)
 		}
-		if len(tools) != 1 || tools[0].Name != "ns/create" {
-			t.Errorf("expected only ns/create, got %+v", tools)
+		if len(tools) != 1 || tools[0].Name != "ns.create" {
+			t.Errorf("expected only ns.create, got %+v", tools)
 		}
 	})
 

@@ -395,7 +395,7 @@ func TestRemoteServerNativeVisibility(t *testing.T) {
 	}
 
 	// Call the remote tool
-	response, err := mainServer.CallTool(context.Background(), "remote/remote_greet", map[string]interface{}{
+	response, err := mainServer.CallTool(context.Background(), "remote.remote_greet", map[string]interface{}{
 		"name": "World",
 	})
 	if err != nil {
@@ -473,7 +473,7 @@ func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 
 	// The remote tool should be callable via execute_tool
 	response, err = mainServer.CallTool(context.Background(), ExecuteToolName, map[string]interface{}{
-		"name": "analytics/remote_analyze",
+		"name": "analytics.remote_analyze",
 		"arguments": map[string]interface{}{
 			"data": "test data",
 		},
