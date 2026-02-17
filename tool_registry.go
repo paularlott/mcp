@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/paularlott/cli/fuzzy"
 )
 
 // SearchResult represents a tool found via search
@@ -282,12 +284,12 @@ func calculateSingleWordScore(word, nameLower, descLower string, keywords []stri
 	}
 
 	if score == 0 {
-		if fuzzyScore := fuzzyMatch(word, nameLower); fuzzyScore > 0.6 {
+		if fuzzyScore := fuzzy.Score(word, nameLower); fuzzyScore > 0.6 {
 			score = max(score, fuzzyScore*0.7)
 		}
 
 		for _, kw := range keywords {
-			if fuzzyScore := fuzzyMatch(word, strings.ToLower(kw)); fuzzyScore > 0.6 {
+			if fuzzyScore := fuzzy.Score(word, strings.ToLower(kw)); fuzzyScore > 0.6 {
 				score = max(score, fuzzyScore*0.6)
 			}
 		}
@@ -305,56 +307,6 @@ func containsWord(text, query string) bool {
 		}
 	}
 	return false
-}
-
-func fuzzyMatch(query, target string) float64 {
-	if len(query) == 0 || len(target) == 0 {
-		return 0
-	}
-
-	distance := levenshteinDistance(query, target)
-	maxLen := max(len(query), len(target))
-
-	return 1.0 - float64(distance)/float64(maxLen)
-}
-
-func levenshteinDistance(s1, s2 string) int {
-	if len(s1) == 0 {
-		return len(s2)
-	}
-	if len(s2) == 0 {
-		return len(s1)
-	}
-
-	r1 := []rune(s1)
-	r2 := []rune(s2)
-	m := len(r1)
-	n := len(r2)
-
-	prev := make([]int, n+1)
-	curr := make([]int, n+1)
-
-	for j := 0; j <= n; j++ {
-		prev[j] = j
-	}
-
-	for i := 1; i <= m; i++ {
-		curr[0] = i
-		for j := 1; j <= n; j++ {
-			cost := 0
-			if r1[i-1] != r2[j-1] {
-				cost = 1
-			}
-			curr[j] = min(
-				prev[j]+1,
-				curr[j-1]+1,
-				prev[j-1]+cost,
-			)
-		}
-		prev, curr = curr, prev
-	}
-
-	return prev[n]
 }
 
 // validateRequiredParameters checks if all required parameters are present and non-empty
