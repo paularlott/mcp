@@ -24,6 +24,7 @@ type Client interface {
 
 	// OpenAI Responses API
 	CreateResponse(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error)
+	StreamResponse(ctx context.Context, req CreateResponseRequest) *ResponseStream
 	GetResponse(ctx context.Context, id string) (*ResponseObject, error)
 	CancelResponse(ctx context.Context, id string) (*ResponseObject, error)
 	DeleteResponse(ctx context.Context, id string) error

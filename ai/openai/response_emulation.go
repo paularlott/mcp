@@ -11,6 +11,12 @@ type ChatCompleter interface {
 	ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error)
 }
 
+// ChatStreamCompleter extends ChatCompleter with streaming support, used for StreamResponseEmulated.
+type ChatStreamCompleter interface {
+	ChatCompleter
+	StreamChatCompletion(ctx context.Context, req ChatCompletionRequest) *ChatStream
+}
+
 // CreateResponseEmulated creates an emulated response using chat completions
 // If background: true, returns immediately with in_progress status and processes async
 // If background: false, processes synchronously and returns completed result
@@ -238,13 +244,21 @@ func ConvertInputToMessages(input []any) []Message {
 				}
 				messages = append(messages, msg)
 
-			case "tool_call_result":
-				// Tool result message
+			case "tool_call_result", "function_call_output":
+				// Tool result message — supports both "tool_call_result" (legacy) and
+				// "function_call_output" (native Responses API format)
+				callID := getString(itemMap, "call_id")
+				if callID == "" {
+					callID = getString(itemMap, "tool_call_id")
+				}
 				msg := Message{
 					Role:       "tool",
-					ToolCallID: getString(itemMap, "tool_call_id"),
+					ToolCallID: callID,
 				}
-				if content, ok := itemMap["content"]; ok {
+				// "output" is the native field; fall back to "content"
+				if output, ok := itemMap["output"]; ok {
+					msg.Content = output
+				} else if content, ok := itemMap["content"]; ok {
 					msg.Content = content
 				}
 				messages = append(messages, msg)
@@ -324,11 +338,18 @@ func ConvertChatToResponseObject(resp *ChatCompletionResponse, model string) *Re
 		choice := resp.Choices[0]
 		output := []interface{}{}
 
-		// Add message output
+		// Add message output — content must be []interface{} of content parts, matching native format
 		msgOutput := map[string]interface{}{
-			"type":    "message",
-			"role":    "assistant",
-			"content": choice.Message.GetContentAsString(),
+			"type":   "message",
+			"role":   "assistant",
+			"status": "completed",
+			"content": []interface{}{
+				map[string]interface{}{
+					"type":        "output_text",
+					"text":        choice.Message.GetContentAsString(),
+					"annotations": []interface{}{},
+				},
+			},
 		}
 		output = append(output, msgOutput)
 

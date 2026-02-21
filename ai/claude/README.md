@@ -41,8 +41,9 @@ The client dynamically fetches the list of available models from Claude's `/mode
 - ✅ Streaming chat completions
 - ✅ Tool calling
 - ✅ Model listing
-- ❌ Embeddings (Claude doesn't provide embeddings)
-- ❌ Responses API (OpenAI-specific feature)
+- ✅ Responses API (emulated via chat completions)
+- ✅ Streaming Responses API (emulated, identical event sequence to native OpenAI)
+- ❌ Embeddings (not supported by Claude)
 
 ## Usage
 

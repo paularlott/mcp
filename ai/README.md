@@ -4,12 +4,12 @@ A unified interface for multiple LLM providers with OpenAI-compatible API.
 
 ## Supported Providers
 
-- **OpenAI** - Full support including Responses API
-- **Claude** (Anthropic) - Chat, streaming, tool calling
-- **Gemini** (Google) - Chat, streaming, embeddings, tool calling
-- **Ollama** - Local models with OpenAI-compatible API
-- **ZAi** - OpenAI-compatible endpoint
-- **Mistral** - OpenAI-compatible endpoint
+- **OpenAI** - Full support including native Responses API with SSE streaming
+- **Claude** (Anthropic) - Chat, streaming, tool calling, emulated Responses API
+- **Gemini** (Google) - Chat, streaming, embeddings, tool calling, emulated Responses API
+- **Ollama** - Local models with OpenAI-compatible API, emulated Responses API
+- **ZAi** - OpenAI-compatible endpoint, emulated Responses API
+- **Mistral** - OpenAI-compatible endpoint, emulated Responses API
 
 ## Features
 
@@ -20,6 +20,7 @@ A unified interface for multiple LLM providers with OpenAI-compatible API.
 - Embeddings (OpenAI, Gemini, Ollama, ZAi, Mistral)
 - Model listing
 - Automatic format conversion for Claude and Gemini
+- Responses API — native on OpenAI, transparently emulated on all other providers
 
 ## Quick Start
 
@@ -34,24 +35,49 @@ client, err := ai.NewClient(ai.Config{
 
 // Chat completion
 response, err := client.ChatCompletion(ctx, ai.ChatCompletionRequest{
-    Model: "gpt-4",
+    Model: "gpt-4o",
     Messages: []ai.Message{
         {Role: "user", Content: "Hello!"},
     },
 })
 
-// Streaming
+// Streaming chat
 stream := client.StreamChatCompletion(ctx, ai.ChatCompletionRequest{
-    Model: "gpt-4",
+    Model: "gpt-4o",
     Messages: []ai.Message{
         {Role: "user", Content: "Hello!"},
     },
 })
-
-for chunk := range stream.Responses() {
-    fmt.Print(chunk.Choices[0].Delta.Content)
+for stream.Next() {
+    fmt.Print(stream.Current().Choices[0].Delta.Content)
 }
 if err := stream.Err(); err != nil {
+    log.Fatal(err)
+}
+
+// Responses API — single-shot (works on all providers)
+resp, err := client.CreateResponse(ctx, ai.CreateResponseRequest{
+    Model: "gpt-4o",
+    Input: []any{
+        map[string]any{"type": "message", "role": "user", "content": "Hello!"},
+    },
+})
+
+// Responses API — streaming (works on all providers)
+rstream := client.StreamResponse(ctx, ai.CreateResponseRequest{
+    Model: "gpt-4o",
+    Input: []any{
+        map[string]any{"type": "message", "role": "user", "content": "Hello!"},
+    },
+})
+for rstream.Next() {
+    event := rstream.Current()
+    fmt.Print(event.TextDelta())
+    if r := event.Response(); r != nil {
+        fmt.Printf("\nDone. tokens=%d\n", r.Usage.TotalTokens)
+    }
+}
+if err := rstream.Err(); err != nil {
     log.Fatal(err)
 }
 
@@ -71,39 +97,39 @@ All providers implement the `ai.Client` interface:
 
 ```go
 type Client interface {
-    // Provider information
     Provider() string
     SupportsCapability(cap string) bool
 
-    // Model management
     GetModels(ctx context.Context) (*ModelsResponse, error)
 
-    // Chat completions
     ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error)
     StreamChatCompletion(ctx context.Context, req ChatCompletionRequest) *ChatStream
 
-    // Embeddings
     CreateEmbedding(ctx context.Context, req EmbeddingRequest) (*EmbeddingResponse, error)
 
-    // OpenAI Responses API
     CreateResponse(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error)
+    StreamResponse(ctx context.Context, req CreateResponseRequest) *ResponseStream
     GetResponse(ctx context.Context, id string) (*ResponseObject, error)
     CancelResponse(ctx context.Context, id string) (*ResponseObject, error)
+    DeleteResponse(ctx context.Context, id string) error
+    CompactResponse(ctx context.Context, id string) (*ResponseObject, error)
 
-    // Close/cleanup
     Close() error
 }
 ```
 
 ## Provider Capabilities
 
-| Feature       | OpenAI | Claude | Gemini | Ollama | ZAi | Mistral |
-| ------------- | ------ | ------ | ------ | ------ | --- | ------- |
-| Chat          | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
-| Streaming     | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
-| Tools         | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
-| Embeddings    | ✅     | ❌     | ✅     | ✅     | ✅  | ✅      |
-| Responses API | ✅     | ❌     | ❌     | ❌     | ❌  | ❌      |
+| Feature           | OpenAI | Claude | Gemini | Ollama | ZAi | Mistral |
+| ----------------- | ------ | ------ | ------ | ------ | --- | ------- |
+| Chat              | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
+| Streaming         | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
+| Tools             | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
+| Embeddings        | ✅     | ❌     | ✅     | ✅     | ✅  | ✅      |
+| Responses API     | ✅ native | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated |
+| Streaming Responses | ✅ native SSE | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated |
+
+The Responses API is **natively** supported on `api.openai.com` (real `/responses` SSE endpoint). For all other providers it is **transparently emulated** via chat completions — callers see identical types, event sequences, and field structures regardless of provider.
 
 ## Configuration
 
@@ -132,30 +158,21 @@ The default timeout is **10 minutes**. You can customize it:
 client, err := ai.NewClient(ai.Config{
     Provider:       ai.ProviderOpenAI,
     APIKey:         "sk-...",
-    RequestTimeout: 30 * time.Minute, // Custom timeout
+    RequestTimeout: 30 * time.Minute,
 })
 ```
 
-This applies consistently across all providers (OpenAI, Claude, Gemini, Ollama, ZAi, Mistral).
-
 ### Default Parameters
 
-You can set default `MaxTokens` and `Temperature` at the client level. These will be applied to all requests that don't explicitly set these values:
+You can set default `MaxTokens` and `Temperature` at the client level:
 
 ```go
 client, err := ai.NewClient(ai.Config{
     Provider:    ai.ProviderClaude,
     APIKey:      "sk-ant-...",
-    MaxTokens:   2048,      // Default for all requests
-    Temperature: 0.7,       // Default for all requests
+    MaxTokens:   2048,
+    Temperature: 0.7,
 })
-
-// Uses client defaults (2048 tokens, 0.7 temperature)
-response, err := client.ChatCompletion(ctx, req)
-
-// Override per request
-req.MaxTokens = 4096
-response, err := client.ChatCompletion(ctx, req)
 ```
 
 **Note:** Claude requires `max_tokens` to be set. If not provided in the config, it defaults to 4096.
@@ -165,14 +182,14 @@ response, err := client.ChatCompletion(ctx, req)
 ### OpenAI
 
 - Default base URL: `https://api.openai.com/v1`
-- Supports all features including Responses API
-- Native OpenAI format (no conversion needed)
+- Supports all features including native Responses API and SSE streaming
 
 ### Claude
 
 - Default base URL: `https://api.anthropic.com/v1`
 - Automatic format conversion to/from OpenAI format
 - System messages extracted to `system` parameter
+- Responses API emulated via chat completions
 - See [claude/README.md](claude/README.md) for details
 
 ### Gemini
@@ -180,6 +197,7 @@ response, err := client.ChatCompletion(ctx, req)
 - Default base URL: `https://generativelanguage.googleapis.com/v1beta`
 - Chat via OpenAI-compatible `/openai/` endpoint
 - Embeddings via native `embedContent` API
+- Responses API emulated via chat completions
 - See [gemini/README.md](gemini/README.md) for details
 
 ### Ollama
@@ -203,7 +221,6 @@ response, err := client.ChatCompletion(ctx, req)
 ```go
 response, err := client.ChatCompletion(ctx, req)
 if err != nil {
-    // Handle error
     log.Fatal(err)
 }
 ```

@@ -40,5 +40,6 @@ type ContentPart = openai.ContentPart
 type ImageURL = openai.ImageURL
 type Embedding = openai.Embedding
 type ChatStream = openai.ChatStream
+type ResponseStream = openai.ResponseStream
 type ModelsResponse = openai.ModelsResponse
 type Model = openai.Model

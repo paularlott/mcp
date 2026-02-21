@@ -33,7 +33,8 @@ Retrieves available models from Gemini's `/models` endpoint and returns them in 
 - ✅ Embeddings (via native Gemini API)
 - ✅ Model listing
 - ✅ Tool calling
-- ❌ Responses API (OpenAI-specific feature)
+- ✅ Responses API (emulated via chat completions)
+- ✅ Streaming Responses API (emulated, identical event sequence to native OpenAI)
 
 ## Usage
 

@@ -10,13 +10,14 @@ import "github.com/paularlott/mcp/openai"
 
 ## Features
 
-- **OpenAI Types**: Complete request/response types for chat completions
+- **OpenAI Types**: Complete request/response types for chat completions and the Responses API
 - **Tool Conversion**: Convert MCP tools to OpenAI function format
 - **Response Extraction**: Extract string results from MCP tool responses
-- **Streaming Support**: Iterator and accumulator for streaming responses
+- **Streaming Support**: Iterator and accumulator for streaming responses (both Chat Completions and Responses API)
 - **Tool Handlers**: Event notifications during tool execution
 - **Client Integration**: Ready-to-use OpenAI client with automatic MCP server tool execution
 - **Custom Tools**: Support for tools sent to AI but executed manually by your code
+- **Responses API**: Full support for `CreateResponse`, `StreamResponse`, `GetResponse`, `CancelResponse`, `DeleteResponse`, and `CompactResponse` — with transparent emulation for non-OpenAI providers
 
 ## Client Overview
 
@@ -83,6 +84,98 @@ for stream.Next() {
 if err := stream.Err(); err != nil {
     // Handle error
 }
+```
+
+### Responses API
+
+The client supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) for both single-shot and streaming modes. When connected to the official OpenAI API (`api.openai.com`), the native `/responses` endpoint is used. For all other providers (Ollama, LM Studio, Mistral, etc.) the behaviour is **transparently emulated** via Chat Completions — the caller sees identical types, event sequences, and field structures regardless of provider.
+
+#### Single-shot
+
+```go
+resp, err := client.CreateResponse(ctx, openai.CreateResponseRequest{
+    Model: "gpt-4o",
+    Input: []any{
+        map[string]any{"type": "message", "role": "user", "content": "Hello!"},
+    },
+})
+// resp.ID, resp.Status ("completed"), resp.Usage, resp.Output ...
+for _, item := range resp.Output {
+    if m, ok := item.(map[string]interface{}); ok && m["type"] == "message" {
+        for _, part := range m["content"].([]interface{}) {
+            if p, ok := part.(map[string]interface{}); ok && p["type"] == "output_text" {
+                fmt.Println(p["text"])
+            }
+        }
+    }
+}
+```
+
+#### Streaming
+
+```go
+stream := client.StreamResponse(ctx, openai.CreateResponseRequest{
+    Model: "gpt-4o",
+    Input: []any{
+        map[string]any{"type": "message", "role": "user", "content": "Hello!"},
+    },
+})
+
+for stream.Next() {
+    event := stream.Current()
+    // Text deltas — available on both native and emulated providers
+    if delta := event.TextDelta(); delta != "" {
+        fmt.Print(delta)
+    }
+    // Final response object on "response.completed"
+    if resp := event.Response(); resp != nil {
+        fmt.Printf("\nDone. Usage: input=%d output=%d\n",
+            resp.Usage.InputTokens, resp.Usage.OutputTokens)
+    }
+}
+if err := stream.Err(); err != nil {
+    log.Fatal(err)
+}
+```
+
+The full SSE event sequence emitted (native and emulated):
+
+```
+response.created
+response.in_progress
+response.output_item.added
+response.content_part.added
+response.output_text.delta  (one or more)
+response.output_text.done
+response.content_part.done
+response.output_item.done
+response.completed
+```
+
+#### ResponseStreamEvent helpers
+
+| Method | Returns |
+|---|---|
+| `event.TextDelta()` | text delta string for `response.output_text.delta` events, else `""` |
+| `event.Response()` | `*ResponseObject` for `response.completed` events, else `nil` |
+| `event.Type` | raw event type string |
+| `event.Data` | raw JSON payload (`json.RawMessage`) |
+
+#### Provider behaviour
+
+| Provider | Endpoint used | Streaming |
+|---|---|---|
+| `api.openai.com` | native `/responses` SSE | ✅ native SSE |
+| Any other (Ollama, LM Studio, Mistral, …) | emulated via `/chat/completions` | ✅ emulated SSE, identical event sequence |
+
+To force emulation even on OpenAI (e.g. for testing):
+
+```go
+false := false
+client, _ := openai.New(openai.Config{
+    APIKey:             "sk-...",
+    UseNativeResponses: &false,
+})
 ```
 
 ## Quick Start

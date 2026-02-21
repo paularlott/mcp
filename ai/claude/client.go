@@ -809,6 +809,18 @@ func (c *Client) CreateEmbedding(ctx context.Context, req openai.EmbeddingReques
 	return nil, fmt.Errorf("embeddings not supported by Claude")
 }
 
+// StreamResponse emulates the OpenAI Responses API streaming using chat completions
+func (c *Client) StreamResponse(ctx context.Context, req openai.CreateResponseRequest) *openai.ResponseStream {
+	eventChan := make(chan openai.ResponseStreamEvent, 50)
+	errorChan := make(chan error, 1)
+	go func() {
+		defer close(eventChan)
+		defer close(errorChan)
+		openai.StreamResponseEmulated(ctx, c, req, eventChan, errorChan)
+	}()
+	return openai.NewResponseStream(ctx, eventChan, errorChan)
+}
+
 // CreateResponse emulates the OpenAI Responses API using chat completions
 // Processes async in the background and returns immediately with an in_progress status
 func (c *Client) CreateResponse(ctx context.Context, req openai.CreateResponseRequest) (*openai.ResponseObject, error) {
