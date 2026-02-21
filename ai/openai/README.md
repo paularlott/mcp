@@ -99,12 +99,15 @@ resp, err := client.CreateResponse(ctx, openai.CreateResponseRequest{
         map[string]any{"type": "message", "role": "user", "content": "Hello!"},
     },
 })
-// resp.ID, resp.Status ("completed"), resp.Usage, resp.Output ...
-for _, item := range resp.Output {
-    if m, ok := item.(map[string]interface{}); ok && m["type"] == "message" {
-        for _, part := range m["content"].([]interface{}) {
-            if p, ok := part.(map[string]interface{}); ok && p["type"] == "output_text" {
-                fmt.Println(p["text"])
+// resp.ID, resp.Status ("completed"), resp.Usage ...
+fmt.Println(resp.OutputText()) // concatenated output_text from all message items
+
+// Or iterate typed items:
+for _, item := range resp.OutputItems() {
+    if item.Type == "message" {
+        for _, part := range item.Content {
+            if part.Type == "output_text" {
+                fmt.Println(part.Text)
             }
         }
     }

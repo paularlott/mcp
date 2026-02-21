@@ -1,5 +1,25 @@
 package openai
 
+// ResponseOutputItem represents a typed output item in a ResponseObject.
+type ResponseOutputItem struct {
+	Type    string                    `json:"type"`    // "message", "function_call", "reasoning", etc.
+	ID      string                    `json:"id,omitempty"`
+	Role    string                    `json:"role,omitempty"`
+	Status  string                    `json:"status,omitempty"`
+	Content []ResponseOutputContent   `json:"content,omitempty"`
+	// function_call fields
+	CallID    string         `json:"call_id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+}
+
+// ResponseOutputContent represents a content part within a ResponseOutputItem.
+type ResponseOutputContent struct {
+	Type        string `json:"type"`                  // "output_text", etc.
+	Text        string `json:"text,omitempty"`
+	Annotations []any  `json:"annotations,omitempty"`
+}
+
 // ResponseObject represents a complete OpenAI Responses API response object
 // https://platform.openai.com/docs/api-reference/responses/object
 type ResponseObject struct {
@@ -23,8 +43,62 @@ type ResponseObject struct {
 	Tools              []Tool                 `json:"tools,omitempty"`
 	TopP               *float64               `json:"top_p,omitempty"`
 	Truncation         string                 `json:"truncation,omitempty"`
-	Usage              *ResponseUsage          `json:"usage,omitempty"`
+	Usage              *ResponseUsage         `json:"usage,omitempty"`
 	Metadata           map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// OutputItems returns the Output slice decoded into typed ResponseOutputItem values.
+// Items whose type cannot be decoded are skipped.
+func (r *ResponseObject) OutputItems() []ResponseOutputItem {
+	if r == nil {
+		return nil
+	}
+	items := make([]ResponseOutputItem, 0, len(r.Output))
+	for _, raw := range r.Output {
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		item := ResponseOutputItem{
+			Type:   getString(m, "type"),
+			ID:     getString(m, "id"),
+			Role:   getString(m, "role"),
+			Status: getString(m, "status"),
+			CallID: getString(m, "call_id"),
+			Name:   getString(m, "name"),
+		}
+		if args, ok := m["arguments"].(map[string]interface{}); ok {
+			item.Arguments = args
+		}
+		if parts, ok := m["content"].([]interface{}); ok {
+			for _, p := range parts {
+				if pm, ok := p.(map[string]interface{}); ok {
+					item.Content = append(item.Content, ResponseOutputContent{
+						Type: getString(pm, "type"),
+						Text: getString(pm, "text"),
+					})
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// OutputText returns the concatenated output_text from all message output items.
+func (r *ResponseObject) OutputText() string {
+	var s string
+	for _, item := range r.OutputItems() {
+		if item.Type != "message" {
+			continue
+		}
+		for _, c := range item.Content {
+			if c.Type == "output_text" {
+				s += c.Text
+			}
+		}
+	}
+	return s
 }
 
 // ResponseListResponse represents a list of response objects
