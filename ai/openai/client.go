@@ -21,6 +21,9 @@ const (
 	providerOllama  = "ollama"
 	providerZAi     = "zai"
 	providerMistral = "mistral"
+
+	// DefaultRequestTimeout is the default timeout for AI completion requests.
+	DefaultRequestTimeout = 10 * time.Minute
 )
 
 const MAX_TOOL_CALL_ITERATIONS = 20
@@ -245,10 +248,9 @@ func (c *Client) Close() error {
 
 // ChatCompletion performs a non-streaming chat completion with automatic tool processing
 func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) (*ChatCompletionResponse, error) {
-	// Detach from parent context so AI operations survive parent cancellation
 	if c.requestTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+		ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 		defer cancel()
 	}
 
@@ -361,10 +363,9 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		defer close(responseChan)
 		defer close(errorChan)
 
-		// Detach from parent context so AI operations survive parent cancellation
 		if c.requestTimeout > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+			ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 			defer cancel()
 		}
 
@@ -531,8 +532,7 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 
 // createResponseBackground creates an async response that processes in background
 func (c *Client) createResponseBackground(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
-	// Detach from parent context so AI operations survive parent cancellation
-	asyncCtx, cancel := NewDetachedContext(ctx, c.requestTimeout)
+	asyncCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
 
 	// Create response state immediately with in_progress status
 	state := GetManager().Create(cancel)
@@ -567,10 +567,9 @@ func (c *Client) createResponseBackground(ctx context.Context, req CreateRespons
 
 // createResponseSync processes the response synchronously with tool handling
 func (c *Client) createResponseSync(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
-	// Detach from parent context so AI operations survive parent cancellation
 	if c.requestTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+		ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 		defer cancel()
 	}
 

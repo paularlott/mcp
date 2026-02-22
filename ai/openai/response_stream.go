@@ -153,10 +153,9 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateResponseRequest) 
 
 // streamResponseNative streams using the real OpenAI /responses SSE endpoint with tool processing.
 func (c *Client) streamResponseNative(ctx context.Context, req CreateResponseRequest, eventChan chan<- ResponseStreamEvent, errorChan chan<- error) {
-	// Detach context so AI ops survive parent cancellation
 	if c.requestTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = NewDetachedContext(ctx, c.requestTimeout)
+		ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 		defer cancel()
 	}
 

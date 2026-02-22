@@ -77,10 +77,9 @@ func New(config openai.Config) (*Client, error) {
 }
 
 func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRequest) (*openai.ChatCompletionResponse, error) {
-	// Detach from parent context so AI operations survive parent cancellation
 	if c.requestTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = openai.NewDetachedContext(ctx, c.requestTimeout)
+		ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 		defer cancel()
 	}
 
@@ -211,10 +210,9 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 		defer close(responseChan)
 		defer close(errorChan)
 
-		// Detach from parent context so AI operations survive parent cancellation
 		if c.requestTimeout > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = openai.NewDetachedContext(ctx, c.requestTimeout)
+			ctx, cancel = context.WithTimeout(ctx, c.requestTimeout)
 			defer cancel()
 		}
 
