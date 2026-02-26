@@ -1,11 +1,13 @@
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/paularlott/cli v0.7.3 h1:FN8AFyqQhj9IcT4MVJXZKLCnQIrO4YjJtmReDHKLiXs=
-github.com/paularlott/cli v0.7.3/go.mod h1:K5qUSWj48JeMIAqztG6WTg1Q4ip4luQgYokD7z+tKPs=
 github.com/paularlott/cli v0.7.5 h1:ImIRMxgzE0frlRYL3GnwCJsqolWmc/aididzBE6hlgo=
 github.com/paularlott/cli v0.7.5/go.mod h1:pN1JVlAw7EDUVf4mKRUP708jzXKLsb1wBfHgdhDQbfA=
+github.com/paularlott/cli v0.7.10 h1:ctYnOXAW82bfOtfc5+R+bNtbRwbco8XTMtmjIi7jxRc=
+github.com/paularlott/cli v0.7.10/go.mod h1:ZSHKSCzhS4y0I4PWCAWo+++plYEocRdsZPBy6OBOKHs=
 golang.org/x/net v0.50.0 h1:ucWh9eiCGyDR3vtzso0WMQinm2Dnt8cFMuQa9K33J60=
 golang.org/x/net v0.50.0/go.mod h1:UgoSli3F/pBgdJBHCTc+tp3gmrU4XswgGRgtnwWTfyM=
+golang.org/x/net v0.51.0 h1:94R/GTO7mt3/4wIKpcR5gkGmRLOuE/2hNGeWq/GBIFo=
+golang.org/x/net v0.51.0/go.mod h1:aamm+2QF5ogm02fjy5Bb7CQ0WMt1/WVM7FtyaTLlA9Y=
 golang.org/x/oauth2 v0.35.0 h1:Mv2mzuHuZuY2+bkyWXIHMfhNdJAdwW3FuWeCPYN5GVQ=
 golang.org/x/oauth2 v0.35.0/go.mod h1:lzm5WQJQwKZ3nwavOZ3IS5Aulzxi68dUSgRHujetwEA=
 golang.org/x/text v0.34.0 h1:oL/Qq0Kdaqxa1KbNeMKwQq0reLCCaFtqu2eNuSeNHbk=

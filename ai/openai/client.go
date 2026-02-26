@@ -69,7 +69,10 @@ type Client struct {
 	extraHeaders       http.Header   // Custom headers added to all requests
 	httpPool           pool.HTTPPool // Optional custom HTTP pool
 	maxTokens          int           // Default max_tokens
-	temperature        float32       // Default temperature
+	temperature        *float64      // Default temperature
+	topP               *float64      // Default top_p
+	frequencyPenalty   *float64      // Default frequency_penalty
+	presencePenalty    *float64      // Default presence_penalty
 	requestTimeout     time.Duration // Timeout for AI requests (0 = use caller's context)
 	useNativeResponses bool          // Use native Responses API endpoint
 }
@@ -92,7 +95,10 @@ type Config struct {
 	ExtraHeaders        http.Header          // Custom headers added to all requests
 	HTTPPool            pool.HTTPPool        // Optional custom HTTP pool (nil = use default secure pool)
 	MaxTokens           int                  // Default max_tokens for requests (0 = no default)
-	Temperature         float32              // Default temperature for requests (0 = no default)
+	Temperature         *float64             // Default temperature for requests (nil = no default)
+	TopP                *float64             // Default top_p for requests (nil = no default)
+	FrequencyPenalty    *float64             // Default frequency_penalty for requests (nil = no default)
+	PresencePenalty     *float64             // Default presence_penalty for requests (nil = no default)
 	RequestTimeout      time.Duration        // Timeout for AI requests using a detached context (0 = use caller's context, default 10m)
 	UseNativeResponses  *bool                // Use native Responses API endpoint (nil = auto-detect: true for OpenAI api.openai.com, false otherwise)
 }
@@ -166,6 +172,9 @@ func New(config Config) (*Client, error) {
 		httpPool:           config.HTTPPool, // Store the pool (nil = use default)
 		maxTokens:          config.MaxTokens,
 		temperature:        config.Temperature,
+		topP:               config.TopP,
+		frequencyPenalty:   config.FrequencyPenalty,
+		presencePenalty:    config.PresencePenalty,
 		requestTimeout:     config.RequestTimeout,
 		useNativeResponses: useNativeResponses,
 	}, nil
@@ -263,8 +272,17 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 	if req.MaxCompletionTokens == 0 && c.maxTokens > 0 {
 		req.MaxCompletionTokens = c.maxTokens
 	}
-	if req.Temperature == 0 && c.temperature > 0 {
+	if req.Temperature == nil && c.temperature != nil {
 		req.Temperature = c.temperature
+	}
+	if req.TopP == nil && c.topP != nil {
+		req.TopP = c.topP
+	}
+	if req.FrequencyPenalty == nil && c.frequencyPenalty != nil {
+		req.FrequencyPenalty = c.frequencyPenalty
+	}
+	if req.PresencePenalty == nil && c.presencePenalty != nil {
+		req.PresencePenalty = c.presencePenalty
 	}
 
 	if !requestHasTools {
@@ -379,8 +397,17 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		if req.MaxCompletionTokens == 0 && c.maxTokens > 0 {
 			req.MaxCompletionTokens = c.maxTokens
 		}
-		if req.Temperature == 0 && c.temperature > 0 {
+		if req.Temperature == nil && c.temperature != nil {
 			req.Temperature = c.temperature
+		}
+		if req.TopP == nil && c.topP != nil {
+			req.TopP = c.topP
+		}
+		if req.FrequencyPenalty == nil && c.frequencyPenalty != nil {
+			req.FrequencyPenalty = c.frequencyPenalty
+		}
+		if req.PresencePenalty == nil && c.presencePenalty != nil {
+			req.PresencePenalty = c.presencePenalty
 		}
 
 		if !requestHasTools {
@@ -519,9 +546,11 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 		if req.MaxOutputTokens == nil && c.maxTokens > 0 {
 			req.MaxOutputTokens = &c.maxTokens
 		}
-		if req.Temperature == nil && c.temperature > 0 {
-			temp := float64(c.temperature)
-			req.Temperature = &temp
+		if req.Temperature == nil && c.temperature != nil {
+			req.Temperature = c.temperature
+		}
+		if req.TopP == nil && c.topP != nil {
+			req.TopP = c.topP
 		}
 		return c.createSingleResponse(ctx, req)
 	}
@@ -580,9 +609,11 @@ func (c *Client) createResponseSync(ctx context.Context, req CreateResponseReque
 	if req.MaxOutputTokens == nil && c.maxTokens > 0 {
 		req.MaxOutputTokens = &c.maxTokens
 	}
-	if req.Temperature == nil && c.temperature > 0 {
-		temp := float64(c.temperature)
-		req.Temperature = &temp
+	if req.Temperature == nil && c.temperature != nil {
+		req.Temperature = c.temperature
+	}
+	if req.TopP == nil && c.topP != nil {
+		req.TopP = c.topP
 	}
 
 	if !requestHasTools {

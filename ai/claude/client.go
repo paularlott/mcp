@@ -30,7 +30,8 @@ type Client struct {
 	localServer    openai.MCPServer // Local MCP server
 	remoteServers  []*mcp.Client    // Remote MCP servers
 	maxTokens      int              // Default max_tokens
-	temperature    float32          // Default temperature
+	temperature    *float64         // Default temperature
+	topP           *float64         // Default top_p
 	requestTimeout time.Duration    // Timeout for AI operations
 	responseManager *openai.ResponseManager
 }
@@ -71,6 +72,7 @@ func New(config openai.Config) (*Client, error) {
 		remoteServers:   remoteServers,
 		maxTokens:       config.MaxTokens,
 		temperature:     config.Temperature,
+		topP:            config.TopP,
 		requestTimeout:  config.RequestTimeout,
 		responseManager: responseManager,
 	}, nil
@@ -100,8 +102,11 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 	if req.MaxTokens == 0 && c.maxTokens > 0 {
 		req.MaxTokens = c.maxTokens
 	}
-	if req.Temperature == 0 && c.temperature > 0 {
+	if req.Temperature == nil && c.temperature != nil {
 		req.Temperature = c.temperature
+	}
+	if req.TopP == nil && c.topP != nil {
+		req.TopP = c.topP
 	}
 
 	var cumulativeUsage openai.Usage
@@ -233,8 +238,11 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 		if req.MaxTokens == 0 && c.maxTokens > 0 {
 			req.MaxTokens = c.maxTokens
 		}
-		if req.Temperature == 0 && c.temperature > 0 {
+		if req.Temperature == nil && c.temperature != nil {
 			req.Temperature = c.temperature
+		}
+		if req.TopP == nil && c.topP != nil {
+			req.TopP = c.topP
 		}
 
 		var cumulativeUsage openai.Usage
@@ -398,16 +406,11 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 }
 
 func (c *Client) convertToClaudeRequest(req openai.ChatCompletionRequest) ClaudeRequest {
-	var temp *float64
-	if req.Temperature != 0 {
-		t := float64(req.Temperature)
-		temp = &t
-	}
-
 	claudeReq := ClaudeRequest{
 		Model:       req.Model,
 		MaxTokens:   req.MaxTokens,
-		Temperature: temp,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
 		Stream:      req.Stream,
 	}
 

@@ -210,9 +210,12 @@ func ConvertResponseToChatRequest(req CreateResponseRequest) (ChatCompletionRequ
 		chatReq.MaxCompletionTokens = *req.MaxOutputTokens
 	}
 
-	// Apply temperature if specified
+	// Apply sampling parameters if specified
 	if req.Temperature != nil {
-		chatReq.Temperature = float32(*req.Temperature)
+		chatReq.Temperature = req.Temperature
+	}
+	if req.TopP != nil {
+		chatReq.TopP = req.TopP
 	}
 
 	// Convert input to messages

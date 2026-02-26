@@ -1,13 +1,43 @@
 package claude
 
-// Claude API types - internal representation
-// These are converted to/from OpenAI types at the boundary
+import "github.com/paularlott/mcp/ai/openai"
 
+// MessagesRequest is the Anthropic Messages API request format (exported for gateway use)
+type MessagesRequest struct {
+	Model       string           `json:"model"`
+	Messages    []ClaudeMessage  `json:"messages"`
+	MaxTokens   int              `json:"max_tokens"`
+	Temperature *float64         `json:"temperature,omitempty"`
+	TopP        *float64         `json:"top_p,omitempty"`
+	Stream      bool             `json:"stream,omitempty"`
+	Tools       []ClaudeTool     `json:"tools,omitempty"`
+	System      string           `json:"system,omitempty"`
+}
+
+// MessagesResponse is the Anthropic Messages API response format (exported for gateway use)
+type MessagesResponse struct {
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	Role       string         `json:"role"`
+	Content    []ContentBlock `json:"content"`
+	Model      string         `json:"model"`
+	StopReason string         `json:"stop_reason,omitempty"`
+	Usage      MessagesUsage  `json:"usage"`
+}
+
+// MessagesUsage is the token usage for the Messages API
+type MessagesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// ClaudeMessage is a message in the Claude format
 type ClaudeMessage struct {
-	Role    string        `json:"role"`
+	Role    string         `json:"role"`
 	Content []ContentBlock `json:"content"`
 }
 
+// ContentBlock is a content block in the Claude format
 type ContentBlock struct {
 	Type      string                 `json:"type"` // "text", "tool_use", "tool_result"
 	Text      string                 `json:"text,omitempty"`
@@ -18,37 +48,84 @@ type ContentBlock struct {
 	Content   interface{}            `json:"content,omitempty"`
 }
 
-type ClaudeRequest struct {
-	Model       string          `json:"model"`
-	Messages    []ClaudeMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens"`
-	Temperature *float64        `json:"temperature,omitempty"`
-	TopP        *float64        `json:"top_p,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
-	Tools       []ClaudeTool    `json:"tools,omitempty"`
-	System      string          `json:"system,omitempty"`
-}
-
+// ClaudeTool is a tool definition in the Claude format
 type ClaudeTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"input_schema"`
 }
 
-type ClaudeResponse struct {
-	ID           string          `json:"id"`
-	Type         string          `json:"type"`
-	Role         string          `json:"role"`
-	Content      []ContentBlock  `json:"content"`
-	Model        string          `json:"model"`
-	StopReason   string          `json:"stop_reason,omitempty"`
-	Usage        ClaudeUsage     `json:"usage"`
+// MessagesRequestToOpenAI converts a MessagesRequest to an OpenAI ChatCompletionRequest
+func MessagesRequestToOpenAI(req *MessagesRequest) openai.ChatCompletionRequest {
+	var messages []openai.Message
+	if req.System != "" {
+		messages = append(messages, openai.Message{Role: "system", Content: req.System})
+	}
+	for _, m := range req.Messages {
+		msg := openai.Message{Role: m.Role}
+		var text string
+		for _, b := range m.Content {
+			if b.Type == "text" {
+				text += b.Text
+			}
+		}
+		msg.Content = text
+		messages = append(messages, msg)
+	}
+	openaiReq := openai.ChatCompletionRequest{
+		Model:    req.Model,
+		Messages: messages,
+		Stream:   req.Stream,
+	}
+	if req.MaxTokens > 0 {
+		openaiReq.MaxTokens = req.MaxTokens
+	}
+	if req.Temperature != nil {
+		openaiReq.Temperature = req.Temperature
+	}
+	if req.TopP != nil {
+		openaiReq.TopP = req.TopP
+	}
+	return openaiReq
 }
 
-type ClaudeUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+// OpenAIToMessagesResponse converts an OpenAI ChatCompletionResponse to a MessagesResponse
+func OpenAIToMessagesResponse(resp *openai.ChatCompletionResponse) *MessagesResponse {
+	var content []ContentBlock
+	var stopReason string
+	if len(resp.Choices) > 0 {
+		content = []ContentBlock{{Type: "text", Text: resp.Choices[0].Message.GetContentAsString()}}
+		switch resp.Choices[0].FinishReason {
+		case "stop":
+			stopReason = "end_turn"
+		case "length":
+			stopReason = "max_tokens"
+		case "tool_calls":
+			stopReason = "tool_use"
+		default:
+			stopReason = resp.Choices[0].FinishReason
+		}
+	}
+	usage := MessagesUsage{}
+	if resp.Usage != nil {
+		usage.InputTokens = resp.Usage.PromptTokens
+		usage.OutputTokens = resp.Usage.CompletionTokens
+	}
+	return &MessagesResponse{
+		ID:         resp.ID,
+		Type:       "message",
+		Role:       "assistant",
+		Content:    content,
+		Model:      resp.Model,
+		StopReason: stopReason,
+		Usage:      usage,
+	}
 }
+
+// internal types (unexported)
+type ClaudeRequest = MessagesRequest
+type ClaudeResponse = MessagesResponse
+type ClaudeUsage = MessagesUsage
 
 type ClaudeStreamEvent struct {
 	Type         string          `json:"type"`
@@ -60,15 +137,15 @@ type ClaudeStreamEvent struct {
 }
 
 type ClaudeDelta struct {
-	Type         string `json:"type,omitempty"`
-	Text         string `json:"text,omitempty"`
-	PartialJSON  string `json:"partial_json,omitempty"`
-	StopReason   string `json:"stop_reason,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
 }
 
 type ClaudeErrorResponse struct {
-	Type  string       `json:"type"`
-	Error ClaudeError  `json:"error"`
+	Type  string      `json:"type"`
+	Error ClaudeError `json:"error"`
 }
 
 type ClaudeError struct {

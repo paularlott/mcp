@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+// Float64Ptr returns a pointer to the given float64 value.
+// Useful for setting optional sampling parameters on requests.
+func Float64Ptr(v float64) *float64 {
+	return &v
+}
+
 // ToolExecutor is a function that executes tool calls and returns the result.
 // The function receives the tool name and arguments (as a map) and
 // returns the result string and any error.
