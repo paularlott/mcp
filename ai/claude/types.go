@@ -122,6 +122,22 @@ func OpenAIToMessagesResponse(resp *openai.ChatCompletionResponse) *MessagesResp
 	}
 }
 
+// ModelInfo is a single model entry in the Anthropic models list response
+type ModelInfo struct {
+	Type        string `json:"type"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// ModelsListResponse is the Anthropic models list API response format
+type ModelsListResponse struct {
+	Data    []ModelInfo `json:"data"`
+	HasMore bool        `json:"has_more"`
+	FirstID string      `json:"first_id,omitempty"`
+	LastID  string      `json:"last_id,omitempty"`
+}
+
 // internal types (unexported)
 type ClaudeRequest = MessagesRequest
 type ClaudeResponse = MessagesResponse

@@ -778,15 +778,7 @@ func (c *Client) SupportsCapability(cap string) bool {
 
 // GetModels fetches the list of available models from Claude API
 func (c *Client) GetModels(ctx context.Context) (*openai.ModelsResponse, error) {
-	type claudeModelResponse struct {
-		Data []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-			CreatedAt   string `json:"created_at"`
-		} `json:"data"`
-	}
-
-	var claudeResp claudeModelResponse
+	var claudeResp ModelsListResponse
 	if err := c.doRequest(ctx, "GET", "models", nil, &claudeResp); err != nil {
 		return nil, err
 	}
