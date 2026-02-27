@@ -425,7 +425,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		sendCumulativeUsage := func(id, model string) {
 			if cumulativeUsage.TotalTokens > 0 {
 				select {
-				case responseChan <- ChatCompletionResponse{ID: id, Model: model, Usage: &cumulativeUsage}:
+				case responseChan <- ChatCompletionResponse{ID: id, Object: "chat.completion.chunk", Model: model, Choices: []Choice{}, Usage: &cumulativeUsage}:
 				case <-ctx.Done():
 				}
 			}
