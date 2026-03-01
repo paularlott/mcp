@@ -52,15 +52,24 @@ func NewOAuth2Auth(clientID, clientSecret, tokenURL string, scopes []string) *OA
 func (o *OAuth2Auth) GetAuthHeader() (string, error) {
 	o.mu.RLock()
 	token := o.token
+	valid := token != nil && token.Valid()
 	o.mu.RUnlock()
 
-	if token == nil || !token.Valid() {
-		if err := o.Refresh(); err != nil {
-			return "", err
+	if !valid {
+		o.mu.Lock()
+		// Re-check under write lock to avoid redundant refreshes
+		if o.token == nil || !o.token.Valid() {
+			ctx, cancel := context.WithTimeout(context.Background(), DefaultOAuthRefreshTimeout)
+			defer cancel()
+			t, err := o.config.Token(ctx)
+			if err != nil {
+				o.mu.Unlock()
+				return "", fmt.Errorf("failed to refresh token: %w", err)
+			}
+			o.token = t
 		}
-		o.mu.RLock()
 		token = o.token
-		o.mu.RUnlock()
+		o.mu.Unlock()
 	}
 
 	return fmt.Sprintf("Bearer %s", token.AccessToken), nil
