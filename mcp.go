@@ -419,6 +419,71 @@ func (s *Server) RegisterRemoteServerDiscoverable(client *Client) error {
 	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable)
 }
 
+// UnregisterRemoteServer removes a previously registered remote server and all its cached tools.
+func (s *Server) UnregisterRemoteServer(client *Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	regClient, ok := s.remoteClients[client.baseURL]
+	if !ok {
+		return
+	}
+	delete(s.remoteClients, client.baseURL)
+
+	// Remove tools belonging to this client from toolToServer and nativeToolCache
+	toRemove := make(map[string]bool)
+	for toolName, rc := range s.toolToServer {
+		if rc == regClient {
+			toRemove[toolName] = true
+			delete(s.toolToServer, toolName)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		filtered := make([]MCPTool, 0, len(s.nativeToolCache))
+		for _, t := range s.nativeToolCache {
+			if !toRemove[t.Name] {
+				filtered = append(filtered, t)
+			}
+		}
+		s.nativeToolCache = filtered
+	}
+}
+
+// ReplaceRemoteServers atomically replaces all registered remote servers with the provided list.
+// Each entry is a (*Client, ToolVisibility) pair. Use ToolVisibilityNative for tools that should
+// appear in tools/list, or ToolVisibilityDiscoverable for tools only findable via tool_search.
+// All previously registered remote servers and their cached tools are removed first.
+func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
+	s.mu.Lock()
+
+	// Remove all remote tools from nativeToolCache and toolToServer
+	newNativeCache := make([]MCPTool, 0, len(s.nativeToolCache))
+	for _, t := range s.nativeToolCache {
+		if _, isRemote := s.toolToServer[t.Name]; !isRemote {
+			newNativeCache = append(newNativeCache, t)
+		}
+	}
+	s.nativeToolCache = newNativeCache
+	s.remoteClients = make(map[string]*registeredClient)
+	s.toolToServer = make(map[string]*registeredClient)
+
+	s.mu.Unlock()
+
+	for _, entry := range servers {
+		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RemoteServerEntry pairs a client with the visibility to use when registering.
+type RemoteServerEntry struct {
+	Client     *Client
+	Visibility ToolVisibility
+}
+
 // registerRemoteServerWithVisibility is the internal implementation for registering remote servers.
 func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility) error {
 	s.mu.Lock()
