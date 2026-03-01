@@ -418,7 +418,7 @@ func (c *Client) convertToClaudeRequest(req openai.ChatCompletionRequest) Claude
 	var messages []openai.Message
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			claudeReq.System = msg.GetContentAsString()
+			claudeReq.System = SystemField{text: msg.GetContentAsString()}
 		} else {
 			messages = append(messages, msg)
 		}
@@ -443,14 +443,12 @@ func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {
 		if msg.ToolCallID != "" {
 			claudeMsg := ClaudeMessage{
 				Role: "user",
-				Content: []ContentBlock{
-					{
-						Type:      "tool_result",
-						ToolUseID: msg.ToolCallID,
-						Content:   msg.Content,
-					},
-				},
 			}
+			claudeMsg.Content = MessageContent{blocks: []ContentBlock{{
+				Type:      "tool_result",
+				ToolUseID: msg.ToolCallID,
+				Content:   msg.Content,
+			}}}
 			claudeMessages = append(claudeMessages, claudeMsg)
 			continue
 		}
@@ -459,28 +457,21 @@ func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {
 			Role: msg.Role,
 		}
 
-		// Add text content first (if any)
+		var blocks []ContentBlock
 		content := msg.GetContentAsString()
 		if content != "" {
-			claudeMsg.Content = append(claudeMsg.Content, ContentBlock{
-				Type: "text",
-				Text: content,
+			blocks = append(blocks, ContentBlock{Type: "text", Text: content})
+		}
+		for _, tc := range msg.ToolCalls {
+			blocks = append(blocks, ContentBlock{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: tc.Function.Arguments,
 			})
 		}
-
-		// Add tool calls (if any)
-		if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				claudeMsg.Content = append(claudeMsg.Content, ContentBlock{
-					Type:  "tool_use",
-					ID:    tc.ID,
-					Name:  tc.Function.Name,
-					Input: tc.Function.Arguments,
-				})
-			}
-		}
-
-		if len(claudeMsg.Content) > 0 {
+		if len(blocks) > 0 {
+			claudeMsg.Content = MessageContent{blocks: blocks}
 			claudeMessages = append(claudeMessages, claudeMsg)
 		}
 	}
