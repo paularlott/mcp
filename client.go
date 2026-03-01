@@ -42,12 +42,6 @@ type Client struct {
 	sessionID   string
 }
 
-// AuthProvider interface for different authentication methods
-type AuthProvider interface {
-	GetAuthHeader() (string, error)
-	Refresh() error
-}
-
 // NewClient creates a new MCP client using the shared HTTP pool.
 // The namespace will be added to all tool names (e.g., namespace "scriptling" makes tool "search" available as "scriptling.search").
 // Use an empty namespace for no namespacing.
