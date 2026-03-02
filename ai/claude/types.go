@@ -119,19 +119,93 @@ func MessagesRequestToOpenAI(req *MessagesRequest) openai.ChatCompletionRequest 
 		messages = append(messages, openai.Message{Role: "system", Content: req.System.text})
 	}
 	for _, m := range req.Messages {
-		msg := openai.Message{Role: m.Role}
-		var text string
-		for _, b := range m.Content.Blocks() {
-			if b.Type == "text" {
-				text += b.Text
+		blocks := m.Content.Blocks()
+
+		// tool_result blocks (user role carrying tool outputs) must each become a
+		// separate OpenAI message with role="tool".
+		hasToolResult := false
+		for _, b := range blocks {
+			if b.Type == "tool_result" {
+				hasToolResult = true
+				break
 			}
 		}
-		msg.Content = text
-		messages = append(messages, msg)
+		if hasToolResult {
+			for _, b := range blocks {
+				if b.Type != "tool_result" {
+					continue
+				}
+				var content string
+				switch v := b.Content.(type) {
+				case string:
+					content = v
+				case []interface{}:
+					for _, item := range v {
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							if itemMap["type"] == "text" {
+								if text, ok := itemMap["text"].(string); ok {
+									content += text
+								}
+							}
+						}
+					}
+				}
+				messages = append(messages, openai.Message{
+					Role:       "tool",
+					Content:    content,
+					ToolCallID: b.ToolUseID,
+				})
+			}
+			continue
+		}
+
+		// All other messages: collect text and tool_use blocks.
+		msg := openai.Message{Role: m.Role}
+		var text string
+		var toolCalls []openai.ToolCall
+		for _, b := range blocks {
+			switch b.Type {
+			case "text":
+				text += b.Text
+			case "tool_use":
+				toolCalls = append(toolCalls, openai.ToolCall{
+					ID:   b.ID,
+					Type: "function",
+					Function: openai.ToolCallFunction{
+						Name:      b.Name,
+						Arguments: b.Input,
+					},
+				})
+			}
+		}
+		if text != "" {
+			msg.Content = text
+		}
+		if len(toolCalls) > 0 {
+			msg.ToolCalls = toolCalls
+		}
+		if text != "" || len(toolCalls) > 0 {
+			messages = append(messages, msg)
+		}
 	}
+
+	// Convert Claude tool definitions to OpenAI tool definitions.
+	var openaiTools []openai.Tool
+	for _, t := range req.Tools {
+		openaiTools = append(openaiTools, openai.Tool{
+			Type: "function",
+			Function: openai.ToolFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		})
+	}
+
 	openaiReq := openai.ChatCompletionRequest{
 		Model:    req.Model,
 		Messages: messages,
+		Tools:    openaiTools,
 		Stream:   req.Stream,
 	}
 	if req.MaxTokens > 0 {
@@ -151,8 +225,23 @@ func OpenAIToMessagesResponse(resp *openai.ChatCompletionResponse) *MessagesResp
 	var content []ContentBlock
 	var stopReason string
 	if len(resp.Choices) > 0 {
-		content = []ContentBlock{{Type: "text", Text: resp.Choices[0].Message.GetContentAsString()}}
-		switch resp.Choices[0].FinishReason {
+		choice := resp.Choices[0]
+		if text := choice.Message.GetContentAsString(); text != "" {
+			content = append(content, ContentBlock{Type: "text", Text: text})
+		}
+		// Convert tool calls to tool_use content blocks.
+		for _, tc := range choice.Message.ToolCalls {
+			content = append(content, ContentBlock{
+				Type:  "tool_use",
+				ID:    tc.ID,
+				Name:  tc.Function.Name,
+				Input: tc.Function.Arguments,
+			})
+		}
+		if len(content) == 0 {
+			content = []ContentBlock{{Type: "text", Text: ""}}
+		}
+		switch choice.FinishReason {
 		case "stop":
 			stopReason = "end_turn"
 		case "length":
@@ -160,7 +249,7 @@ func OpenAIToMessagesResponse(resp *openai.ChatCompletionResponse) *MessagesResp
 		case "tool_calls":
 			stopReason = "tool_use"
 		default:
-			stopReason = resp.Choices[0].FinishReason
+			stopReason = choice.FinishReason
 		}
 	}
 	usage := MessagesUsage{}
@@ -193,7 +282,11 @@ func WriteSSEEvent(w io.Writer, eventType string, data interface{}) error {
 func StreamOpenAIToMessages(w io.Writer, flush func(), stream *openai.ChatStream, model string) error {
 	msgID := "msg_stream"
 	sentStart := false
-	sentBlockStart := false
+
+	// Block tracking: text block and one per tool call (keyed by OpenAI delta index).
+	nextBlockIdx := 0
+	textBlockIdx := -1  // -1 = not yet opened
+	toolBlockIdx := make(map[int]int) // OpenAI tool-call index -> Claude content block index
 
 	for stream.Next() {
 		chunk := stream.Current()
@@ -226,26 +319,72 @@ func StreamOpenAIToMessages(w io.Writer, flush func(), stream *openai.ChatStream
 		}
 		delta := chunk.Choices[0].Delta
 
+		// ---- text content ----
 		if delta.Content != "" {
-			if !sentBlockStart {
+			if textBlockIdx < 0 {
+				textBlockIdx = nextBlockIdx
+				nextBlockIdx++
 				WriteSSEEvent(w, "content_block_start", ClaudeStreamEvent{
-					Type: "content_block_start", Index: 0,
+					Type: "content_block_start", Index: textBlockIdx,
 					ContentBlock: &ContentBlock{Type: "text", Text: ""},
 				})
 				flush()
-				sentBlockStart = true
 			}
 			WriteSSEEvent(w, "content_block_delta", ClaudeStreamEvent{
-				Type: "content_block_delta", Index: 0,
+				Type: "content_block_delta", Index: textBlockIdx,
 				Delta: &ClaudeDelta{Type: "text_delta", Text: delta.Content},
 			})
 			flush()
 		}
 
-		if chunk.Choices[0].FinishReason != "" {
-			if sentBlockStart {
-				WriteSSEEvent(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": 0})
+		// ---- tool call deltas ----
+		for _, tc := range delta.ToolCalls {
+			blkIdx, exists := toolBlockIdx[tc.Index]
+			if !exists {
+				// First delta for this tool call: open a new tool_use content block.
+				blkIdx = nextBlockIdx
+				nextBlockIdx++
+				toolBlockIdx[tc.Index] = blkIdx
+				WriteSSEEvent(w, "content_block_start", ClaudeStreamEvent{
+					Type:  "content_block_start",
+					Index: blkIdx,
+					ContentBlock: &ContentBlock{
+						Type: "tool_use",
+						ID:   tc.ID,
+						Name: tc.Function.Name,
+					},
+				})
 				flush()
+			}
+			// Send partial JSON arguments.
+			if tc.Function.Arguments != "" {
+				WriteSSEEvent(w, "content_block_delta", ClaudeStreamEvent{
+					Type:  "content_block_delta",
+					Index: blkIdx,
+					Delta: &ClaudeDelta{Type: "input_json_delta", PartialJSON: tc.Function.Arguments},
+				})
+				flush()
+			}
+		}
+
+		// ---- finish ----
+		if chunk.Choices[0].FinishReason != "" {
+			// Close text block.
+			if textBlockIdx >= 0 {
+				WriteSSEEvent(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": textBlockIdx})
+				flush()
+			}
+			// Close all tool_use blocks in the order they were opened.
+			closed := make(map[int]bool)
+			for i := 0; i < len(toolBlockIdx); i++ {
+				for _, blkIdx := range toolBlockIdx {
+					if !closed[blkIdx] {
+						closed[blkIdx] = true
+						WriteSSEEvent(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": blkIdx})
+						flush()
+						break
+					}
+				}
 			}
 			stopReason := "end_turn"
 			switch chunk.Choices[0].FinishReason {
