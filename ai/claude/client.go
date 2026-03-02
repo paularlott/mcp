@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -645,8 +646,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, r
 	}
 	defer resp.Body.Close()
 
+	respBody := decompressBody(resp)
+	defer respBody.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(respBody)
 		var errResp ClaudeErrorResponse
 		if json.Unmarshal(bodyBytes, &errResp) == nil {
 			return fmt.Errorf("claude API error: %s", errResp.Error.Message)
@@ -654,7 +658,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, r
 		return fmt.Errorf("claude API error: status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(respBody)
 	if err != nil {
 		return fmt.Errorf("failed to read response: %w", err)
 	}
@@ -699,12 +703,15 @@ func (c *Client) streamRequest(ctx context.Context, method, path string, body an
 	}
 	defer resp.Body.Close()
 
+	respBody := decompressBody(resp)
+	defer respBody.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, _ := io.ReadAll(respBody)
 		return fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	return c.processSSEStream(resp.Body, eventFunc)
+	return c.processSSEStream(respBody, eventFunc)
 }
 
 func (c *Client) processSSEStream(reader io.Reader, eventFunc func(*ClaudeStreamEvent) (bool, error)) error {
@@ -743,11 +750,22 @@ func (c *Client) processSSEStream(reader io.Reader, eventFunc func(*ClaudeStream
 	return scanner.Err()
 }
 
+func decompressBody(resp *http.Response) io.ReadCloser {
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		gr, err := gzip.NewReader(resp.Body)
+		if err == nil {
+			return gr
+		}
+	}
+	return resp.Body
+}
+
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("x-api-key", c.apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	for key, values := range c.extraHeaders {
 		for _, value := range values {

@@ -158,7 +158,7 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 		MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
 		IdleConnTimeout:       cfg.IdleConnTimeout,
 		ForceAttemptHTTP2:     true,
-		ResponseHeaderTimeout: cfg.Timeout, // Use the Timeout value for response headers only
+		ResponseHeaderTimeout: 0, // Disabled: AI models can take minutes before sending first byte
 	}
 
 	// Configure HTTP/2 with extended idle timeout for streaming connections
@@ -175,9 +175,9 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 	return &DefaultPool{
 		httpClient: &http.Client{
 			Transport: transport,
-			// NOTE: Don't set Timeout here - it applies to entire request including
-			// body reading, which breaks streaming. Use ResponseHeaderTimeout instead
-			// for initial response, and context timeouts for overall request control.
+		// NOTE: Don't set Timeout here - it applies to entire request including
+		// body reading, which breaks streaming. Use context timeouts for overall
+		// request control instead.
 		},
 	}
 }
