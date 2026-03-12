@@ -28,7 +28,7 @@ func TestRegisterRemoteServerAndCall(t *testing.T) {
 	tools := host.ListTools()
 	found := false
 	for _, tl := range tools {
-		if tl.Name == "ns.rt" {
+		if tl.Name == "ns__rt" {
 			found = true
 			break
 		}
@@ -38,7 +38,7 @@ func TestRegisterRemoteServerAndCall(t *testing.T) {
 	}
 
 	// Call through host with namespace
-	resp, err := host.CallTool(context.Background(), "ns.rt", map[string]any{"x": "y"})
+	resp, err := host.CallTool(context.Background(), "ns__rt", map[string]any{"x": "y"})
 	if err != nil {
 		t.Fatalf("call namespaced: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestUnregisterRemoteServer(t *testing.T) {
 	if tools := host.ListTools(); len(tools) != 0 {
 		t.Fatalf("expected 0 tools after unregister, got %+v", tools)
 	}
-	if _, err := host.CallTool(context.Background(), "ns.tool-x", nil); err == nil {
+	if _, err := host.CallTool(context.Background(), "ns__tool-x", nil); err == nil {
 		t.Fatal("expected error calling unregistered tool")
 	}
 }
@@ -95,7 +95,7 @@ func TestReplaceRemoteServers(t *testing.T) {
 	if err := host.RegisterRemoteServer(NewClient(tsA.URL, NewBearerTokenAuth("t"), "a")); err != nil {
 		t.Fatalf("initial register: %v", err)
 	}
-	if tools := host.ListTools(); len(tools) != 1 || tools[0].Name != "a.tool-a" {
+	if tools := host.ListTools(); len(tools) != 1 || tools[0].Name != "a__tool-a" {
 		t.Fatalf("expected a.tool-a, got %+v", tools)
 	}
 
@@ -107,17 +107,17 @@ func TestReplaceRemoteServers(t *testing.T) {
 	}
 
 	tools := host.ListTools()
-	if len(tools) != 1 || tools[0].Name != "b.tool-b" {
+	if len(tools) != 1 || tools[0].Name != "b__tool-b" {
 		t.Fatalf("expected only b.tool-b after replace, got %+v", tools)
 	}
 
 	// Old tool should no longer be callable
-	if _, err := host.CallTool(context.Background(), "a.tool-a", nil); err == nil {
+	if _, err := host.CallTool(context.Background(), "a__tool-a", nil); err == nil {
 		t.Fatal("expected error calling removed tool")
 	}
 
 	// New tool should be callable
-	resp, err := host.CallTool(context.Background(), "b.tool-b", nil)
+	resp, err := host.CallTool(context.Background(), "b__tool-b", nil)
 	if err != nil {
 		t.Fatalf("call b.tool-b: %v", err)
 	}

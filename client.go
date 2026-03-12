@@ -19,9 +19,9 @@ const (
 )
 
 // DefaultNamespaceSeparator is the default separator used for namespacing tool names.
-// Uses "." by default for compatibility with OpenAI function naming constraints
-// (which require: a-z, A-Z, 0-9, underscores, dashes, and non-consecutive dots).
-var DefaultNamespaceSeparator = "."
+// Uses "__" by default for broad client compatibility (some clients such as AntiGravity
+// and PhpStorm reject tool names containing dots even though the MCP spec allows them).
+var DefaultNamespaceSeparator = "__"
 
 // ToolFilterFunc is a function that determines if a tool should be included.
 // It receives the original tool name (without namespace prefix).
