@@ -211,7 +211,9 @@ func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[s
 		if err != nil {
 			return nil, err
 		}
-		return convertToToolResponse(result), nil
+		if result != nil {
+			return convertToToolResponse(result), nil
+		}
 	}
 
 	return nil, ErrUnknownTool
