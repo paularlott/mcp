@@ -10,6 +10,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts
 - **Thread Safe**: Concurrent request handling with mutex protection
 - **Remote Servers**: Connect to and proxy remote MCP servers with authentication
+- **Parallel Tool Calls**: Execute multiple tools concurrently and collect all results in one call
 - **Searchable Tools**: Reduce context window usage with on-demand tool discovery
 - **Dynamic Tool Providers**: Load tools from external sources (databases, scripts, APIs)
 - **MCP Compliant**: Full support for protocol versions 2024-11-05 through 2025-11-25
@@ -63,21 +64,16 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 
 ### Get Started
 
-- **[Tool Providers](docs/guides/tool-providers.md)** - Dynamic tool loading for multi-tenant applications
+- **[Tool Providers](docs/guides/tool-providers.md)** - Dynamic tool loading, per-request providers, visibility control, and show-all mode
 - **[Tool Discovery](docs/guides/tool-discovery.md)** - Searchable tools and context window optimization
-- **[Dynamic Tool States](docs/guides/dynamic-tool-states.md)** - Switching visibility modes per request
 
 ### How-To Guides
 
-- **[Remote Servers](docs/guides/remote-servers.md)** - Connecting and proxying remote MCP servers
+- **[Remote Servers](docs/guides/remote-servers.md)** - Connecting and proxying remote MCP servers, parallel tool calls
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
 - **[Error Handling](docs/guides/error-handling.md)** - Structured error patterns and best practices
 - **[Thread Safety & Concurrency](docs/guides/concurrency.md)** - Safe concurrent usage patterns
-
-### Quick References
-
-- **[Dynamic Tool States Quick Ref](docs/quick-ref/dynamic-tool-states.md)** - Quick start for state transitions
 
 ## Tool Discovery Mode
 

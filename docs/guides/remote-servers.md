@@ -15,7 +15,27 @@ client := mcp.NewClient("https://api.example.com/mcp", oauth, "namespace")
 
 // Use client directly
 tools, err := client.ListTools(ctx)
-result, err := client.CallTool(ctx, "tool-name", args)
+
+// Call a tool with a plain map
+result, err := client.CallTool(ctx, "tool-name", map[string]any{"key": "value"})
+
+// Or with the Args fluent builder
+result, err := client.CallTool(ctx, "tool-name", mcp.Args{}.Arg("key", "value").Arg("limit", 10))
+```
+
+## Args Builder
+
+`Args` is a `map[string]any` type alias with a fluent `Arg` method. Both forms are interchangeable anywhere a `map[string]any` is accepted:
+
+```go
+// Plain map
+client.CallTool(ctx, "search", map[string]any{"query": "go", "limit": 10})
+
+// Fluent builder - same result
+client.CallTool(ctx, "search", mcp.Args{}.Arg("query", "go").Arg("limit", 10))
+
+// Also works in ToolCall for parallel calls
+mcp.ToolCall{Name: "search", Arguments: mcp.Args{}.Arg("query", "go")}
 ```
 
 ## Tool Filtering
@@ -115,6 +135,64 @@ result, err := server.CallTool(ctx, "unknown-tool", args)      // Returns ErrUnk
 // Serve unified interface as HTTP endpoint
 http.HandleFunc("/mcp", server.HandleRequest)
 ```
+
+## Parallel Tool Calls
+
+Execute multiple tools concurrently and collect all results in one call. Results are returned in the same order as the input, and a failure in one call does not affect the others.
+
+### CallToolsParallel
+
+For tools that are directly callable (native tools):
+
+```go
+results := client.CallToolsParallel(ctx, []mcp.ToolCall{
+    {Name: "weather",     Arguments: mcp.Args{}.Arg("city", "London")},
+    {Name: "news",        Arguments: mcp.Args{}.Arg("topic", "tech")},
+    {Name: "ai/summarize", Arguments: map[string]any{"text": doc}},
+})
+
+for _, r := range results {
+    if r.Err != nil {
+        log.Printf("%s failed: %v", r.Name, r.Err)
+        continue
+    }
+    // use r.Response
+}
+```
+
+### ExecuteDiscoveredToolsParallel
+
+For tools found via `ToolSearch` (discoverable tools):
+
+```go
+results := client.ExecuteDiscoveredToolsParallel(ctx, []mcp.ToolCall{
+    {Name: "send_email",   Arguments: mcp.Args{}.Arg("to", "<email>").Arg("subject", "Hello")},
+    {Name: "send_sms",     Arguments: mcp.Args{}.Arg("to", "<phone>").Arg("body", "Hello")},
+    {Name: "send_webhook", Arguments: map[string]any{"url": "https://example.com/hook"}},
+})
+
+for _, r := range results {
+    if r.Err != nil {
+        log.Printf("%s failed: %v", r.Name, r.Err)
+        continue
+    }
+    // use r.Response
+}
+```
+
+### ParallelToolResult Fields
+
+| Field | Type | Description |
+|---|---|---|
+| `Name` | `string` | Tool name from the input `ToolCall` |
+| `Response` | `*ToolResponse` | Response on success, `nil` on error |
+| `Err` | `error` | Error on failure, `nil` on success |
+
+### When to Use Parallel Calls
+
+- Fetching data from multiple independent sources simultaneously
+- Fan-out patterns where results are aggregated before responding
+- Reducing total latency when tools have no dependencies on each other
 
 ## Tool Resolution
 

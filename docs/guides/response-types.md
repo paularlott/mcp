@@ -63,7 +63,7 @@ Best for: Documentation links, external references, web content
 Return JSON-structured data:
 
 ```go
-data := map[string]interface{}{
+data := map[string]any{
     "status": "success",
     "count": 42,
     "items": []string{"a", "b", "c"},
@@ -112,7 +112,7 @@ Use when: Server-side operation fails
 ### Custom Error
 
 ```go
-return nil, mcp.NewToolError(-32000, "Custom server error", map[string]interface{}{
+return nil, mcp.NewToolError(-32000, "Custom server error", map[string]any{
     "details": "Additional error information",
     "code": "specific_error_code",
 })

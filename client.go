@@ -103,10 +103,10 @@ func (c *Client) Initialize(ctx context.Context) error {
 		JSONRPC: "2.0",
 		ID:      "init",
 		Method:  "initialize",
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"protocolVersion": MCPProtocolVersionLatest,
-			"capabilities":    map[string]interface{}{},
-			"clientInfo": map[string]interface{}{
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]any{
 				"name":    mcpClientName,
 				"version": mcpClientVersion,
 			},
@@ -126,7 +126,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	// Check for session ID in response headers first
 	if sessionID := respHeaders.Get("Mcp-Session-Id"); sessionID != "" {
 		c.sessionID = sessionID
-	} else if result, ok := resp.Result.(map[string]interface{}); ok {
+	} else if result, ok := resp.Result.(map[string]any); ok {
 		// Check if the server provided a session ID in the response body
 		if sessionID, exists := result["sessionId"]; exists {
 			if sessionStr, ok := sessionID.(string); ok {
@@ -243,7 +243,7 @@ func (c *Client) RefreshToolCache(ctx context.Context) error {
 // If the client has a namespace, the tool name should include it (e.g., "scriptling.search").
 // The namespace will be stripped before calling the underlying tool.
 // If a tool filter is set and the tool is filtered out, returns ErrToolFiltered.
-func (c *Client) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
+func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {
 			return nil, err
@@ -268,7 +268,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]inte
 		JSONRPC: "2.0",
 		ID:      fmt.Sprintf("call-%s", toolName),
 		Method:  "tools/call",
-		Params: map[string]interface{}{
+		Params: map[string]any{
 			"name":      toolName,
 			"arguments": args,
 		},
@@ -392,14 +392,14 @@ func (c *Client) parseEventStream(data []byte, resp *MCPResponse) error {
 // ToolSearch performs a tool search using the tool_search MCP tool.
 // This is useful when the server has many tools registered via a discovery registry.
 // The query searches tool names, descriptions, and keywords.
-func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) ([]map[string]interface{}, error) {
+func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) ([]map[string]any, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {
 			return nil, err
 		}
 	}
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"query": query,
 	}
 	if maxResults > 0 {
@@ -415,17 +415,78 @@ func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) (
 	return parseToolSearchResponse(resp)
 }
 
+// Args is a map of tool arguments. It can be used directly as a map[string]any
+// or built fluently via the Arg method.
+//
+//	// Direct map
+//	client.CallTool(ctx, "tool", map[string]any{"city": "London"})
+//
+//	// Fluent builder
+//	client.CallTool(ctx, "tool", mcp.Args{}.Arg("city", "London").Arg("units", "metric"))
+type Args map[string]any
+
+// Arg adds a key/value pair and returns the Args for chaining.
+func (a Args) Arg(key string, value any) Args {
+	a[key] = value
+	return a
+}
+
+// ToolCall represents a single tool invocation for use with parallel calls.
+type ToolCall struct {
+	Name      string
+	Arguments map[string]any
+}
+
+// ParallelToolResult holds the result of a single tool call from a parallel execution.
+type ParallelToolResult struct {
+	Name     string
+	Response *ToolResponse
+	Err      error
+}
+
+// CallToolsParallel executes multiple tools concurrently and returns results in the same order as the input.
+func (c *Client) CallToolsParallel(ctx context.Context, calls []ToolCall) []ParallelToolResult {
+	results := make([]ParallelToolResult, len(calls))
+	var wg sync.WaitGroup
+	for i, call := range calls {
+		wg.Add(1)
+		go func(i int, call ToolCall) {
+			defer wg.Done()
+			resp, err := c.CallTool(ctx, call.Name, call.Arguments)
+			results[i] = ParallelToolResult{Name: call.Name, Response: resp, Err: err}
+		}(i, call)
+	}
+	wg.Wait()
+	return results
+}
+
+// ExecuteDiscoveredToolsParallel executes multiple discovered tools concurrently and returns results in the same order as the input.
+func (c *Client) ExecuteDiscoveredToolsParallel(ctx context.Context, calls []ToolCall) []ParallelToolResult {
+	results := make([]ParallelToolResult, len(calls))
+	var wg sync.WaitGroup
+	for i, call := range calls {
+		wg.Add(1)
+		go func(i int, call ToolCall) {
+			defer wg.Done()
+			resp, err := c.ExecuteDiscoveredTool(ctx, call.Name, call.Arguments)
+			results[i] = ParallelToolResult{Name: call.Name, Response: resp, Err: err}
+		}(i, call)
+	}
+	wg.Wait()
+	return results
+}
+
 // ExecuteDiscoveredTool executes a tool by name using the execute_tool MCP tool.
 // This is the only way to call tools that were discovered via ToolSearch.
 // Discovered tools cannot be called directly via CallTool.
-func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, arguments map[string]interface{}) (*ToolResponse, error) {
+func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, arguments map[string]any) (*ToolResponse, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {
 			return nil, err
 		}
 	}
 
-	args := map[string]interface{}{
+	args := map[string]any{
 		"name":      name,
 		"arguments": arguments,
 	}
@@ -435,7 +496,7 @@ func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, argumen
 
 // parseToolSearchResponse parses the response from tool_search MCP tool.
 // The tool_search tool returns JSON containing search results.
-func parseToolSearchResponse(resp *ToolResponse) ([]map[string]interface{}, error) {
+func parseToolSearchResponse(resp *ToolResponse) ([]map[string]any, error) {
 	if resp == nil {
 		return nil, fmt.Errorf("nil response")
 	}
@@ -460,10 +521,10 @@ func parseToolSearchResponse(resp *ToolResponse) ([]map[string]interface{}, erro
 	}
 
 	if jsonText == "" {
-		return []map[string]interface{}{}, nil
+		return []map[string]any{}, nil
 	}
 
-	var results []map[string]interface{}
+	var results []map[string]any
 	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
 		return nil, fmt.Errorf("failed to parse tool search response: %w", err)
 	}
@@ -475,12 +536,12 @@ func parseToolSearchResponse(resp *ToolResponse) ([]map[string]interface{}, erro
 // to avoid double JSON serialization. Falls back to marshal/unmarshal if needed.
 func parseToolsResult(result interface{}) ([]MCPTool, error) {
 	// Try direct type assertion first
-	if resultMap, ok := result.(map[string]interface{}); ok {
+	if resultMap, ok := result.(map[string]any); ok {
 		if toolsRaw, ok := resultMap["tools"]; ok {
 			if toolsSlice, ok := toolsRaw.([]interface{}); ok {
 				tools := make([]MCPTool, 0, len(toolsSlice))
 				for _, toolRaw := range toolsSlice {
-					if toolMap, ok := toolRaw.(map[string]interface{}); ok {
+					if toolMap, ok := toolRaw.(map[string]any); ok {
 						tool := MCPTool{}
 						if name, ok := toolMap["name"].(string); ok {
 							tool.Name = name
