@@ -63,3 +63,26 @@ func (NoOpToolHandler) OnToolResult(toolCallID, toolName, result string) error {
 
 // Ensure NoOpToolHandler implements ToolHandler
 var _ ToolHandler = NoOpToolHandler{}
+
+// SSEEventWriter context support — allows library code to inject custom SSE events
+// into the response stream during tool execution.
+
+type sseEventWriterKey struct{}
+
+// WithSSEEventWriter attaches an SSEEventWriter to the context.
+// This makes the writer available to library code during tool execution,
+// allowing it to send custom SSE events (e.g., permission requests) to the client.
+func WithSSEEventWriter(ctx context.Context, w SSEEventWriter) context.Context {
+	return context.WithValue(ctx, sseEventWriterKey{}, w)
+}
+
+// SSEEventWriterFromContext retrieves an SSEEventWriter from the context.
+// Returns nil if no writer is attached.
+func SSEEventWriterFromContext(ctx context.Context) SSEEventWriter {
+	if v := ctx.Value(sseEventWriterKey{}); v != nil {
+		if w, ok := v.(SSEEventWriter); ok {
+			return w
+		}
+	}
+	return nil
+}
