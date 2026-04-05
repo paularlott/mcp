@@ -198,3 +198,97 @@ func (tc *TokenCounter) estimateArgsTokens(args map[string]any) int {
 	}
 	return EstimateTokens(string(jsonBytes))
 }
+
+// MessageFromMap converts a map[string]any to a Message struct.
+// This is useful when working with dynamic/generic message representations
+// (e.g., from JSON parsing or scripting language interop).
+func MessageFromMap(m map[string]any) Message {
+	msg := Message{}
+	if role, ok := m["role"].(string); ok {
+		msg.Role = role
+	}
+	if content, ok := m["content"]; ok {
+		msg.Content = content
+	}
+	if toolCallID, ok := m["tool_call_id"].(string); ok {
+		msg.ToolCallID = toolCallID
+	}
+	if toolCallsRaw, ok := m["tool_calls"]; ok && toolCallsRaw != nil {
+		if tcList, ok := toolCallsRaw.([]any); ok {
+			for _, tcRaw := range tcList {
+				if tcMap, ok := tcRaw.(map[string]any); ok {
+					toolCall := ToolCall{Type: "function"}
+					if id, ok := tcMap["id"].(string); ok {
+						toolCall.ID = id
+					}
+					if tcType, ok := tcMap["type"].(string); ok && tcType != "" {
+						toolCall.Type = tcType
+					}
+					if fnRaw, ok := tcMap["function"]; ok {
+						if fnMap, ok := fnRaw.(map[string]any); ok {
+							if name, ok := fnMap["name"].(string); ok {
+								toolCall.Function.Name = name
+							}
+							if args, ok := fnMap["arguments"]; ok {
+								switch argsVal := args.(type) {
+								case string:
+									var argsMap map[string]any
+									if err := json.Unmarshal([]byte(argsVal), &argsMap); err == nil {
+										toolCall.Function.Arguments = argsMap
+									}
+								case map[string]any:
+									toolCall.Function.Arguments = argsVal
+								}
+							}
+						}
+					}
+					msg.ToolCalls = append(msg.ToolCalls, toolCall)
+				}
+			}
+		}
+	}
+	return msg
+}
+
+// AddPromptTokensFromMaps estimates and adds prompt tokens from chat messages
+// represented as []map[string]any. Each map should have "role" and "content" keys,
+// and may include "tool_calls" and "tool_call_id".
+func (tc *TokenCounter) AddPromptTokensFromMaps(messages []map[string]any) {
+	msgs := make([]Message, 0, len(messages))
+	for _, m := range messages {
+		msgs = append(msgs, MessageFromMap(m))
+	}
+	tc.AddPromptTokensFromMessages(msgs)
+}
+
+// AddCompletionTokensFromResponseMap estimates and adds completion tokens from a
+// response represented as a map[string]any. Supports both Chat Completions API format
+// (choices[0].message) and Responses API format (output[].content[].text).
+func (tc *TokenCounter) AddCompletionTokensFromResponseMap(response map[string]any) {
+	// Chat Completions API: choices[0].message
+	if choices, ok := response["choices"].([]any); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]any); ok {
+			if message, ok := choice["message"].(map[string]any); ok {
+				msg := MessageFromMap(message)
+				tc.AddCompletionTokensFromMessage(&msg)
+			}
+		}
+	}
+
+	// Responses API: output[].content[].text
+	if output, ok := response["output"].([]any); ok {
+		for _, item := range output {
+			if itemMap, ok := item.(map[string]any); ok {
+				if contentList, ok := itemMap["content"].([]any); ok {
+					for _, contentItem := range contentList {
+						if cMap, ok := contentItem.(map[string]any); ok {
+							if text, ok := cMap["text"].(string); ok {
+								tc.AddCompletionTokensFromText(text)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
