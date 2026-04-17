@@ -23,7 +23,7 @@ tool := mcp.NewTool("get_status", "Get system status").Build()
 
 - **Visible in `tools/list`**: Yes
 - **Directly callable**: Yes
-- **Searchable via `tool_search`**: No (use for essential tools)
+- **Searchable via `tool_search`**: Yes
 
 ### Discoverable Tools - Hidden from `tools/list`, searchable only
 
@@ -100,7 +100,9 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 **Behavior:**
 
 - ALL tools (native and discoverable) appear in `tools/list`
-- `tool_search` still only searches discoverable tools
+- `tool_search` searches both native and discoverable tools
+- `execute_tool` is the always-safe way to call a tool returned by `tool_search`
+- Tools that are also present in `tools/list` may still be called directly
 - All tools remain callable
 
 **When to use:**

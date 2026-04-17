@@ -33,9 +33,9 @@ type Client struct {
 	baseURL     string
 	httpClient  *http.Client
 	auth        AuthProvider
-	namespace   string    // Optional namespace for tool names (e.g., "scriptling.")
-	separator   string    // Separator for namespace
-	cachedTools []MCPTool // Cached tools with namespace already applied
+	namespace   string         // Optional namespace for tool names (e.g., "scriptling.")
+	separator   string         // Separator for namespace
+	cachedTools []MCPTool      // Cached tools with namespace already applied
 	toolFilter  ToolFilterFunc // Optional filter for tools (applied to original name without namespace)
 	mu          sync.RWMutex
 	initialized bool
@@ -477,8 +477,8 @@ func (c *Client) ExecuteDiscoveredToolsParallel(ctx context.Context, calls []Too
 }
 
 // ExecuteDiscoveredTool executes a tool by name using the execute_tool MCP tool.
-// This is the only way to call tools that were discovered via ToolSearch.
-// Discovered tools cannot be called directly via CallTool.
+// This is the always-safe way to call tools returned by ToolSearch.
+// Tools may also be callable directly via CallTool when they were exposed in tools/list.
 func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, arguments map[string]any) (*ToolResponse, error) {
 	if !c.initialized {
 		if err := c.Initialize(ctx); err != nil {

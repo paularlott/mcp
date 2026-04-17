@@ -92,12 +92,13 @@ func (r *internalRegistry) GetRegisteredTools() []MCPTool {
 
 // Search finds tools matching the query
 func (r *internalRegistry) Search(ctx context.Context, query string, maxResults int) []SearchResult {
-	return r.SearchWithAdditionalTools(ctx, query, maxResults, nil)
+	return r.SearchWithAdditionalTools(ctx, query, maxResults, nil, nil)
 }
 
 // SearchWithAdditionalTools finds tools matching the query, including additional tools passed in.
 // The additional tools are typically discoverable tools from providers.
-func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query string, maxResults int, additionalTools []MCPTool) []SearchResult {
+// listedTools are additional searchable tools that may already appear in tools/list.
+func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query string, maxResults int, additionalTools []MCPTool, listedTools []MCPTool) []SearchResult {
 	r.mu.RLock()
 	toolsCopy := make(map[string]*internalRegisteredTool, len(r.tools))
 	for k, v := range r.tools {
@@ -131,6 +132,28 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 
 	// Search additional tools (discoverable tools from providers)
 	for _, tool := range additionalTools {
+		if seen[tool.Name] {
+			continue
+		}
+		var score float64
+		if listAll {
+			score = 1.0
+		} else {
+			score = calculateScore(queryLower, tool.Name, tool.Description, tool.Keywords)
+		}
+		if score > 0 {
+			results = append(results, SearchResult{
+				Name:        tool.Name,
+				Description: tool.Description,
+				Score:       score,
+				InputSchema: tool.InputSchema,
+			})
+			seen[tool.Name] = true
+		}
+	}
+
+	// Search listed tools
+	for _, tool := range listedTools {
 		if seen[tool.Name] {
 			continue
 		}

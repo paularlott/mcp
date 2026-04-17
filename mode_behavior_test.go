@@ -134,7 +134,7 @@ func TestShowAllModeToolVisibility(t *testing.T) {
 	}
 }
 
-// TestToolSearchInNormalMode tests that tool_search only finds discoverable tools in normal mode
+// TestToolSearchInNormalMode tests that tool_search (via CallTool) finds both native and discoverable tools
 func TestToolSearchInNormalMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
@@ -155,11 +155,24 @@ func TestToolSearchInNormalMode(t *testing.T) {
 		},
 	)
 
-	// Search in normal mode
+	// Call tool_search via CallTool (the real path)
 	ctx := context.Background()
-	results := server.internalRegistry.Search(ctx, "", 100)
+	response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+		"query":       "",
+		"max_results": 100,
+	})
+	if err != nil {
+		t.Fatalf("tool_search failed: %v", err)
+	}
+	if len(response.Content) == 0 {
+		t.Fatal("No content in response")
+	}
 
-	// Should only find discoverable_tool, not native_tool
+	var results []SearchResult
+	if err := json.Unmarshal([]byte(response.Content[0].Text), &results); err != nil {
+		t.Fatalf("Failed to parse results: %v", err)
+	}
+
 	foundNative := false
 	foundDiscoverable := false
 	for _, result := range results {
@@ -171,16 +184,16 @@ func TestToolSearchInNormalMode(t *testing.T) {
 		}
 	}
 
-	if foundNative {
-		t.Error("native_tool should NOT be searchable in normal mode")
+	if !foundNative {
+		t.Error("native_tool should be found via tool_search")
 	}
 	if !foundDiscoverable {
-		t.Error("discoverable_tool should be searchable in normal mode")
+		t.Error("discoverable_tool should be found via tool_search")
 	}
 }
 
-// TestToolSearchInShowAllMode tests that tool_search still only finds discoverable tools
-// even in show-all mode (show-all is for listing, not searching)
+// TestToolSearchInShowAllMode tests that tool_search finds both discoverable and native tools
+// in show-all mode
 func TestToolSearchInShowAllMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
@@ -221,8 +234,7 @@ func TestToolSearchInShowAllMode(t *testing.T) {
 		t.Fatalf("Failed to parse results: %v", err)
 	}
 
-	// tool_search only finds discoverable tools, not native tools
-	// (native tools are already visible in the tools/list)
+	// tool_search now finds both native and discoverable tools
 	foundNative := false
 	foundDiscoverable := false
 	for _, result := range results {
@@ -234,8 +246,8 @@ func TestToolSearchInShowAllMode(t *testing.T) {
 		}
 	}
 
-	if foundNative {
-		t.Error("native_tool should NOT be in tool_search results (it's native)")
+	if !foundNative {
+		t.Error("native_tool should be in tool_search results")
 	}
 	if !foundDiscoverable {
 		t.Error("discoverable_tool should be searchable via tool_search")

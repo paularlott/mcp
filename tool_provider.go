@@ -181,6 +181,31 @@ func getDiscoverableToolsFromProviders(ctx context.Context) []MCPTool {
 	return tools
 }
 
+// getNativeToolsFromProviders returns all native tools from providers.
+func getNativeToolsFromProviders(ctx context.Context) []MCPTool {
+	providers := GetToolProviders(ctx)
+	if len(providers) == 0 {
+		return nil
+	}
+
+	var tools []MCPTool
+	seen := make(map[string]bool)
+
+	for _, provider := range providers {
+		providerTools, err := provider.GetTools(ctx)
+		if err != nil {
+			continue
+		}
+		for _, tool := range providerTools {
+			if tool.Visibility == ToolVisibilityNative && !seen[tool.Name] {
+				tools = append(tools, tool)
+				seen[tool.Name] = true
+			}
+		}
+	}
+	return tools
+}
+
 // callToolFromProviders tries to call a tool from the providers in the context.
 // Returns ToolResponse, error - returns ErrUnknownTool if no provider handles the tool.
 func callToolFromProviders(ctx context.Context, name string, params map[string]interface{}) (*ToolResponse, error) {

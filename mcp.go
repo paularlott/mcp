@@ -44,12 +44,12 @@ var (
 
 // registeredTool represents a registered tool
 type registeredTool struct {
-	Name          string
-	Description   string
-	Schema        map[string]interface{}
-	OutputSchema  map[string]interface{}
-	Handler       ToolHandler
-	Visibility    ToolVisibility
+	Name         string
+	Description  string
+	Schema       map[string]interface{}
+	OutputSchema map[string]interface{}
+	Handler      ToolHandler
+	Visibility   ToolVisibility
 }
 
 // Server represents an MCP server instance.
@@ -134,18 +134,12 @@ func (s *Server) SetSessionManager(manager SessionManager) {
 // getDiscoveryTools returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
 // These are generated dynamically, not stored in nativeToolCache.
 func (s *Server) getDiscoveryTools() []MCPTool {
-	return s.getDiscoveryToolsWithContext(context.Background())
-}
-
-// getDiscoveryToolsWithContext returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
-// These are generated dynamically, not stored in nativeToolCache.
-func (s *Server) getDiscoveryToolsWithContext(ctx context.Context) []MCPTool {
-	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Use this to find tools that aren't visible in tools/list. After finding a tool: if it was not in tools/list, use execute_tool to call it; if it was in tools/list, you can call it directly. Omit query to list all available tools.",
+	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). After finding a tool, use execute_tool to call it. Omit query to list all available tools.",
 		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
 		Number("max_results", "Maximum number of results to return (default: 5)"),
 	)
 
-	executeTool := NewTool(ExecuteToolName, "Execute a tool by name with the given arguments. This is the ONLY way to call tools discovered via tool_search. Discovered tools cannot be called directly - you must use this execute_tool function.",
+	executeTool := NewTool(ExecuteToolName, "Execute a tool by name with the given arguments. This is the always-safe way to call tools discovered via tool_search, whether or not they were included in tools/list for the current client.",
 		String("name", "The exact name of the tool to execute (must be a tool found via tool_search)", Required()),
 		Object("arguments", "The arguments to pass to the tool (matching the schema from tool_search results)"),
 	)
@@ -167,7 +161,8 @@ func (s *Server) getDiscoveryToolsWithContext(ctx context.Context) []MCPTool {
 }
 
 // handleToolSearch handles the tool_search meta-tool execution.
-// Searches discoverable tools from both static registration and providers.
+// Searches discoverable tools from both static registration and providers,
+// as well as native tools that are already in tools/list.
 func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 	query := req.StringOr("query", "")
 	maxResults := req.IntOr("max_results", 5)
@@ -181,8 +176,15 @@ func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolR
 	// Get discoverable tools from providers to include in search
 	discoverableFromProviders := getDiscoverableToolsFromProviders(ctx)
 
-	// Search with provider tools included
-	results := s.internalRegistry.SearchWithAdditionalTools(ctx, query, maxResults, discoverableFromProviders)
+	// Get native tools: statically registered + from providers
+	s.mu.RLock()
+	listedTools := make([]MCPTool, len(s.nativeToolCache))
+	copy(listedTools, s.nativeToolCache)
+	s.mu.RUnlock()
+	listedTools = append(listedTools, getNativeToolsFromProviders(ctx)...)
+
+	// Search with provider tools and listed tools included
+	results := s.internalRegistry.SearchWithAdditionalTools(ctx, query, maxResults, discoverableFromProviders, listedTools)
 	if len(results) == 0 {
 		return NewToolResponseText("No tools found. Try different keywords or a broader search term."), nil
 	}
@@ -260,20 +262,20 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords .
 // Keywords are stored and used in show-all mode when native tools become searchable.
 func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
 	regTool := &registeredTool{
-		Name:          tool.name,
-		Description:   tool.Description(),
-		Schema:        tool.buildSchema(),
-		OutputSchema:  tool.buildOutputSchema(),
-		Handler:       handler,
-		Visibility:    ToolVisibilityNative,
+		Name:         tool.name,
+		Description:  tool.Description(),
+		Schema:       tool.buildSchema(),
+		OutputSchema: tool.buildOutputSchema(),
+		Handler:      handler,
+		Visibility:   ToolVisibilityNative,
 	}
 	s.tools[tool.name] = regTool
 
 	newTool := MCPTool{
-		Name:          tool.name,
-		Description:   tool.Description(),
-		InputSchema:   regTool.Schema,
-		Keywords:      keywords, // Store keywords for show-all mode
+		Name:        tool.name,
+		Description: tool.Description(),
+		InputSchema: regTool.Schema,
+		Keywords:    keywords, // Store keywords for show-all mode
 	}
 	if regTool.OutputSchema != nil {
 		newTool.OutputSchema = regTool.OutputSchema
@@ -295,7 +297,8 @@ func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler
 		s.nativeToolCache[idx] = newTool
 	}
 
-	// DO NOT add to internal registry here - native tools are only searchable in show-all mode
+	// Native tools are surfaced to tool_search from nativeToolCache at request time,
+	// so they don't need to be duplicated in the internal discovery registry.
 }
 
 // registerDiscoverableToolLocked registers a discoverable tool while the lock is already held.
@@ -355,12 +358,12 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 		} else {
 			// Register as native tool
 			regTool := &registeredTool{
-				Name:          tr.Tool.name,
-				Description:   tr.Tool.Description(),
-				Schema:        tr.Tool.buildSchema(),
-				OutputSchema:  tr.Tool.buildOutputSchema(),
-				Handler:       tr.Handler,
-				Visibility:    ToolVisibilityNative,
+				Name:         tr.Tool.name,
+				Description:  tr.Tool.Description(),
+				Schema:       tr.Tool.buildSchema(),
+				OutputSchema: tr.Tool.buildOutputSchema(),
+				Handler:      tr.Handler,
+				Visibility:   ToolVisibilityNative,
 			}
 			s.tools[tr.Tool.name] = regTool
 		}
@@ -377,9 +380,9 @@ func (s *Server) rebuildNativeToolCacheLocked() {
 	for _, tool := range s.tools {
 		if tool.Visibility == ToolVisibilityNative {
 			toolItem := MCPTool{
-				Name:          tool.Name,
-				Description:   tool.Description,
-				InputSchema:   tool.Schema,
+				Name:        tool.Name,
+				Description: tool.Description,
+				InputSchema: tool.Schema,
 			}
 			if tool.OutputSchema != nil {
 				toolItem.OutputSchema = tool.OutputSchema
@@ -1004,12 +1007,12 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 		handler := tool.Handler
 		schema := tool.Schema
 		s.mu.RUnlock()
-		
+
 		// Validate required parameters
 		if err := validateRequiredParameters(schema, args); err != nil {
 			return nil, err
 		}
-		
+
 		toolReq := &ToolRequest{args: args}
 		return handler(ctx, toolReq)
 	}

@@ -288,6 +288,115 @@ func TestClient_RefreshToolCache(t *testing.T) {
 	}
 }
 
+func TestClient_ToolSearchReturnsSearchableTools(t *testing.T) {
+	srv := NewServer("svc", "1")
+	srv.RegisterTool(
+		NewTool("upper", "Convert text to upper case", String("s", "text", Required())),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			v, _ := req.String("s")
+			return NewToolResponseText(strings.ToUpper(v)), nil
+		},
+		"text", "uppercase",
+	)
+	srv.RegisterTool(
+		NewTool("send_email", "Send an email", String("to", "recipient", Required())).Discoverable("email", "message"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("sent"), nil
+		},
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, staticAuth{"Bearer t"}, "")
+	results, err := c.ToolSearch(context.Background(), "", 10)
+	if err != nil {
+		t.Fatalf("tool search: %v", err)
+	}
+
+	byName := make(map[string]map[string]any)
+	for _, result := range results {
+		name, _ := result["name"].(string)
+		byName[name] = result
+	}
+
+	if _, ok := byName["upper"]; !ok {
+		t.Fatal("expected upper in search results")
+	}
+	if _, ok := byName["send_email"]; !ok {
+		t.Fatal("expected send_email in search results")
+	}
+	if _, ok := byName["upper"]["native"]; ok {
+		t.Fatal("did not expect native field in tool_search results")
+	}
+}
+
+func TestClient_ExecuteDiscoveredToolWorksForNonNativeResults(t *testing.T) {
+	srv := NewServer("svc", "1")
+	srv.RegisterTool(
+		NewTool("send_email", "Send an email", String("to", "recipient", Required())).Discoverable("email"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			to, _ := req.String("to")
+			return NewToolResponseText("sent to " + to), nil
+		},
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, staticAuth{"Bearer t"}, "")
+	resp, err := c.ExecuteDiscoveredTool(context.Background(), "send_email", map[string]any{"to": "user@example.com"})
+	if err != nil {
+		t.Fatalf("execute discovered tool: %v", err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "sent to user@example.com" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestClient_SearchThenExecuteWorkflow(t *testing.T) {
+	srv := NewServer("svc", "1")
+	srv.RegisterTool(
+		NewTool("send_email", "Send an email", String("to", "recipient", Required())).Discoverable("email", "message"),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			to, _ := req.String("to")
+			return NewToolResponseText("sent to " + to), nil
+		},
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, staticAuth{"Bearer t"}, "")
+	results, err := c.ToolSearch(context.Background(), "email", 10)
+	if err != nil {
+		t.Fatalf("tool search: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least one search result")
+	}
+
+	var found bool
+	for _, result := range results {
+		if name, _ := result["name"].(string); name == "send_email" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected send_email in search results")
+	}
+
+	resp, err := c.ExecuteDiscoveredTool(context.Background(), "send_email", map[string]any{"to": "workflow@example.com"})
+	if err != nil {
+		t.Fatalf("execute discovered tool: %v", err)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != "sent to workflow@example.com" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
 func TestClient_NamespaceNormalization(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -11,7 +11,7 @@ When you have many tools, sending all their definitions to an LLM consumes signi
 
 ## How It Works
 
-- `RegisterTool(tool, handler)` - Tool is visible in `tools/list`, NOT searchable
+- `RegisterTool(tool, handler)` - Tool is visible in `tools/list` and searchable via `tool_search`
 - `RegisterTool(tool.Discoverable(keywords...), handler)` - Tool is hidden from `tools/list` but searchable via `tool_search`
 - The server automatically provides `tool_search` and `execute_tool` when any discoverable tools are registered
 - LLMs can discover tools by keyword and get full schemas before calling them
@@ -48,7 +48,7 @@ curl -X POST http://localhost:8088/mcp \
     "method":"tools/call",
     "params":{
       "name":"tool_search",
-      "arguments":{"query":"database", "limit": 5}
+      "arguments":{"query":"database", "max_results": 5}
     }
   }'
 ```
@@ -98,7 +98,7 @@ server.RegisterTool(
 
 - Always visible in `tools/list`
 - Directly callable by name
-- NOT searchable via `tool_search`
+- Searchable via `tool_search`
 - Use for essential tools the LLM should always know about
 
 ### RegisterTool with Discoverable() - Searchable Tools
