@@ -132,9 +132,9 @@ func TestMixedNativeAndDiscoverable(t *testing.T) {
 	// Should have: get_status, tool_search, execute_tool
 	// Should NOT have: complex_analysis
 	expectedTools := map[string]bool{
-		"get_status":     false,
-		ToolSearchName:   false,
-		ExecuteToolName:  false,
+		"get_status":    false,
+		ToolSearchName:  false,
+		ExecuteToolName: false,
 	}
 
 	for _, tool := range tools {
@@ -205,8 +205,8 @@ func TestExecuteToolCallsDiscoverableTool(t *testing.T) {
 
 	// Call via execute_tool
 	response, err := server.CallTool(context.Background(), ExecuteToolName, map[string]interface{}{
-		"name":      "count_calls",
-		"arguments": map[string]interface{}{},
+		"name":       "count_calls",
+		"parameters": map[string]interface{}{},
 	})
 	if err != nil {
 		t.Fatalf("execute_tool failed: %v", err)
@@ -474,7 +474,7 @@ func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 	// The remote tool should be callable via execute_tool
 	response, err = mainServer.CallTool(context.Background(), ExecuteToolName, map[string]interface{}{
 		"name": "analytics__remote_analyze",
-		"arguments": map[string]interface{}{
+		"parameters": map[string]interface{}{
 			"data": "test data",
 		},
 	})
@@ -506,10 +506,10 @@ func (p *MockToolProvider) AddTool(name, description string, handler func(ctx co
 
 func (p *MockToolProvider) AddToolWithOptions(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), keywords ...string) {
 	p.tools = append(p.tools, MCPTool{
-		Name:          name,
-		Description:   description,
-		InputSchema:   map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
-		Keywords:      keywords,
+		Name:        name,
+		Description: description,
+		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Keywords:    keywords,
 	})
 	p.handlers[name] = handler
 }

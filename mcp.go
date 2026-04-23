@@ -139,9 +139,9 @@ func (s *Server) getDiscoveryTools() []MCPTool {
 		Number("max_results", "Maximum number of results to return (default: 5)"),
 	)
 
-	executeTool := NewTool(ExecuteToolName, "Execute a tool by name with the given arguments. This is the always-safe way to call tools discovered via tool_search, whether or not they were included in tools/list for the current client.",
+	executeTool := NewTool(ExecuteToolName, "Execute a tool by name with the given parameters. This is the always-safe way to call tools discovered via tool_search, whether or not they were included in tools/list for the current client.",
 		String("name", "The exact name of the tool to execute (must be a tool found via tool_search)", Required()),
-		Object("arguments", "The arguments to pass to the tool (matching the schema from tool_search results)"),
+		Object("parameters", "The parameters to pass to the tool (matching the schema from tool_search results)"),
 	)
 
 	discoveryTools := []MCPTool{
@@ -198,7 +198,11 @@ func (s *Server) handleExecuteTool(ctx context.Context, req *ToolRequest) (*Tool
 		return NewToolResponseText("Tool name is required"), nil
 	}
 
-	args, _ := req.Object("arguments")
+	args, _ := req.Object("parameters")
+	if args == nil {
+		// Fallback: accept "arguments" for backward compatibility
+		args, _ = req.Object("arguments")
+	}
 	if args == nil {
 		args = make(map[string]interface{})
 	}

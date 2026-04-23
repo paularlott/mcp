@@ -167,7 +167,7 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 		ctx := context.Background()
 		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
 			"name": "general_knowledge",
-			"arguments": map[string]interface{}{
+			"parameters": map[string]interface{}{
 				"message": "who is paul?",
 			},
 		})
@@ -184,12 +184,30 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 		ctx := context.Background()
 		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
 			"name": "people_kb",
-			"arguments": map[string]interface{}{
+			"parameters": map[string]interface{}{
 				"message": "who is paul?",
 			},
 		})
 		if err != nil {
 			t.Fatalf("execute_tool failed: %v", err)
+		}
+
+		if response.Content[0].Text != "people data" {
+			t.Errorf("Expected 'people data', got '%s'", response.Content[0].Text)
+		}
+	})
+
+	t.Run("execute_tool_accepts_arguments_as_fallback_for_params", func(t *testing.T) {
+		ctx := context.Background()
+		// Backward compatibility: "arguments" should still work
+		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
+			"name": "people_kb",
+			"arguments": map[string]interface{}{
+				"message": "who is paul?",
+			},
+		})
+		if err != nil {
+			t.Fatalf("execute_tool with 'arguments' fallback failed: %v", err)
 		}
 
 		if response.Content[0].Text != "people data" {
@@ -311,7 +329,7 @@ func TestNativeToolsInToolSearchHTTP(t *testing.T) {
 			"name": "execute_tool",
 			"arguments": map[string]interface{}{
 				"name": "general_knowledge",
-				"arguments": map[string]interface{}{
+				"parameters": map[string]interface{}{
 					"message": "who is paul?",
 				},
 			},
@@ -515,7 +533,7 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
 		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
 			"name": "general_knowledge",
-			"arguments": map[string]interface{}{
+			"parameters": map[string]interface{}{
 				"message": "who is paul?",
 			},
 		})
@@ -533,7 +551,7 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
 		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
 			"name": "people_kb",
-			"arguments": map[string]interface{}{
+			"parameters": map[string]interface{}{
 				"message": "who is cindy?",
 			},
 		})

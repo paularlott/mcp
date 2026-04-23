@@ -384,8 +384,8 @@ func TestProviderIntegration_ExecuteToolMissing(t *testing.T) {
 
 	// Try to execute non-existent tool via execute_tool
 	resp, err := server.CallTool(ctx, ExecuteToolName, map[string]interface{}{
-		"name":      "nonexistent",
-		"arguments": map[string]interface{}{},
+		"name":       "nonexistent",
+		"parameters": map[string]interface{}{},
 	})
 
 	// Should get an error response or error

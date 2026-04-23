@@ -487,8 +487,8 @@ func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, argumen
 	}
 
 	args := map[string]any{
-		"name":      name,
-		"arguments": arguments,
+		"name":       name,
+		"parameters": arguments,
 	}
 
 	return c.CallTool(ctx, "execute_tool", args)
