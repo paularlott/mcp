@@ -15,6 +15,7 @@ type SearchResult struct {
 	Description string      `json:"description"`
 	Score       float64     `json:"score"`
 	InputSchema interface{} `json:"input_schema,omitempty"`
+	Keywords    []string    `json:"keywords,omitempty"`
 }
 
 // internalRegistry implements ToolRegistry and provides tool search functionality
@@ -125,6 +126,7 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 				Description: dt.tool.Description,
 				Score:       score,
 				InputSchema: dt.tool.InputSchema,
+				Keywords:    dt.keywords,
 			})
 			seen[dt.tool.Name] = true
 		}
@@ -147,6 +149,7 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 				Description: tool.Description,
 				Score:       score,
 				InputSchema: tool.InputSchema,
+				Keywords:    tool.Keywords,
 			})
 			seen[tool.Name] = true
 		}
@@ -169,6 +172,7 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 				Description: tool.Description,
 				Score:       score,
 				InputSchema: tool.InputSchema,
+				Keywords:    tool.Keywords,
 			})
 			seen[tool.Name] = true
 		}
