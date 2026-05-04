@@ -94,15 +94,24 @@ func (m MessageContent) MarshalJSON() ([]byte, error) {
 
 func (m MessageContent) Blocks() []ContentBlock { return m.blocks }
 
+// ImageSource represents the source of an image in Claude format
+type ImageSource struct {
+	Type      string `json:"type"`                  // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"`   // "image/png", "image/jpeg", etc.
+	Data      string `json:"data,omitempty"`         // base64 data (for type="base64")
+	URL       string `json:"url,omitempty"`          // URL (for type="url")
+}
+
 // ContentBlock is a content block in the Claude format
 type ContentBlock struct {
-	Type      string                 `json:"type"` // "text", "tool_use", "tool_result"
+	Type      string                 `json:"type"` // "text", "image", "tool_use", "tool_result"
 	Text      string                 `json:"text,omitempty"`
 	ID        string                 `json:"id,omitempty"`
 	Name      string                 `json:"name,omitempty"`
 	Input     map[string]interface{} `json:"input,omitempty"`
 	ToolUseID string                 `json:"tool_use_id,omitempty"`
 	Content   interface{}            `json:"content,omitempty"`
+	Source    *ImageSource           `json:"source,omitempty"` // image source (for type="image")
 }
 
 // ClaudeTool is a tool definition in the Claude format
@@ -159,14 +168,26 @@ func MessagesRequestToOpenAI(req *MessagesRequest) openai.ChatCompletionRequest 
 			continue
 		}
 
-		// All other messages: collect text and tool_use blocks.
+		// All other messages: collect text, image, and tool_use blocks.
 		msg := openai.Message{Role: m.Role}
-		var text string
+		var textParts []string
+		var imageParts []openai.ContentPart
 		var toolCalls []openai.ToolCall
 		for _, b := range blocks {
 			switch b.Type {
 			case "text":
-				text += b.Text
+				if b.Text != "" {
+					textParts = append(textParts, b.Text)
+				}
+			case "image":
+				if b.Source != nil {
+					switch b.Source.Type {
+					case "base64":
+						imageParts = append(imageParts, openai.ImageBase64ContentPart(b.Source.Data, b.Source.MediaType, ""))
+					case "url":
+						imageParts = append(imageParts, openai.ImageURLContentPart(b.Source.URL, ""))
+					}
+				}
 			case "tool_use":
 				toolCalls = append(toolCalls, openai.ToolCall{
 					ID:   b.ID,
@@ -178,13 +199,29 @@ func MessagesRequestToOpenAI(req *MessagesRequest) openai.ChatCompletionRequest 
 				})
 			}
 		}
-		if text != "" {
-			msg.Content = text
+
+		if len(imageParts) > 0 {
+			// Multimodal: use content parts
+			parts := make([]openai.ContentPart, 0, len(textParts)+len(imageParts))
+			for _, t := range textParts {
+				parts = append(parts, openai.TextContentPart(t))
+			}
+			parts = append(parts, imageParts...)
+			msg.Content = parts
+		} else {
+			var text string
+			for _, t := range textParts {
+				text += t
+			}
+			if text != "" {
+				msg.Content = text
+			}
 		}
+
 		if len(toolCalls) > 0 {
 			msg.ToolCalls = toolCalls
 		}
-		if text != "" || len(toolCalls) > 0 {
+		if msg.Content != nil || len(toolCalls) > 0 {
 			messages = append(messages, msg)
 		}
 	}

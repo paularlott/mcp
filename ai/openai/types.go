@@ -83,6 +83,31 @@ func (m *Message) GetContentAsString() string {
 	return ""
 }
 
+// GetContentAsParts returns the content as typed ContentPart slices.
+// Returns nil if content is a plain string or empty.
+func (m *Message) GetContentAsParts() []ContentPart {
+	if m.Content == nil {
+		return nil
+	}
+	if _, ok := m.Content.(string); ok {
+		return nil
+	}
+	// Already typed
+	if parts, ok := m.Content.([]ContentPart); ok {
+		return parts
+	}
+	// JSON-decoded []any — round-trip through JSON for reliable typing
+	data, err := json.Marshal(m.Content)
+	if err != nil {
+		return nil
+	}
+	var parts []ContentPart
+	if err := json.Unmarshal(data, &parts); err != nil {
+		return nil
+	}
+	return parts
+}
+
 // SetContentAsString sets the content as a string
 func (m *Message) SetContentAsString(content string) {
 	m.Content = content

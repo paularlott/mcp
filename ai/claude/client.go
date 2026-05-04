@@ -459,10 +459,31 @@ func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {
 		}
 
 		var blocks []ContentBlock
-		content := msg.GetContentAsString()
-		if content != "" {
-			blocks = append(blocks, ContentBlock{Type: "text", Text: content})
+
+		// Handle multimodal content (text + images)
+		if parts := msg.GetContentAsParts(); len(parts) > 0 {
+			var textAcc string
+			for _, part := range parts {
+				switch part.Type {
+				case "text":
+					textAcc += part.Text
+				case "image_url":
+					if textAcc != "" {
+						blocks = append(blocks, ContentBlock{Type: "text", Text: textAcc})
+						textAcc = ""
+					}
+					if part.ImageURL != nil && part.ImageURL.URL != "" {
+						blocks = append(blocks, claudeImageBlockFromDataURL(part.ImageURL.URL))
+					}
+				}
+			}
+			if textAcc != "" {
+				blocks = append(blocks, ContentBlock{Type: "text", Text: textAcc})
+			}
+		} else if text := msg.GetContentAsString(); text != "" {
+			blocks = append(blocks, ContentBlock{Type: "text", Text: text})
 		}
+
 		for _, tc := range msg.ToolCalls {
 			blocks = append(blocks, ContentBlock{
 				Type:  "tool_use",
@@ -478,6 +499,36 @@ func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {
 	}
 
 	return claudeMessages
+}
+
+// claudeImageBlockFromDataURL converts an OpenAI image_url (data URL or regular URL)
+// to a Claude image content block.
+func claudeImageBlockFromDataURL(imageURL string) ContentBlock {
+	// data:image/png;base64,abc123...
+	if strings.HasPrefix(imageURL, "data:") {
+		rest := imageURL[5:]
+		idx := strings.Index(rest, ";base64,")
+		if idx >= 0 {
+			mediaType := rest[:idx]
+			base64Data := rest[idx+8:]
+			return ContentBlock{
+				Type: "image",
+				Source: &ImageSource{
+					Type:      "base64",
+					MediaType: mediaType,
+					Data:      base64Data,
+				},
+			}
+		}
+	}
+	// Regular URL
+	return ContentBlock{
+		Type: "image",
+		Source: &ImageSource{
+			Type: "url",
+			URL:  imageURL,
+		},
+	}
 }
 
 func (c *Client) convertTools(tools []openai.Tool) []ClaudeTool {
