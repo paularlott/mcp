@@ -70,6 +70,25 @@ response, err := client.ChatCompletion(ctx, req)
 // Custom tools are returned in the response for manual handling
 ```
 
+Provider-specific body fields can be supplied with `ExtraBody`. These keys are
+merged into the top-level JSON request body, matching OpenAI SDK `extra_body`
+behavior:
+
+```go
+req := openai.ChatCompletionRequest{
+    Model: "glm-4.7",
+    Messages: []openai.Message{
+        {Role: "user", Content: "Think this through"},
+    },
+    ExtraBody: map[string]any{
+        "thinking": map[string]any{
+            "type":           "enabled",
+            "clear_thinking": false,
+        },
+    },
+}
+```
+
 ### Streaming Completions
 
 ```go

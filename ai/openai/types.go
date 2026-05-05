@@ -21,17 +21,90 @@ type Model struct {
 
 // ChatCompletionRequest represents an OpenAI chat completion request
 type ChatCompletionRequest struct {
-	Model               string    `json:"model"`
-	Messages            []Message `json:"messages"`
-	Tools               []Tool    `json:"tools,omitempty"`
-	MaxTokens           int       `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int       `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64  `json:"temperature,omitempty"`
-	TopP                *float64  `json:"top_p,omitempty"`
-	FrequencyPenalty    *float64  `json:"frequency_penalty,omitempty"`
-	PresencePenalty     *float64  `json:"presence_penalty,omitempty"`
-	ReasoningEffort     string    `json:"reasoning_effort,omitempty"`
-	Stream              bool      `json:"stream"`
+	Model               string         `json:"model"`
+	Messages            []Message      `json:"messages"`
+	Tools               []Tool         `json:"tools,omitempty"`
+	MaxTokens           int            `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64       `json:"temperature,omitempty"`
+	TopP                *float64       `json:"top_p,omitempty"`
+	FrequencyPenalty    *float64       `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64       `json:"presence_penalty,omitempty"`
+	ReasoningEffort     string         `json:"reasoning_effort,omitempty"`
+	Stream              bool           `json:"stream"`
+	ExtraBody           map[string]any `json:"-"`
+}
+
+var chatCompletionRequestJSONFields = map[string]struct{}{
+	"model":                 {},
+	"messages":              {},
+	"tools":                 {},
+	"max_tokens":            {},
+	"max_completion_tokens": {},
+	"temperature":           {},
+	"top_p":                 {},
+	"frequency_penalty":     {},
+	"presence_penalty":      {},
+	"reasoning_effort":      {},
+	"stream":                {},
+	"extra_body":            {},
+}
+
+// MarshalJSON merges ExtraBody into the top-level chat completion request body.
+// This matches OpenAI SDK extra_body behavior for provider-specific fields.
+func (r ChatCompletionRequest) MarshalJSON() ([]byte, error) {
+	type chatCompletionRequestAlias ChatCompletionRequest
+	base, err := json.Marshal(chatCompletionRequestAlias(r))
+	if err != nil {
+		return nil, err
+	}
+	if len(r.ExtraBody) == 0 {
+		return base, nil
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(base, &body); err != nil {
+		return nil, err
+	}
+	for key, value := range r.ExtraBody {
+		body[key] = value
+	}
+	return json.Marshal(body)
+}
+
+// UnmarshalJSON captures unknown provider-specific request fields into
+// ExtraBody so routers can preserve them when forwarding requests upstream.
+func (r *ChatCompletionRequest) UnmarshalJSON(data []byte) error {
+	type chatCompletionRequestAlias ChatCompletionRequest
+	var raw struct {
+		chatCompletionRequestAlias
+		ExtraBody map[string]any `json:"extra_body,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*r = ChatCompletionRequest(raw.chatCompletionRequestAlias)
+
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return err
+	}
+
+	extraBody := make(map[string]any)
+	for key, value := range body {
+		if _, known := chatCompletionRequestJSONFields[key]; !known {
+			extraBody[key] = value
+		}
+	}
+	for key, value := range raw.ExtraBody {
+		extraBody[key] = value
+	}
+	if len(extraBody) > 0 {
+		r.ExtraBody = extraBody
+	}
+
+	return nil
 }
 
 // ChatCompletionResponse represents an OpenAI chat completion response
@@ -152,11 +225,11 @@ type Usage struct {
 
 // ResponseUsage represents token usage (Responses API)
 type ResponseUsage struct {
-	InputTokens            int                         `json:"input_tokens"`
-	OutputTokens           int                         `json:"output_tokens"`
-	TotalTokens            int                         `json:"total_tokens"`
-	InputTokensDetails     *ResponseInputTokensDetails `json:"input_tokens_details,omitempty"`
-	OutputTokensDetails    *ResponseOutputTokensDetails `json:"output_tokens_details,omitempty"`
+	InputTokens         int                          `json:"input_tokens"`
+	OutputTokens        int                          `json:"output_tokens"`
+	TotalTokens         int                          `json:"total_tokens"`
+	InputTokensDetails  *ResponseInputTokensDetails  `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *ResponseOutputTokensDetails `json:"output_tokens_details,omitempty"`
 }
 
 // Add accumulates the token counts from another ResponseUsage into this one.

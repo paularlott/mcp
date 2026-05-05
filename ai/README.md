@@ -148,6 +148,22 @@ type Config struct {
 }
 ```
 
+Chat completion requests also support provider-specific body fields through
+`ExtraBody`. These keys are merged into the top-level JSON request body:
+
+```go
+response, err := client.ChatCompletion(ctx, ai.ChatCompletionRequest{
+    Model: "glm-4.7",
+    Messages: []ai.Message{{Role: "user", Content: "Think this through"}},
+    ExtraBody: map[string]any{
+        "thinking": map[string]any{
+            "type":           "enabled",
+            "clear_thinking": false,
+        },
+    },
+})
+```
+
 ### Request Timeout & Context Handling
 
 AI completion requests use a **detached context** that preserves the parent's context values (tool providers, user info, etc.) but has an independent cancellation signal. This prevents parent context cancellation (e.g. from script timeouts or request handlers) from killing long-running AI operations.
