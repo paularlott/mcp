@@ -59,7 +59,13 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	if e.Code != "" {
+		if e.Param != "" {
+			return fmt.Sprintf("openai: %s (%s): %s (param: %s)", e.Type, e.Code, e.Message, e.Param)
+		}
 		return fmt.Sprintf("openai: %s (%s): %s", e.Type, e.Code, e.Message)
+	}
+	if e.Param != "" {
+		return fmt.Sprintf("openai: %s: %s (param: %s)", e.Type, e.Message, e.Param)
 	}
 	return fmt.Sprintf("openai: %s: %s", e.Type, e.Message)
 }
