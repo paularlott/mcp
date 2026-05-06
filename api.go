@@ -93,6 +93,24 @@ func (n *numberParam) apply(builder *paramBuilder) {
 	builder.params = append(builder.params, n.toParamDef())
 }
 
+type integerParam struct {
+	parameterBase
+}
+
+func (n *integerParam) toParamDef() paramDef {
+	return paramDef{
+		name:        n.name,
+		paramType:   "integer",
+		description: n.description,
+		required:    n.required,
+		properties:  make(map[string]*paramDef),
+	}
+}
+
+func (n *integerParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, n.toParamDef())
+}
+
 type booleanParam struct {
 	parameterBase
 }
@@ -144,6 +162,24 @@ func (n *numberArrayParam) toParamDef() paramDef {
 }
 
 func (n *numberArrayParam) apply(builder *paramBuilder) {
+	builder.params = append(builder.params, n.toParamDef())
+}
+
+type integerArrayParam struct {
+	parameterBase
+}
+
+func (n *integerArrayParam) toParamDef() paramDef {
+	return paramDef{
+		name:        n.name,
+		paramType:   "array:integer",
+		description: n.description,
+		required:    n.required,
+		properties:  make(map[string]*paramDef),
+	}
+}
+
+func (n *integerArrayParam) apply(builder *paramBuilder) {
 	builder.params = append(builder.params, n.toParamDef())
 }
 
@@ -240,9 +276,22 @@ func String(name, description string, options ...Option) Parameter {
 	}
 }
 
-// Number creates a number parameter
+// Number creates a number parameter (integer or float).
+// Emitted as JSON Schema {"type": "number"}.
 func Number(name, description string, options ...Option) Parameter {
 	return &numberParam{
+		parameterBase: parameterBase{
+			name:        name,
+			description: description,
+			required:    processOptions(options),
+		},
+	}
+}
+
+// Integer creates an integer parameter (whole numbers only).
+// Emitted as JSON Schema {"type": "integer"}.
+func Integer(name, description string, options ...Option) Parameter {
+	return &integerParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,
@@ -273,9 +322,22 @@ func StringArray(name, description string, options ...Option) Parameter {
 	}
 }
 
-// NumberArray creates a number array parameter
+// NumberArray creates a number array parameter (integers or floats).
+// Emitted as JSON Schema {"type": "array", "items": {"type": "number"}}.
 func NumberArray(name, description string, options ...Option) Parameter {
 	return &numberArrayParam{
+		parameterBase: parameterBase{
+			name:        name,
+			description: description,
+			required:    processOptions(options),
+		},
+	}
+}
+
+// IntegerArray creates an integer array parameter (whole numbers only).
+// Emitted as JSON Schema {"type": "array", "items": {"type": "integer"}}.
+func IntegerArray(name, description string, options ...Option) Parameter {
+	return &integerArrayParam{
 		parameterBase: parameterBase{
 			name:        name,
 			description: description,

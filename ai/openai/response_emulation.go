@@ -226,6 +226,9 @@ func ConvertResponseToChatRequest(req CreateResponseRequest) (ChatCompletionRequ
 		chatReq.Tools = req.Tools
 	}
 
+	// Copy extra body for provider-specific fields
+	chatReq.ExtraBody = req.ExtraBody
+
 	return chatReq, nil
 }
 

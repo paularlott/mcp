@@ -22,7 +22,7 @@ type ToolMetadata struct {
 ```go
 type ToolParameter struct {
     Name        string  // Parameter name
-    Type        string  // Parameter type: "string", "int", "float", "bool"
+    Type        string  // Parameter type (see "Supported Parameter Types" below)
     Description string  // Parameter description
     Required    bool    // Whether parameter is required
 }
@@ -73,7 +73,10 @@ func main() {
     }
 
     // Build MCP tool
-    tool := toolmetadata.BuildMCPTool("execute_command", &meta)
+    tool, err := toolmetadata.BuildMCPTool("execute_command", &meta)
+    if err != nil {
+        panic(err)
+    }
 
     // Register with MCP server
     server := mcp.NewServer()
@@ -110,12 +113,17 @@ func main() {
 
 ## Supported Parameter Types
 
+Each type emits a valid JSON Schema type (`string`, `integer`, `number`,
+`boolean`, or an array of those).
+
 - `string` - String parameter
-- `int`, `integer` - Integer/number parameter
-- `float`, `number` - Float/number parameter
+- `int`, `integer` - Whole number (JSON Schema `integer`)
+- `float`, `number` - Integer or floating point (JSON Schema `number`)
 - `bool`, `boolean` - Boolean parameter
 - `array:string` - Array of strings
-- `array:int`, `array:integer`, `array:number`, `array:float` - Array of numbers
+- `array:int`, `array:integer` - Array of whole numbers (items: `integer`)
+- `array:float`, `array:number` - Array of numbers (items: `number`)
 - `array:bool`, `array:boolean` - Array of booleans
 
-Unknown types default to string parameters.
+Unknown type strings cause `BuildMCPTool` to return an error, so invalid
+metadata is caught up front rather than producing silently incorrect schemas.

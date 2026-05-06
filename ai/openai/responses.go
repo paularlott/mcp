@@ -1,5 +1,7 @@
 package openai
 
+import "encoding/json"
+
 // ResponseOutputItem represents a typed output item in a ResponseObject.
 type ResponseOutputItem struct {
 	Type    string                    `json:"type"`    // "message", "function_call", "reasoning", etc.
@@ -146,4 +148,80 @@ type CreateResponseRequest struct {
 	Temperature        *float64               `json:"temperature,omitempty"`
 	TopP               *float64               `json:"top_p,omitempty"`
 	Truncation         string                 `json:"truncation,omitempty"`
+	ExtraBody          map[string]any         `json:"-"`
+}
+
+var createResponseRequestJSONFields = map[string]struct{}{
+	"model":                {},
+	"input":                {},
+	"modalities":           {},
+	"instructions":         {},
+	"tools":                {},
+	"previous_response_id": {},
+	"metadata":             {},
+	"background":           {},
+	"max_output_tokens":    {},
+	"parallel_tool_calls":  {},
+	"store":                {},
+	"temperature":          {},
+	"top_p":                {},
+	"truncation":           {},
+	"extra_body":           {},
+}
+
+// MarshalJSON merges ExtraBody into the top-level response request body.
+// This matches OpenAI SDK extra_body behavior for provider-specific fields.
+func (r CreateResponseRequest) MarshalJSON() ([]byte, error) {
+	type createResponseRequestAlias CreateResponseRequest
+	base, err := json.Marshal(createResponseRequestAlias(r))
+	if err != nil {
+		return nil, err
+	}
+	if len(r.ExtraBody) == 0 {
+		return base, nil
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(base, &body); err != nil {
+		return nil, err
+	}
+	for key, value := range r.ExtraBody {
+		body[key] = value
+	}
+	return json.Marshal(body)
+}
+
+// UnmarshalJSON captures unknown provider-specific request fields into
+// ExtraBody so routers can preserve them when forwarding requests upstream.
+func (r *CreateResponseRequest) UnmarshalJSON(data []byte) error {
+	type createResponseRequestAlias CreateResponseRequest
+	var raw struct {
+		createResponseRequestAlias
+		ExtraBody map[string]any `json:"extra_body,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*r = CreateResponseRequest(raw.createResponseRequestAlias)
+
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		return err
+	}
+
+	extraBody := make(map[string]any)
+	for key, value := range body {
+		if _, known := createResponseRequestJSONFields[key]; !known {
+			extraBody[key] = value
+		}
+	}
+	for key, value := range raw.ExtraBody {
+		extraBody[key] = value
+	}
+	if len(extraBody) > 0 {
+		r.ExtraBody = extraBody
+	}
+
+	return nil
 }
