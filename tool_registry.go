@@ -276,21 +276,32 @@ func calculateScore(queryLower, name, description string, keywords []string) flo
 		return 0
 	}
 
-	avgScore := totalScore / float64(len(queryWords))
-	matchRatio := float64(matchedWords) / float64(len(queryWords))
-
-	if matchedWords == len(queryWords) {
-		return avgScore * 0.9
-	}
-
-	return avgScore * matchRatio
+	// Average across ALL query words: unmatched words contribute 0, which
+	// naturally penalises partial matches in proportion to how much of the
+	// query was understood. No additional ratio multiplier is applied — that
+	// would double-count the miss. A clean full match returns its true
+	// average without an artificial penalty.
+	return totalScore / float64(len(queryWords))
 }
 
 func calculateSingleWordScore(word, nameLower, descLower string, keywords []string) float64 {
 	var score float64
 
 	if strings.HasPrefix(nameLower, word) {
-		score = max(score, 0.9)
+		score = max(score, 0.95)
+	}
+
+	// Tokenise the tool name on common separators so a query word matches a
+	// segment of a multi-word tool name as a real word, not just a substring.
+	// e.g. query 'send' against name 'tools_send_email' should score as a
+	// token match. The tool's own name is the strongest signal of intent, so
+	// these tiers sit above keyword-tag matches.
+	for _, token := range nameTokens(nameLower) {
+		if token == word {
+			score = max(score, 0.92)
+		} else if strings.HasPrefix(token, word) {
+			score = max(score, 0.9)
+		}
 	}
 
 	if strings.Contains(nameLower, word) {
@@ -301,7 +312,26 @@ func calculateSingleWordScore(word, nameLower, descLower string, keywords []stri
 		kwLower := strings.ToLower(kw)
 		if kwLower == word {
 			score = max(score, 0.85)
-		} else if strings.Contains(kwLower, word) {
+			continue
+		}
+
+		// Tokenise multi-word keyword phrases (e.g. 'work request' becomes
+		// ['work', 'request']) so an individual word in a phrase is still a
+		// strong match. A developer tagging 'work request' is also tagging
+		// the topic 'work' and the topic 'request'.
+		matchedToken := false
+		for _, kwToken := range strings.Fields(kwLower) {
+			if kwToken == word {
+				score = max(score, 0.85)
+				matchedToken = true
+				break
+			}
+		}
+		if matchedToken {
+			continue
+		}
+
+		if strings.Contains(kwLower, word) {
 			score = max(score, 0.7)
 		}
 	}
@@ -325,6 +355,16 @@ func calculateSingleWordScore(word, nameLower, descLower string, keywords []stri
 	}
 
 	return score
+}
+
+// nameTokens splits a tool name on common separators (_ and -) into its
+// constituent words. Used for token-aware matching in tool_search so that a
+// query word matches a segment of a multi-word tool name as a real word
+// rather than a raw substring.
+func nameTokens(nameLower string) []string {
+	return strings.FieldsFunc(nameLower, func(r rune) bool {
+		return r == '_' || r == '-'
+	})
 }
 
 func containsWord(text, query string) bool {
