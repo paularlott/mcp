@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,18 +24,22 @@ const (
 )
 
 type Client struct {
-	apiKey         string
-	baseURL        string
-	extraHeaders   http.Header
-	httpPool       pool.HTTPPool
-	provider       string
-	localServer    openai.MCPServer // Local MCP server
-	remoteServers  []*mcp.Client    // Remote MCP servers
-	maxTokens      int              // Default max_tokens
-	temperature    *float64         // Default temperature
-	topP           *float64         // Default top_p
-	requestTimeout time.Duration    // Timeout for AI operations
-	responseManager *openai.ResponseManager
+	apiKey             string
+	baseURL            string
+	extraHeaders       http.Header
+	httpPool           pool.HTTPPool
+	provider           string
+	localServer        openai.MCPServer
+	remoteServers      []*mcp.Client
+	maxTokens          int
+	temperature        *float64
+	topP               *float64
+	requestTimeout     time.Duration
+	responseManager    *openai.ResponseManager
+	maxRetries         int
+	retryBackoff       time.Duration
+	retryOnRateLimit   bool
+	retryOnServerError bool
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -63,19 +68,47 @@ func New(config openai.Config) (*Client, error) {
 	// Get the global response manager
 	responseManager := openai.GetManager()
 
+	// Retry defaults
+	maxRetries := config.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+	if maxRetries < -1 {
+		return nil, fmt.Errorf("invalid MaxRetries %d: must be -1 (disable), 0 (default), or positive", maxRetries)
+	}
+	retryBackoff := config.RetryBackoff
+	if retryBackoff == 0 {
+		retryBackoff = time.Second
+	}
+	if retryBackoff < 0 {
+		return nil, fmt.Errorf("invalid RetryBackoff %v: must be non-negative", retryBackoff)
+	}
+	retryOnRateLimit := true
+	if config.RetryOnRateLimit != nil {
+		retryOnRateLimit = *config.RetryOnRateLimit
+	}
+	retryOnServerError := true
+	if config.RetryOnServerError != nil {
+		retryOnServerError = *config.RetryOnServerError
+	}
+
 	return &Client{
-		apiKey:          config.APIKey,
-		baseURL:         config.BaseURL,
-		extraHeaders:    config.ExtraHeaders,
-		httpPool:        config.HTTPPool,
-		provider:        providerName,
-		localServer:     config.LocalServer,
-		remoteServers:   remoteServers,
-		maxTokens:       config.MaxTokens,
-		temperature:     config.Temperature,
-		topP:            config.TopP,
-		requestTimeout:  config.RequestTimeout,
-		responseManager: responseManager,
+		apiKey:             config.APIKey,
+		baseURL:            config.BaseURL,
+		extraHeaders:       config.ExtraHeaders,
+		httpPool:           config.HTTPPool,
+		provider:           providerName,
+		localServer:        config.LocalServer,
+		remoteServers:      remoteServers,
+		maxTokens:          config.MaxTokens,
+		temperature:        config.Temperature,
+		topP:               config.TopP,
+		requestTimeout:     config.RequestTimeout,
+		responseManager:    responseManager,
+		maxRetries:         maxRetries,
+		retryBackoff:       retryBackoff,
+		retryOnRateLimit:   retryOnRateLimit,
+		retryOnServerError: retryOnServerError,
 	}, nil
 }
 
@@ -211,10 +244,12 @@ func (c *Client) callTool(ctx context.Context, name string, args map[string]any)
 func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatCompletionRequest) *openai.ChatStream {
 	responseChan := make(chan openai.ChatCompletionResponse, 50)
 	errorChan := make(chan error, 1)
+	stream := openai.NewChatStream(ctx, responseChan, errorChan)
 
 	go func() {
 		defer close(responseChan)
 		defer close(errorChan)
+		defer stream.SetRetryMetadata(nil)
 
 		if c.requestTimeout > 0 {
 			var cancel context.CancelFunc
@@ -261,7 +296,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 			claudeReq := c.convertToClaudeRequest(req)
 			claudeReq.Stream = true
 
-			finalResponse, err := c.streamSingleCompletion(ctx, claudeReq, currentMessages, responseChan)
+			finalResponse, retryMeta, err := c.streamSingleCompletion(ctx, claudeReq, currentMessages, responseChan)
+			stream.SetRetryMetadata(retryMeta)
 			if err != nil {
 				errorChan <- err
 				return
@@ -324,17 +360,17 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 		errorChan <- openai.NewMaxToolIterationsError(openai.MAX_TOOL_CALL_ITERATIONS)
 	}()
 
-	return openai.NewChatStream(ctx, responseChan, errorChan)
+	return stream
 }
 
-func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeRequest, originalMessages []openai.Message, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, error) {
+func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeRequest, originalMessages []openai.Message, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, *openai.RetryMetadata, error) {
 	var assistantContent strings.Builder
 	toolAccumulator := openai.NewStreamingToolCallAccumulator()
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 	var responseID, responseModel string
 	var finishReason string
 
-	err := c.streamRequest(ctx, "POST", "messages", claudeReq, func(event *ClaudeStreamEvent) (bool, error) {
+	retryMeta, streamErr := c.streamRequest(ctx, "POST", "messages", claudeReq, func(event *ClaudeStreamEvent) (bool, error) {
 		chunk := c.convertStreamEventToOpenAI(event)
 		if chunk != nil {
 			if chunk.ID != "" {
@@ -370,8 +406,8 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 		return false, nil
 	})
 
-	if err != nil {
-		return nil, err
+	if streamErr != nil {
+		return nil, retryMeta, streamErr
 	}
 
 	toolCalls := toolAccumulator.Finalize()
@@ -403,7 +439,7 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 	}
 	tokenCounter.InjectUsageIfMissing(finalResponse)
 
-	return finalResponse, nil
+	return finalResponse, retryMeta, nil
 }
 
 func (c *Client) convertToClaudeRequest(req openai.ChatCompletionRequest) ClaudeRequest {
@@ -668,101 +704,230 @@ func (c *Client) convertStreamEventToOpenAI(event *ClaudeStreamEvent) *openai.Ch
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any, result any) error {
-	var reqBody io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
+	maxAttempts := c.maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	var retryAfterHint time.Duration
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			bo := c.backoffForAttempt(attempt - 1)
+			if retryAfterHint > bo {
+				bo = retryAfterHint
+			}
+			retryAfterHint = 0
+			timer := time.NewTimer(bo)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		var reqBody io.Reader
+		if body != nil {
+			data, err := json.Marshal(body)
+			if err != nil {
+				return fmt.Errorf("failed to marshal request: %w", err)
+			}
+			reqBody = bytes.NewReader(data)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 		if err != nil {
-			return fmt.Errorf("failed to marshal request: %w", err)
+			return fmt.Errorf("failed to create request: %w", err)
 		}
-		reqBody = bytes.NewReader(data)
-	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
+		c.setHeaders(req)
 
-	c.setHeaders(req)
-
-	var httpClient *http.Client
-	if c.httpPool != nil {
-		httpClient = c.httpPool.GetHTTPClient()
-	} else {
-		httpClient = pool.GetPool().GetHTTPClient()
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody := decompressBody(resp)
-	defer respBody.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(respBody)
-		var errResp ClaudeErrorResponse
-		if json.Unmarshal(bodyBytes, &errResp) == nil {
-			return fmt.Errorf("claude API error: %s", errResp.Error.Message)
+		var httpClient *http.Client
+		if c.httpPool != nil {
+			httpClient = c.httpPool.GetHTTPClient()
+		} else {
+			httpClient = pool.GetPool().GetHTTPClient()
 		}
-		return fmt.Errorf("claude API error: status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
 
-	bodyBytes, err := io.ReadAll(respBody)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if result != nil {
-		if err := json.Unmarshal(bodyBytes, result); err != nil {
-			return fmt.Errorf("failed to decode response: %w", err)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("request failed: %w", err)
 		}
+
+		respBody := decompressBody(resp)
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(respBody)
+			respBody.Close()
+			resp.Body.Close()
+
+			var errResp ClaudeErrorResponse
+			statusCode := resp.StatusCode
+			if json.Unmarshal(bodyBytes, &errResp) == nil {
+				lastErr = fmt.Errorf("claude API error: %s", errResp.Error.Message)
+			} else {
+				lastErr = fmt.Errorf("claude API error: status %d: %s", statusCode, string(bodyBytes))
+			}
+
+			if c.shouldRetry(statusCode) && attempt < maxAttempts-1 {
+				retryAfterHint = parseRetryAfter(resp.Header.Get("Retry-After"))
+				continue
+			}
+			return lastErr
+		}
+
+		bodyBytes, err := io.ReadAll(respBody)
+		respBody.Close()
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
+
+		if result != nil {
+			if err := json.Unmarshal(bodyBytes, result); err != nil {
+				return fmt.Errorf("failed to decode response: %w", err)
+			}
+		}
+
+		return nil
 	}
 
-	return nil
+	return lastErr
 }
 
-func (c *Client) streamRequest(ctx context.Context, method, path string, body any, eventFunc func(*ClaudeStreamEvent) (bool, error)) error {
-	var reqBody io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("failed to marshal request: %w", err)
+func (c *Client) shouldRetry(statusCode int) bool {
+	if statusCode == 429 && c.retryOnRateLimit {
+		return true
+	}
+	if statusCode >= 500 && c.retryOnServerError {
+		return true
+	}
+	return false
+}
+
+// backoffForAttempt returns the duration to wait before the given retry attempt (0-indexed).
+// Uses exponential backoff: base * 2^attempt with a cap at 30s.
+func (c *Client) backoffForAttempt(attempt int) time.Duration {
+	if attempt > 30 {
+		return 30 * time.Second
+	}
+	bo := c.retryBackoff * time.Duration(int64(1)<<uint(attempt))
+	if bo > 30*time.Second {
+		bo = 30 * time.Second
+	}
+	return bo
+}
+
+// parseRetryAfter parses a Retry-After header value and returns the duration to wait.
+// Returns 0 if the header is absent, zero, or cannot be parsed.
+// Supports integer seconds ("60") and HTTP-date formats.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
 		}
-		reqBody = bytes.NewReader(data)
+	}
+	return 0
+}
+
+func (c *Client) streamRequest(ctx context.Context, method, path string, body any, eventFunc func(*ClaudeStreamEvent) (bool, error)) (*openai.RetryMetadata, error) {
+	maxAttempts := c.maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	var attempts int
+	var rateLimitHit bool
+	var totalBackoff time.Duration
+	var lastErr error
+	var retryAfterHint time.Duration
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		attempts = attempt + 1
+
+		if attempt > 0 {
+			bo := c.backoffForAttempt(attempt - 1)
+			if retryAfterHint > bo {
+				bo = retryAfterHint
+			}
+			retryAfterHint = 0
+			totalBackoff += bo
+			timer := time.NewTimer(bo)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		var reqBody io.Reader
+		if body != nil {
+			data, err := json.Marshal(body)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal request: %w", err)
+			}
+			reqBody = bytes.NewReader(data)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		c.setHeaders(req)
+		req.Header.Set("Accept", "text/event-stream")
+
+		var httpClient *http.Client
+		if c.httpPool != nil {
+			httpClient = c.httpPool.GetHTTPClient()
+		} else {
+			httpClient = pool.GetPool().GetHTTPClient()
+		}
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		respBody := decompressBody(resp)
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(respBody)
+			respBody.Close()
+			resp.Body.Close()
+			statusCode := resp.StatusCode
+			if statusCode == 429 {
+				rateLimitHit = true
+			}
+			lastErr = fmt.Errorf("server returned status %d: %s", statusCode, string(bodyBytes))
+			if c.shouldRetry(statusCode) && attempt < maxAttempts-1 {
+				retryAfterHint = parseRetryAfter(resp.Header.Get("Retry-After"))
+				continue
+			}
+			return nil, lastErr
+		}
+
+		err = c.processSSEStream(respBody, eventFunc)
+		respBody.Close()
+		resp.Body.Close()
+
+		var retryMeta *openai.RetryMetadata
+		if attempts > 1 {
+			retryMeta = &openai.RetryMetadata{
+				Attempts:     attempts,
+				RateLimitHit: rateLimitHit,
+				TotalBackoff: totalBackoff,
+			}
+		}
+		return retryMeta, err
 	}
 
-	c.setHeaders(req)
-	req.Header.Set("Accept", "text/event-stream")
-
-	var httpClient *http.Client
-	if c.httpPool != nil {
-		httpClient = c.httpPool.GetHTTPClient()
-	} else {
-		httpClient = pool.GetPool().GetHTTPClient()
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody := decompressBody(resp)
-	defer respBody.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(respBody)
-		return fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	return c.processSSEStream(respBody, eventFunc)
+	return nil, lastErr
 }
 
 func (c *Client) processSSEStream(reader io.Reader, eventFunc func(*ClaudeStreamEvent) (bool, error)) error {

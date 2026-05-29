@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ModelsResponse represents the response from the /models endpoint
@@ -107,6 +108,19 @@ func (r *ChatCompletionRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// RetryMetadata records retry information attached to a response when the
+// client performed one or more retries before succeeding.
+//
+// It is nil when the first attempt succeeded (no retries occurred) or when
+// retries are disabled (MaxRetries: -1). In the no-retry case, callers can
+// inspect the returned *APIError directly — e.g. apiErr.IsRateLimit() — to
+// determine the failure cause.
+type RetryMetadata struct {
+	Attempts     int           // total attempts including the initial request
+	RateLimitHit bool          // true if at least one 429 was encountered across all attempts
+	TotalBackoff time.Duration // cumulative time spent waiting between retries
+}
+
 // ChatCompletionResponse represents an OpenAI chat completion response
 type ChatCompletionResponse struct {
 	ID                string   `json:"id"`
@@ -115,7 +129,10 @@ type ChatCompletionResponse struct {
 	Model             string   `json:"model"`
 	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
 	Choices           []Choice `json:"choices"`
-	Usage             *Usage   `json:"usage,omitempty"`
+	Usage             *Usage         `json:"usage,omitempty"`
+	// Retry is non-nil only when the client performed at least one retry before
+	// succeeding. It is always nil on a first-attempt success or on error.
+	Retry             *RetryMetadata `json:"-"`
 }
 
 // Message represents a chat message

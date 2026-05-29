@@ -2,19 +2,9 @@ package openai
 
 import (
 	"context"
+	"sync"
 )
 
-// ChatStream provides an iterator interface for streaming chat completion responses.
-// It is designed to be used in a for loop pattern:
-//
-//	stream := openai.NewChatStream(ctx, responseChan, errorChan)
-//	for stream.Next() {
-//	    chunk := stream.Current()
-//	    // process chunk
-//	}
-//	if err := stream.Err(); err != nil {
-//	    // handle error
-//	}
 type ChatStream struct {
 	responseChan <-chan ChatCompletionResponse
 	errorChan    <-chan error
@@ -22,6 +12,10 @@ type ChatStream struct {
 	current      *ChatCompletionResponse
 	err          error
 	done         bool
+
+	retryOnce   sync.Once
+	retryMeta   *RetryMetadata
+	retrySignal chan struct{}
 }
 
 // NewChatStream creates a new ChatStream from response and error channels.
@@ -30,7 +24,20 @@ func NewChatStream(ctx context.Context, responseChan <-chan ChatCompletionRespon
 		responseChan: responseChan,
 		errorChan:    errorChan,
 		ctx:          ctx,
+		retrySignal:  make(chan struct{}),
 	}
+}
+
+func (s *ChatStream) SetRetryMetadata(meta *RetryMetadata) {
+	s.retryOnce.Do(func() {
+		s.retryMeta = meta
+		close(s.retrySignal)
+	})
+}
+
+func (s *ChatStream) Retry() *RetryMetadata {
+	<-s.retrySignal
+	return s.retryMeta
 }
 
 // Next advances to the next response chunk.

@@ -1,9 +1,15 @@
 package claude
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/paularlott/mcp/ai/openai"
 )
@@ -357,4 +363,454 @@ t.Errorf("Response = %v\nwant %v", string(bGot), string(bExp))
 }
 })
 }
+}
+// claudeOKResponse returns a minimal valid Claude messages response body.
+func claudeOKResponse() []byte {
+	resp := ClaudeResponse{
+		ID:         "msg_ok",
+		Type:       "message",
+		Role:       "assistant",
+		Model:      "claude-test",
+		StopReason: "end_turn",
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+	}
+	data, _ := json.Marshal(resp)
+	return data
+}
+
+func TestClaudeConfigDefaults(t *testing.T) {
+	c, err := New(openai.Config{BaseURL: "http://localhost"})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	if c.maxRetries != 3 {
+		t.Errorf("maxRetries = %d, want 3", c.maxRetries)
+	}
+	if c.retryBackoff != time.Second {
+		t.Errorf("retryBackoff = %v, want 1s", c.retryBackoff)
+	}
+	if !c.retryOnRateLimit {
+		t.Error("retryOnRateLimit = false, want true")
+	}
+	if !c.retryOnServerError {
+		t.Error("retryOnServerError = false, want true")
+	}
+}
+
+func TestClaudeConfigValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  openai.Config
+		wantErr string
+	}{
+		{
+			name:    "negative max retries",
+			config:  openai.Config{MaxRetries: -2},
+			wantErr: "invalid MaxRetries",
+		},
+		{
+			name:    "negative retry backoff",
+			config:  openai.Config{RetryBackoff: -time.Second},
+			wantErr: "invalid RetryBackoff",
+		},
+		{
+			name:   "-1 disables retries",
+			config: openai.Config{MaxRetries: -1},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(tt.config)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error = %v, want containing %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestClaudeRetryOn429(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(claudeOKResponse())
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:      srv.URL + "/",
+		MaxRetries:   3,
+		RetryBackoff: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	resp, err := c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion() error: %v", err)
+	}
+	_ = resp
+
+	if int(attempts.Load()) != 3 {
+		t.Errorf("attempts = %d, want 3", attempts.Load())
+	}
+}
+
+func TestClaudeRetryOn5xx(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"type":"error","error":{"type":"server_error","message":"boom"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(claudeOKResponse())
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:      srv.URL + "/",
+		MaxRetries:   2,
+		RetryBackoff: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, err = c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion() error: %v", err)
+	}
+	if int(attempts.Load()) != 2 {
+		t.Errorf("attempts = %d, want 2", attempts.Load())
+	}
+}
+
+func TestClaudeRetryDisabled(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:    srv.URL + "/",
+		MaxRetries: -1,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, err = c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error from 429, got nil")
+	}
+}
+
+func TestClaudeRetryExhausted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:      srv.URL + "/",
+		MaxRetries:   2,
+		RetryBackoff: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, err = c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error after retries exhausted")
+	}
+}
+
+func TestClaudeRetryNonRetryable(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:      srv.URL + "/",
+		MaxRetries:   3,
+		RetryBackoff: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, err = c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected error from 400")
+	}
+	// Should only try once — 400 is not retryable
+	if int(attempts.Load()) != 1 {
+		t.Errorf("attempts = %d, want 1 (no retry on 400)", attempts.Load())
+	}
+}
+
+func TestClaudeRetryRespectsContextCancel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:      srv.URL + "/",
+		MaxRetries:   10,
+		RetryBackoff: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = c.ChatCompletion(ctx, openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("took %v, should have cancelled quickly", elapsed)
+	}
+}
+
+func TestClaudeStreamRetryOn429(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		// Send a minimal Claude stream event sequence
+		events := []string{
+			`event: message_start\ndata: {"type":"message_start","message":{"id":"msg_ok","type":"message","role":"assistant","model":"claude-test","content":[],"stop_reason":null}}`,
+			`event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			`event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`,
+			`event: content_block_stop\ndata: {"type":"content_block_stop","index":0}`,
+			`event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}`,
+			`event: message_stop\ndata: {"type":"message_stop"}`,
+		}
+		for _, e := range events {
+			w.Write([]byte(strings.ReplaceAll(e, `\n`, "\n") + "\n\n"))
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{
+		BaseURL:      srv.URL + "/",
+		MaxRetries:   3,
+		RetryBackoff: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	stream := c.StreamChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+
+	for stream.Next() {
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatalf("stream error: %v", err)
+	}
+
+	meta := stream.Retry()
+	if meta == nil {
+		t.Fatal("expected RetryMetadata on stream after 429 retries")
+	}
+	if meta.Attempts != 3 {
+		t.Errorf("Attempts = %d, want 3", meta.Attempts)
+	}
+	if !meta.RateLimitHit {
+		t.Error("RateLimitHit = false, want true")
+	}
+	if meta.TotalBackoff <= 0 {
+		t.Errorf("TotalBackoff = %v, want > 0", meta.TotalBackoff)
+	}
+}
+
+func TestClaudeBackoffForAttempt(t *testing.T) {
+	c := &Client{retryBackoff: time.Second}
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{0, 1 * time.Second},
+		{1, 2 * time.Second},
+		{2, 4 * time.Second},
+		{3, 8 * time.Second},
+		{4, 16 * time.Second},
+		{5, 30 * time.Second}, // capped
+		{31, 30 * time.Second},
+	}
+	for _, tt := range tests {
+		got := c.backoffForAttempt(tt.attempt)
+		if got != tt.want {
+			t.Errorf("backoffForAttempt(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
+func TestClaudeShouldRetry(t *testing.T) {
+	tests := []struct {
+		name               string
+		retryOnRateLimit   bool
+		retryOnServerError bool
+		statusCode         int
+		want               bool
+	}{
+		{"429 on", true, true, 429, true},
+		{"429 off", false, true, 429, false},
+		{"500 on", true, true, 500, true},
+		{"500 off", true, false, 500, false},
+		{"503 on", true, true, 503, true},
+		{"400 never", true, true, 400, false},
+		{"401 never", true, true, 401, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Client{
+				retryOnRateLimit:   tt.retryOnRateLimit,
+				retryOnServerError: tt.retryOnServerError,
+			}
+			got := c.shouldRetry(tt.statusCode)
+			if got != tt.want {
+				t.Errorf("shouldRetry(%d) = %v, want %v", tt.statusCode, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClaudeRetryHonorsRetryAfterHeader verifies that a Retry-After: 0 header does not
+// break retry logic (functional correctness, not timing).
+func TestClaudeRetryHonorsRetryAfterHeader(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(claudeOKResponse())
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{BaseURL: srv.URL + "/", MaxRetries: 2, RetryBackoff: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	_, err = c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("ChatCompletion() error: %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Errorf("attempts = %d, want 2", attempts.Load())
+	}
+}
+
+// TestClaudeRetryAfterUsedAsFloor verifies that Retry-After: 1 is used as a floor.
+// Skipped in short mode.
+func TestClaudeRetryAfterUsedAsFloor(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping timing test in short mode")
+	}
+
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if n < 2 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(claudeOKResponse())
+	}))
+	defer srv.Close()
+
+	c, err := New(openai.Config{BaseURL: srv.URL + "/", MaxRetries: 2, RetryBackoff: 1 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	start := time.Now()
+	_, err = c.ChatCompletion(context.Background(), openai.ChatCompletionRequest{
+		Model:    "claude-test",
+		Messages: []openai.Message{{Role: "user", Content: "hi"}},
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("ChatCompletion() error: %v", err)
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("elapsed = %v, want >= 900ms (Retry-After: 1 should be used as floor)", elapsed)
+	}
 }

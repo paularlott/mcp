@@ -47,10 +47,37 @@ client, err := openai.New(openai.Config{
             Namespace: "remote1",
         },
     },
+
+    // Retry configuration (defaults shown — omit for defaults)
+    MaxRetries:         3,              // max retry attempts (omit or 0 = default 3, -1 = never retry regardless of error type)
+    RetryBackoff:       time.Second,    // base backoff duration (omit for 1s, doubles each attempt, capped at 30s)
+    RetryOnRateLimit:   ai.BoolPtr(true),  // retry on 429 (omit for true, set false to disable)
+    RetryOnServerError: ai.BoolPtr(true),  // retry on 5xx (omit for true, set false to disable)
 })
 
 // Set custom tools (sent to AI but not executed)
 client.SetCustomTools([]openai.Tool{...})
+```
+
+### Automatic Retry
+
+The client automatically retries failed requests on transient errors:
+
+- **429 (Rate Limit)**: retried with exponential backoff when `RetryOnRateLimit` is true (default)
+- **5xx (Server Error)**: retried with exponential backoff when `RetryOnServerError` is true (default)
+
+Backoff uses exponential doubling from the base (`RetryBackoff`, default 1s), capped at 30s.
+When retries occur, the response includes a `Retry` field:
+
+```go
+response, err := client.ChatCompletion(ctx, req)
+if response.Retry != nil {
+    fmt.Printf("Retried %d times (rate limit: %v, backoff: %v)\n",
+        response.Retry.Attempts,
+        response.Retry.RateLimitHit,
+        response.Retry.TotalBackoff,
+    )
+}
 ```
 
 ### Chat Completions with Tool Execution
@@ -383,6 +410,7 @@ if handler := openai.ToolHandlerFromContext(ctx); handler != nil {
 | ------------------------ | ------------------------------------------- |
 | `ChatCompletionRequest`  | OpenAI chat completion request              |
 | `ChatCompletionResponse` | OpenAI chat completion response             |
+| `RetryMetadata`         | Retry info attached to responses when retries occurred |
 | `Message`                | Chat message with role, content, tool calls |
 | `Choice`                 | Response choice with message or delta       |
 | `Delta`                  | Streaming delta content                     |

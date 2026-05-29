@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,10 @@ type Client struct {
 	presencePenalty    *float64      // Default presence_penalty
 	requestTimeout     time.Duration // Timeout for AI requests (0 = use caller's context)
 	useNativeResponses bool          // Use native Responses API endpoint
+	maxRetries         int           // Max retry attempts for retryable errors
+	retryBackoff       time.Duration // Base backoff for retries
+	retryOnRateLimit   bool          // Retry on 429
+	retryOnServerError bool          // Retry on 5xx
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -101,6 +106,10 @@ type Config struct {
 	PresencePenalty     *float64             // Default presence_penalty for requests (nil = no default)
 	RequestTimeout      time.Duration        // Timeout for AI requests using a detached context (0 = use caller's context, default 10m)
 	UseNativeResponses  *bool                // Use native Responses API endpoint (nil = auto-detect: true for OpenAI api.openai.com, false otherwise)
+	MaxRetries          int                  // Maximum number of retries for retryable errors (omit or 0 = default 3, -1 = disable)
+	RetryBackoff        time.Duration        // Base backoff duration for retry (omit for 1s, must be >= 0)
+	RetryOnRateLimit    *bool                // Whether to retry on 429 rate limit errors (omit for true)
+	RetryOnServerError  *bool                // Whether to retry on 5xx server errors (omit for true)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -142,6 +151,30 @@ func New(config Config) (*Client, error) {
 		}
 	}
 
+	// Retry defaults
+	maxRetries := config.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+	if maxRetries < -1 {
+		return nil, fmt.Errorf("invalid MaxRetries %d: must be -1 (disable), 0 (default), or positive", maxRetries)
+	}
+	retryBackoff := config.RetryBackoff
+	if retryBackoff == 0 {
+		retryBackoff = time.Second
+	}
+	if retryBackoff < 0 {
+		return nil, fmt.Errorf("invalid RetryBackoff %v: must be non-negative", retryBackoff)
+	}
+	retryOnRateLimit := true
+	if config.RetryOnRateLimit != nil {
+		retryOnRateLimit = *config.RetryOnRateLimit
+	}
+	retryOnServerError := true
+	if config.RetryOnServerError != nil {
+		retryOnServerError = *config.RetryOnServerError
+	}
+
 	// Ensure BaseURL has a trailing slash for proper URL resolution
 	if !strings.HasSuffix(config.BaseURL, "/") {
 		config.BaseURL = config.BaseURL + "/"
@@ -177,6 +210,10 @@ func New(config Config) (*Client, error) {
 		presencePenalty:    config.PresencePenalty,
 		requestTimeout:     config.RequestTimeout,
 		useNativeResponses: useNativeResponses,
+		maxRetries:         maxRetries,
+		retryBackoff:       retryBackoff,
+		retryOnRateLimit:   retryOnRateLimit,
+		retryOnServerError: retryOnServerError,
 	}, nil
 }
 
@@ -376,10 +413,12 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionRequest) *ChatStream {
 	responseChan := make(chan ChatCompletionResponse, 50)
 	errorChan := make(chan error, 1)
+	stream := NewChatStream(ctx, responseChan, errorChan)
 
 	go func() {
 		defer close(responseChan)
 		defer close(errorChan)
+		defer stream.SetRetryMetadata(nil)
 
 		if c.requestTimeout > 0 {
 			var cancel context.CancelFunc
@@ -437,7 +476,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 			req.Stream = true
 
 			// Stream single completion
-			finalResponse, err := c.streamSingleCompletion(ctx, req, responseChan)
+			finalResponse, retryMeta, err := c.streamSingleCompletion(ctx, req, responseChan)
+			stream.SetRetryMetadata(retryMeta)
 			if err != nil {
 				errorChan <- err
 				return
@@ -515,7 +555,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 		errorChan <- NewMaxToolIterationsError(MAX_TOOL_CALL_ITERATIONS)
 	}()
 
-	return NewChatStream(ctx, responseChan, errorChan)
+	return stream
 }
 
 // CreateResponse creates a new response using the OpenAI Responses API
@@ -948,7 +988,7 @@ func (c *Client) nonStreamingChatCompletion(ctx context.Context, req ChatComplet
 }
 
 // streamSingleCompletion handles a single streaming completion
-func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionRequest, responseChan chan<- ChatCompletionResponse) (*ChatCompletionResponse, error) {
+func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionRequest, responseChan chan<- ChatCompletionResponse) (*ChatCompletionResponse, *RetryMetadata, error) {
 	var finalResponse *ChatCompletionResponse
 	var assistantContent strings.Builder
 
@@ -958,7 +998,7 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 	// Check if we have any MCP servers
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
-	if err := c.streamRequest(ctx, "POST", "chat/completions", req, func(response *ChatCompletionResponse) (bool, error) {
+	retryMeta, streamErr := c.streamRequest(ctx, "POST", "chat/completions", req, func(response *ChatCompletionResponse) (bool, error) {
 		if response == nil {
 			return false, fmt.Errorf("received nil response from OpenAI")
 		}
@@ -1017,8 +1057,9 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		}
 
 		return false, nil
-	}); err != nil {
-		return nil, fmt.Errorf("streaming failed: %w", err)
+	})
+	if streamErr != nil {
+		return nil, retryMeta, fmt.Errorf("streaming failed: %w", streamErr)
 	}
 
 	// Always calculate estimated usage
@@ -1038,7 +1079,7 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		tc.InjectUsageIfMissing(finalResponse)
 	}
 
-	return finalResponse, nil
+	return finalResponse, retryMeta, nil
 }
 
 // processStreamChunk processes a single streaming chunk
@@ -1077,74 +1118,253 @@ func (c *Client) processStreamChunk(response *ChatCompletionResponse, toolAccumu
 	return false, nil
 }
 
-// doRequest performs a single HTTP request
+// retryContext tracks retry state across attempts within a single request.
+type retryContext struct {
+	attempts     int
+	rateLimitHit bool
+	totalBackoff time.Duration
+}
+
+// shouldRetry checks if the error is retryable based on client configuration.
+func (c *Client) shouldRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		return false
+	}
+	if apiErr.IsRateLimit() && c.retryOnRateLimit {
+		return true
+	}
+	if apiErr.IsServerError() && c.retryOnServerError {
+		return true
+	}
+	return false
+}
+
+// backoffForAttempt returns the duration to wait before the given retry attempt (0-indexed).
+// Uses exponential backoff: base * 2^attempt with a cap at 30s.
+func (c *Client) backoffForAttempt(attempt int) time.Duration {
+	if attempt > 30 {
+		return 30 * time.Second
+	}
+	bo := c.retryBackoff * time.Duration(int64(1)<<uint(attempt))
+	if bo > 30*time.Second {
+		bo = 30 * time.Second
+	}
+	return bo
+}
+
+// parseRetryAfter parses a Retry-After header value and returns the duration to wait.
+// Returns 0 if the header is absent, zero, or cannot be parsed.
+// Supports integer seconds ("60") and HTTP-date formats.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// doRequest performs an HTTP request with optional retry on retryable errors.
+// It attaches RetryMetadata to result if it's a *ChatCompletionResponse and retries occurred.
 func (c *Client) doRequest(ctx context.Context, method, path string, body any, result any) error {
 	reqBody, err := c.marshalBody(body)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	var rctx retryContext
+	var lastErr error
+	var retryAfterHint time.Duration
+	maxAttempts := c.maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 
-	c.setHeaders(req)
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		rctx.attempts = attempt + 1
 
-	// Use custom pool if provided, otherwise use default
-	var httpClient *http.Client
-	if c.httpPool != nil {
-		httpClient = c.httpPool.GetHTTPClient()
-	} else {
-		httpClient = pool.GetPool().GetHTTPClient()
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		if attempt > 0 {
+			bo := c.backoffForAttempt(attempt - 1)
+			if retryAfterHint > bo {
+				bo = retryAfterHint
+			}
+			retryAfterHint = 0
+			rctx.totalBackoff += bo
+			timer := time.NewTimer(bo)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
 
-	if err := c.handleResponse(resp, result); err != nil {
-		return err
+		var bodyReader io.Reader
+		if attempt == 0 {
+			bodyReader = reqBody
+		} else {
+			bodyReader, err = c.marshalBody(body)
+			if err != nil {
+				return err
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
+		if err != nil {
+			return fmt.Errorf("failed to create request: %w", err)
+		}
+
+		c.setHeaders(req)
+
+		var httpClient *http.Client
+		if c.httpPool != nil {
+			httpClient = c.httpPool.GetHTTPClient()
+		} else {
+			httpClient = pool.GetPool().GetHTTPClient()
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("request failed: %w", err)
+		}
+
+		if err := c.handleResponse(resp, result); err != nil {
+			resp.Body.Close()
+			lastErr = err
+
+			if apiErr, ok := err.(*APIError); ok && apiErr.IsRateLimit() {
+				rctx.rateLimitHit = true
+			}
+
+			if c.shouldRetry(err) && attempt < maxAttempts-1 {
+				retryAfterHint = parseRetryAfter(resp.Header.Get("Retry-After"))
+				continue
+			}
+			return err
+		}
+		resp.Body.Close()
+
+		// Attach retry metadata to response if retries occurred
+		if rctx.attempts > 1 {
+			if chatResp, ok := result.(*ChatCompletionResponse); ok {
+				chatResp.Retry = &RetryMetadata{
+					Attempts:     rctx.attempts,
+					RateLimitHit: rctx.rateLimitHit,
+					TotalBackoff: rctx.totalBackoff,
+				}
+			}
+		}
+
+		return nil
 	}
 
-	return nil
+	return lastErr
 }
 
-// streamRequest performs a streaming HTTP request
-func (c *Client) streamRequest(ctx context.Context, method, path string, body any, chunkFunc func(*ChatCompletionResponse) (bool, error)) error {
+// streamRequest performs a streaming HTTP request with retry on initial connection errors.
+// Returns retry metadata if retries occurred during connection.
+func (c *Client) streamRequest(ctx context.Context, method, path string, body any, chunkFunc func(*ChatCompletionResponse) (bool, error)) (*RetryMetadata, error) {
 	reqBody, err := c.marshalBody(body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	maxAttempts := c.maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
 	}
 
-	c.setHeaders(req)
-	req.Header.Set("Accept", "text/event-stream")
+	var rctx retryContext
+	var lastErr error
+	var retryAfterHint time.Duration
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		rctx.attempts = attempt + 1
 
-	// Use custom pool if provided, otherwise use default
-	var httpClient *http.Client
-	if c.httpPool != nil {
-		httpClient = c.httpPool.GetHTTPClient()
-	} else {
-		httpClient = pool.GetPool().GetHTTPClient()
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
+		if attempt > 0 {
+			bo := c.backoffForAttempt(attempt - 1)
+			if retryAfterHint > bo {
+				bo = retryAfterHint
+			}
+			retryAfterHint = 0
+			rctx.totalBackoff += bo
+			timer := time.NewTimer(bo)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(bodyBytes))
+		var bodyReader io.Reader
+		if attempt == 0 {
+			bodyReader = reqBody
+		} else {
+			bodyReader, err = c.marshalBody(body)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		c.setHeaders(req)
+		req.Header.Set("Accept", "text/event-stream")
+
+		var httpClient *http.Client
+		if c.httpPool != nil {
+			httpClient = c.httpPool.GetHTTPClient()
+		} else {
+			httpClient = pool.GetPool().GetHTTPClient()
+		}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("request failed: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			apiErr := c.handleError(resp.StatusCode, bodyBytes)
+			lastErr = apiErr
+			// Track rate limit hits across all attempts, regardless of retry config.
+			if ae, ok := apiErr.(*APIError); ok && ae.IsRateLimit() {
+				rctx.rateLimitHit = true
+			}
+			if c.shouldRetry(apiErr) && attempt < maxAttempts-1 {
+				retryAfterHint = parseRetryAfter(resp.Header.Get("Retry-After"))
+				continue
+			}
+			return nil, apiErr
+		}
+
+		err = c.processSSEStream(resp.Body, chunkFunc)
+		resp.Body.Close()
+
+		var retryMeta *RetryMetadata
+		if rctx.attempts > 1 {
+			retryMeta = &RetryMetadata{
+				Attempts:     rctx.attempts,
+				RateLimitHit: rctx.rateLimitHit,
+				TotalBackoff: rctx.totalBackoff,
+			}
+		}
+		return retryMeta, err
 	}
 
-	return c.processSSEStream(resp.Body, chunkFunc)
+	return nil, lastErr
 }
 
 // marshalBody marshals the request body

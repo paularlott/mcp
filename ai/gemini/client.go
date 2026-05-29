@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/paularlott/mcp/ai/openai"
 	"github.com/paularlott/mcp/pool"
@@ -18,12 +20,16 @@ const (
 )
 
 type Client struct {
-	apiKey     string
-	baseURL    string
-	httpPool   pool.HTTPPool
-	provider   string
-	chatClient *openai.Client // Use OpenAI client for chat/streaming
+	apiKey          string
+	baseURL         string
+	httpPool        pool.HTTPPool
+	provider        string
+	chatClient      *openai.Client // Use OpenAI client for chat/streaming
 	responseManager *openai.ResponseManager
+	maxRetries      int
+	retryBackoff     time.Duration
+	retryOnRateLimit   bool
+	retryOnServerError bool
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -48,6 +54,10 @@ func New(config openai.Config) (*Client, error) {
 		FrequencyPenalty:    config.FrequencyPenalty,
 		PresencePenalty:     config.PresencePenalty,
 		RequestTimeout:      config.RequestTimeout,
+		MaxRetries:          config.MaxRetries,
+		RetryBackoff:        config.RetryBackoff,
+		RetryOnRateLimit:    config.RetryOnRateLimit,
+		RetryOnServerError:  config.RetryOnServerError,
 	})
 	if err != nil {
 		return nil, err
@@ -56,13 +66,41 @@ func New(config openai.Config) (*Client, error) {
 	// Get the global response manager
 	responseManager := openai.GetManager()
 
+	// Retry defaults (mirror the openai client defaults)
+	maxRetries := config.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+	if maxRetries < -1 {
+		return nil, fmt.Errorf("invalid MaxRetries %d: must be -1 (disable), 0 (default), or positive", maxRetries)
+	}
+	retryBackoff := config.RetryBackoff
+	if retryBackoff == 0 {
+		retryBackoff = time.Second
+	}
+	if retryBackoff < 0 {
+		return nil, fmt.Errorf("invalid RetryBackoff %v: must be non-negative", retryBackoff)
+	}
+	retryOnRateLimit := true
+	if config.RetryOnRateLimit != nil {
+		retryOnRateLimit = *config.RetryOnRateLimit
+	}
+	retryOnServerError := true
+	if config.RetryOnServerError != nil {
+		retryOnServerError = *config.RetryOnServerError
+	}
+
 	return &Client{
-		apiKey:          config.APIKey,
-		baseURL:         config.BaseURL,
-		httpPool:        config.HTTPPool,
-		provider:        providerName,
-		chatClient:      chatClient,
-		responseManager: responseManager,
+		apiKey:             config.APIKey,
+		baseURL:            config.BaseURL,
+		httpPool:           config.HTTPPool,
+		provider:           providerName,
+		chatClient:         chatClient,
+		responseManager:    responseManager,
+		maxRetries:         maxRetries,
+		retryBackoff:       retryBackoff,
+		retryOnRateLimit:   retryOnRateLimit,
+		retryOnServerError: retryOnServerError,
 	}, nil
 }
 
@@ -180,53 +218,126 @@ func (c *Client) CreateEmbedding(ctx context.Context, req openai.EmbeddingReques
 	}, nil
 }
 
+func (c *Client) shouldRetry(statusCode int) bool {
+	if statusCode == http.StatusTooManyRequests && c.retryOnRateLimit {
+		return true
+	}
+	if statusCode >= 500 && c.retryOnServerError {
+		return true
+	}
+	return false
+}
+
+// backoffForAttempt returns the duration to wait before the given retry attempt (0-indexed).
+func (c *Client) backoffForAttempt(attempt int) time.Duration {
+	if attempt > 30 {
+		return 30 * time.Second
+	}
+	bo := c.retryBackoff * time.Duration(int64(1)<<uint(attempt))
+	if bo > 30*time.Second {
+		bo = 30 * time.Second
+	}
+	return bo
+}
+
+// parseRetryAfter parses a Retry-After header value and returns the duration to wait.
+// Returns 0 if the header is absent, zero, or cannot be parsed.
+// Supports integer seconds ("60") and HTTP-date formats.
+func parseRetryAfter(header string) time.Duration {
+	if header == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(header); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
-	var reqBody io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
+	maxAttempts := c.maxRetries + 1
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	var retryAfterHint time.Duration
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			bo := c.backoffForAttempt(attempt - 1)
+			if retryAfterHint > bo {
+				bo = retryAfterHint
+			}
+			retryAfterHint = 0
+			timer := time.NewTimer(bo)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+
+		var reqBody io.Reader
+		if body != nil {
+			data, err := json.Marshal(body)
+			if err != nil {
+				return fmt.Errorf("failed to marshal request: %w", err)
+			}
+			reqBody = strings.NewReader(string(data))
+		}
+
+		var httpClient *http.Client
+		if c.httpPool != nil {
+			httpClient = c.httpPool.GetHTTPClient()
+		} else {
+			httpClient = pool.GetPool().GetHTTPClient()
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
 		if err != nil {
-			return fmt.Errorf("failed to marshal request: %w", err)
+			return fmt.Errorf("failed to create request: %w", err)
 		}
-		reqBody = strings.NewReader(string(data))
-	}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
 
-	var httpClient *http.Client
-	if c.httpPool != nil {
-		httpClient = c.httpPool.GetHTTPClient()
-	} else {
-		httpClient = pool.GetPool().GetHTTPClient()
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reqBody)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("gemini API error: status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if result != nil {
-		if err := json.Unmarshal(bodyBytes, result); err != nil {
-			return fmt.Errorf("failed to decode response: %w", err)
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("request failed: %w", err)
 		}
+
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			statusCode := resp.StatusCode
+			lastErr = fmt.Errorf("gemini API error: status %d: %s", statusCode, string(bodyBytes))
+			if c.shouldRetry(statusCode) && attempt < maxAttempts-1 {
+				retryAfterHint = parseRetryAfter(resp.Header.Get("Retry-After"))
+				continue
+			}
+			return lastErr
+		}
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("failed to read response: %w", err)
+		}
+
+		if result != nil {
+			if err := json.Unmarshal(bodyBytes, result); err != nil {
+				return fmt.Errorf("failed to decode response: %w", err)
+			}
+		}
+
+		return nil
 	}
 
-	return nil
+	return lastErr
 }
 
 // StreamResponse emulates the OpenAI Responses API streaming using chat completions
