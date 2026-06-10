@@ -198,8 +198,86 @@ for _, r := range results {
 
 - **Namespaced calls** (`namespace/tool-name`): Route directly to the specified remote server
 - **Non-namespaced calls**: Try local tools first, then fast lookup for remote tools
+- **Fallback resolution**: If a tool isn't in the known tool list but matches a remote server's namespace prefix, it's executed via `execute_tool` on that remote (supports tools discovered through remote search)
 - **Caching**: Remote tool lists are cached and can be refreshed with `RefreshTools(ctx)`
 - **Error handling**: Failed remote servers are skipped gracefully during registration
+
+## Remote Tool Search
+
+When aggregating multiple MCP servers, some remote servers may have their own discoverable tools that aren't visible in `tools/list`. Remote search lets the aggregator delegate `tool_search` to those remotes, collecting and prefixing their results.
+
+### Enabling Remote Search
+
+Remote search is **off by default** and must be explicitly enabled per-server:
+
+```go
+// Option 1: Functional option on registration
+server.RegisterRemoteServer(client, mcp.WithRemoteSearch())
+server.RegisterRemoteServerDiscoverable(client, mcp.WithRemoteSearch())
+
+// Option 2: Via ReplaceRemoteServers
+server.ReplaceRemoteServers([]mcp.RemoteServerEntry{
+    {Client: client, Visibility: mcp.ToolVisibilityNative, RemoteSearch: true},
+})
+```
+
+### How It Works
+
+When a remote server has remote search enabled and `tool_search` is called on the aggregator:
+
+1. The aggregator performs its local search as usual
+2. For each remote with remote search enabled, it calls `tool_search` on that remote
+3. Remote results are prefixed with the server's namespace (e.g., `github__create_issue`)
+4. Combined results are sorted by score and truncated to `max_results`
+
+```go
+// Set up an aggregator with remote search
+server := mcp.NewServer("aggregator", "1.0.0")
+
+githubClient := mcp.NewClient("https://github-mcp.example.com", auth, "github")
+dbClient := mcp.NewClient("https://db-mcp.example.com", auth, "db")
+
+// Both remotes have hidden tools we want to discover
+server.RegisterRemoteServer(githubClient, mcp.WithRemoteSearch())
+server.RegisterRemoteServer(dbClient, mcp.WithRemoteSearch())
+
+// When the LLM calls tool_search:
+// - Aggregator searches its own tools
+// - Calls tool_search on github-mcp and db-mcp
+// - Returns merged results: ["github__create_issue", "db__run_query", ...]
+```
+
+### Executing Remote Discovered Tools
+
+Tools found through remote search can be executed via `execute_tool` or directly by name. The aggregator routes namespaced tool names to the correct remote server:
+
+```go
+// Via execute_tool (always works)
+result, _ := server.CallTool(ctx, "execute_tool", map[string]any{
+    "name":       "github__create_issue",
+    "parameters": map[string]any{"title": "Bug fix"},
+})
+
+// Direct call (also works - namespace prefix routes to the right remote)
+result, _ := server.CallTool(ctx, "github__create_issue", map[string]any{
+    "title": "Bug fix",
+})
+```
+
+When a tool name isn't in the pre-fetched tool list but matches a remote server's namespace prefix, the aggregator automatically delegates via `execute_tool` on that remote. This means tools discovered through remote search that weren't in the initial `tools/list` are still callable.
+
+### When to Use Remote Search
+
+- **Aggregator patterns**: When llmrouter or similar proxies federate multiple MCP servers
+- **Nested discovery**: When remote servers have their own discoverable tools
+- **Large tool sets**: When you don't want to enumerate every tool upfront
+
+### Performance Considerations
+
+- Remote search is only called on servers where it's explicitly enabled
+- If no servers have it enabled, the search path is a no-op with no overhead
+- Remote calls happen sequentially per-server but can be parallelized in the future
+- The `max_results` limit is passed through to remote servers to bound response size
 
 ## Authentication
 

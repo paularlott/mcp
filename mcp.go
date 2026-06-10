@@ -94,12 +94,13 @@ type Server struct {
 
 // registeredClient holds a remote client with its configuration
 type registeredClient struct {
-	client     *Client
-	namespace  string
-	visibility ToolVisibility
+	client       *Client
+	namespace    string
+	visibility   ToolVisibility
+	remoteSearch bool // Whether to delegate tool_search to this remote
 }
 
-// NewServer creates a new MCP server instance
+// NewServer creates a new MCP server instance.
 func NewServer(name, version string) *Server {
 	return &Server{
 		name:             name,
@@ -163,6 +164,7 @@ func (s *Server) getDiscoveryTools() []MCPTool {
 // handleToolSearch handles the tool_search meta-tool execution.
 // Searches discoverable tools from both static registration and providers,
 // as well as native tools that are already in tools/list.
+// If remote MCP servers expose tool_search, it delegates to them and prefixes results.
 func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 	query := req.StringOr("query", "")
 	maxResults := req.IntOr("max_results", 5)
@@ -185,10 +187,82 @@ func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolR
 
 	// Search with provider tools and listed tools included
 	results := s.internalRegistry.SearchWithAdditionalTools(ctx, query, maxResults, discoverableFromProviders, listedTools)
+
+	// Delegate tool_search to remote servers that have it enabled
+	remoteResults := s.searchRemoteServers(ctx, query, maxResults)
+	if len(remoteResults) > 0 {
+		results = append(results, remoteResults...)
+
+		// Re-sort to merge remote results with local by score
+		sort.Slice(results, func(i, j int) bool {
+			if results[i].Score != results[j].Score {
+				return results[i].Score > results[j].Score
+			}
+			return results[i].Name < results[j].Name
+		})
+
+		// Truncate to maxResults
+		if len(results) > maxResults {
+			results = results[:maxResults]
+		}
+	}
+
 	if len(results) == 0 {
 		return NewToolResponseText("No tools found. Try different keywords or a broader search term."), nil
 	}
+
 	return NewToolResponseJSON(results), nil
+}
+
+// searchRemoteServers calls tool_search on each remote server that has it enabled,
+// prefixing returned tool names with the server's namespace.
+// Returns nil if no remotes have remoteSearch enabled.
+func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResults int) []SearchResult {
+	s.mu.RLock()
+	clients := make([]*registeredClient, 0, len(s.remoteClients))
+	for _, rc := range s.remoteClients {
+		if rc.remoteSearch {
+			clients = append(clients, rc)
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(clients) == 0 {
+		return nil
+	}
+
+	var allResults []SearchResult
+
+	for _, rc := range clients {
+		searchResults, err := rc.client.ToolSearch(ctx, query, maxResults)
+		if err != nil {
+			continue
+		}
+
+		for _, raw := range searchResults {
+			result := SearchResult{
+				Score:       0,
+				InputSchema: raw["input_schema"],
+				Keywords:    nil,
+			}
+			if name, ok := raw["name"].(string); ok {
+				if rc.namespace != "" {
+					result.Name = rc.namespace + rc.client.separator + name
+				} else {
+					result.Name = name
+				}
+			}
+			if desc, ok := raw["description"].(string); ok {
+				result.Description = desc
+			}
+			if score, ok := raw["score"].(float64); ok {
+				result.Score = score
+			}
+			allResults = append(allResults, result)
+		}
+	}
+
+	return allResults
 }
 
 // handleExecuteTool handles the execute_tool meta-tool execution
@@ -412,18 +486,39 @@ func NewToolRegistration(tool *ToolBuilder, handler ToolHandler) *ToolRegistrati
 	return &ToolRegistration{Tool: tool, Handler: handler}
 }
 
+// RemoteServerOption configures options when registering a remote server.
+type RemoteServerOption func(*remoteServerOptions)
+
+type remoteServerOptions struct {
+	remoteSearch bool
+}
+
+// WithRemoteSearch enables delegating tool_search to this remote server.
+// Results from the remote are prefixed with the server's namespace.
+func WithRemoteSearch() RemoteServerOption {
+	return func(o *remoteServerOptions) {
+		o.remoteSearch = true
+	}
+}
+
 // RegisterRemoteServer registers a remote MCP server with native visibility.
 // Remote server tools appear in tools/list and are directly callable.
-// Use RegisterRemoteServerDiscoverable for tools that should only be searchable.
-func (s *Server) RegisterRemoteServer(client *Client) error {
-	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative)
+func (s *Server) RegisterRemoteServer(client *Client, opts ...RemoteServerOption) error {
+	o := &remoteServerOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative, o.remoteSearch)
 }
 
 // RegisterRemoteServerDiscoverable registers a remote MCP server with discoverable visibility.
 // Remote server tools do NOT appear in tools/list but are searchable via tool_search.
-// This automatically registers tool_search and execute_tool if not already registered.
-func (s *Server) RegisterRemoteServerDiscoverable(client *Client) error {
-	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable)
+func (s *Server) RegisterRemoteServerDiscoverable(client *Client, opts ...RemoteServerOption) error {
+	o := &remoteServerOptions{}
+	for _, opt := range opts {
+		opt(o)
+	}
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable, o.remoteSearch)
 }
 
 // UnregisterRemoteServer removes a previously registered remote server and all its cached tools.
@@ -478,7 +573,7 @@ func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 	s.mu.Unlock()
 
 	for _, entry := range servers {
-		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility); err != nil {
+		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility, entry.RemoteSearch); err != nil {
 			return err
 		}
 	}
@@ -487,27 +582,27 @@ func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 
 // RemoteServerEntry pairs a client with the visibility to use when registering.
 type RemoteServerEntry struct {
-	Client     *Client
-	Visibility ToolVisibility
+	Client       *Client
+	Visibility   ToolVisibility
+	RemoteSearch bool // Delegate tool_search to this remote server
 }
 
 // registerRemoteServerWithVisibility is the internal implementation for registering remote servers.
-func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility) error {
+func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility, remoteSearch bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// For discoverable visibility, mark that we have statically-registered discoverable tools
 	if visibility == ToolVisibilityDiscoverable {
 		s.hasDiscoverableTools = true
 	}
 
-	// Extract namespace from client namespace (remove trailing separator)
 	namespace := strings.TrimSuffix(client.Namespace(), client.separator)
 
 	regClient := &registeredClient{
-		client:     client,
-		namespace:  namespace,
-		visibility: visibility,
+		client:       client,
+		namespace:    namespace,
+		visibility:   visibility,
+		remoteSearch: remoteSearch,
 	}
 	s.remoteClients[client.baseURL] = regClient
 
@@ -1032,6 +1127,18 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]inte
 			toolName = strings.TrimPrefix(name, namespace+regClient.client.separator)
 		}
 		return client.CallTool(ctx, toolName, args)
+	}
+
+	// Fallback: match by namespace prefix to find the remote server,
+	// then call via execute_tool on that server (for tools discovered via remote tool_search)
+	for _, rc := range s.remoteClients {
+		if rc.namespace != "" && strings.HasPrefix(name, rc.namespace+rc.client.separator) {
+			client := rc.client
+			separator := rc.client.separator
+			s.mu.RUnlock()
+			toolName := strings.TrimPrefix(name, rc.namespace+separator)
+			return client.ExecuteDiscoveredTool(ctx, toolName, args)
+		}
 	}
 
 	s.mu.RUnlock()

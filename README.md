@@ -10,6 +10,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts
 - **Thread Safe**: Concurrent request handling with mutex protection
 - **Remote Servers**: Connect to and proxy remote MCP servers with authentication
+- **Remote Search**: Delegate tool_search to remote servers to discover hidden tools
 - **Parallel Tool Calls**: Execute multiple tools concurrently and collect all results in one call
 - **Searchable Tools**: Reduce context window usage with on-demand tool discovery
 - **Dynamic Tool Providers**: Load tools from external sources (databases, scripts, APIs)
