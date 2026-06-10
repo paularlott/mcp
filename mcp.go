@@ -466,7 +466,12 @@ func (s *Server) UnregisterTool(name string) bool {
 	delete(s.tools, name)
 
 	if tool.Visibility == ToolVisibilityNative {
-		s.rebuildNativeToolCacheLocked()
+		idx := sort.Search(len(s.nativeToolCache), func(i int) bool {
+			return s.nativeToolCache[i].Name >= name
+		})
+		if idx < len(s.nativeToolCache) && s.nativeToolCache[idx].Name == name {
+			s.nativeToolCache = append(s.nativeToolCache[:idx], s.nativeToolCache[idx+1:]...)
+		}
 	} else {
 		s.internalRegistry.UnregisterTool(name)
 	}

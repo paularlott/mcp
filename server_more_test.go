@@ -314,6 +314,141 @@ func TestUnregisterTool_DiscoverableTool(t *testing.T) {
 	}
 }
 
+func TestUnregisterTool_PreservesRemoteServerTools(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("remote_tool", "A tool from a remote server", String("x", "x")), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("remote"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+
+	host.RegisterTool(NewTool("local_a", "Local A"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("a"), nil
+	})
+	host.RegisterTool(NewTool("local_b", "Local B"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("b"), nil
+	})
+
+	client := NewClient(ts.URL, nil, "ns")
+	if err := host.RegisterRemoteServer(client); err != nil {
+		t.Fatalf("register remote: %v", err)
+	}
+
+	tools := host.ListTools()
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools (2 local + 1 remote), got %d: %v", len(tools), tools)
+	}
+
+	removed := host.UnregisterTool("local_a")
+	if !removed {
+		t.Fatal("expected UnregisterTool to return true")
+	}
+
+	tools = host.ListTools()
+	if len(tools) != 2 {
+		names := make([]string, len(tools))
+		for i, t := range tools {
+			names[i] = t.Name
+		}
+		t.Fatalf("expected 2 tools (1 local + 1 remote) after unregister, got %d: %v", len(tools), names)
+	}
+
+	found := false
+	for _, t := range tools {
+		if t.Name == "ns__remote_tool" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("remote server tool was lost after unregistering a local tool")
+	}
+}
+
+func TestUnregisterTool_MixedTypes(t *testing.T) {
+	remoteNative := NewServer("remote-native", "1")
+	remoteNative.RegisterTool(NewTool("r_native", "Remote native tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rn"), nil
+	})
+	tsNative := httptest.NewServer(http.HandlerFunc(remoteNative.HandleRequest))
+	defer tsNative.Close()
+
+	remoteDisc := NewServer("remote-disc", "1")
+	remoteDisc.RegisterTool(NewTool("r_disc", "Remote discoverable tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rd"), nil
+	})
+	tsDisc := httptest.NewServer(http.HandlerFunc(remoteDisc.HandleRequest))
+	defer tsDisc.Close()
+
+	host := NewServer("host", "1")
+
+	host.RegisterTool(NewTool("local_native", "Local native"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ln"), nil
+	})
+	host.RegisterTool(NewTool("local_disc", "Local discoverable").Discoverable("secret"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ld"), nil
+	})
+
+	if err := host.RegisterRemoteServer(NewClient(tsNative.URL, nil, "rn")); err != nil {
+		t.Fatalf("register remote native: %v", err)
+	}
+	if err := host.RegisterRemoteServerDiscoverable(NewClient(tsDisc.URL, nil, "rd")); err != nil {
+		t.Fatalf("register remote disc: %v", err)
+	}
+
+	tools := host.ListTools()
+	names := toolNames(tools)
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 visible tools (1 local native + 1 remote native + 2 discovery tools), got %d: %v", len(tools), names)
+	}
+
+	assertHas := func(t *testing.T, names []string, name string) {
+		t.Helper()
+		for _, n := range names {
+			if n == name {
+				return
+			}
+		}
+		t.Fatalf("expected %s in tools, got %v", name, names)
+	}
+
+	assertHas(t, names, "local_native")
+	assertHas(t, names, "rn__r_native")
+
+	if !host.UnregisterTool("local_native") {
+		t.Fatal("expected true unregistering local_native")
+	}
+	tools = host.ListTools()
+	names = toolNames(tools)
+	assertHas(t, names, "rn__r_native")
+	for _, n := range names {
+		if n == "local_native" {
+			t.Fatal("local_native should be gone")
+		}
+	}
+
+	if !host.UnregisterTool("local_disc") {
+		t.Fatal("expected true unregistering local_disc")
+	}
+	tools = host.ListTools()
+	names = toolNames(tools)
+	assertHas(t, names, "rn__r_native")
+	for _, n := range names {
+		if n == "tool_search" || n == "execute_tool" {
+			t.Fatal("discovery tools should be gone after all discoverable tools removed")
+		}
+	}
+}
+
+func toolNames(tools []MCPTool) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	return names
+}
+
 func TestServer_ConcurrentToolRegistration(t *testing.T) {
 	s := NewServer("test", "1.0")
 	var wg sync.WaitGroup
