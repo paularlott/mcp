@@ -42,7 +42,7 @@ func BuildMCPTool(toolName string, meta *ToolMetadata) (*mcp.ToolBuilder, error)
 
 	tool := mcp.NewTool(toolName, meta.Description, params...)
 
-	if meta.Discoverable && len(meta.Keywords) > 0 {
+	if meta.Discoverable {
 		tool.Discoverable(meta.Keywords...)
 	}
 

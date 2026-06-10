@@ -434,11 +434,8 @@ func TestUnregisterTool_MixedTypes(t *testing.T) {
 	tools = host.ListTools()
 	names = toolNames(tools)
 	assertHas(t, names, "rn__r_native")
-	for _, n := range names {
-		if n == "tool_search" || n == "execute_tool" {
-			t.Fatal("discovery tools should be gone after all discoverable tools removed")
-		}
-	}
+	assertHas(t, names, "tool_search")
+	assertHas(t, names, "execute_tool")
 }
 
 func toolNames(tools []MCPTool) []string {
@@ -447,6 +444,391 @@ func toolNames(tools []MCPTool) []string {
 		names[i] = t.Name
 	}
 	return names
+}
+
+func TestUnregisterRemoteServer_RemovesNativeTools(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("r1", "Remote tool 1"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("r1"), nil
+	})
+	remote.RegisterTool(NewTool("r2", "Remote tool 2"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("r2"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	client := NewClient(ts.URL, nil, "ns")
+	if err := host.RegisterRemoteServer(client); err != nil {
+		t.Fatalf("register remote: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	if len(names) != 3 {
+		t.Fatalf("expected 3 tools, got %v", names)
+	}
+	assertToolExists(t, names, "local")
+	assertToolExists(t, names, "ns__r1")
+	assertToolExists(t, names, "ns__r2")
+
+	host.UnregisterRemoteServer(client)
+
+	names = toolNames(host.ListTools())
+	if len(names) != 1 {
+		t.Fatalf("expected 1 tool after unregister, got %v", names)
+	}
+	assertToolExists(t, names, "local")
+}
+
+func TestUnregisterRemoteServer_RemovesDiscoveryTools(t *testing.T) {
+	remoteDisc := NewServer("remote-disc", "1")
+	remoteDisc.RegisterTool(NewTool("rd", "Remote discoverable"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rd"), nil
+	})
+	tsDisc := httptest.NewServer(http.HandlerFunc(remoteDisc.HandleRequest))
+	defer tsDisc.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	client := NewClient(tsDisc.URL, nil, "rd")
+	if err := host.RegisterRemoteServerDiscoverable(client); err != nil {
+		t.Fatalf("register remote disc: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolExists(t, names, "local")
+	assertToolExists(t, names, "tool_search")
+	assertToolExists(t, names, "execute_tool")
+
+	host.UnregisterRemoteServer(client)
+
+	names = toolNames(host.ListTools())
+	if len(names) != 1 {
+		t.Fatalf("expected only local tool after unregister, got %v", names)
+	}
+	assertToolExists(t, names, "local")
+	for _, n := range names {
+		if n == "tool_search" || n == "execute_tool" {
+			t.Fatal("discovery tools should be gone after remote discoverable server removed")
+		}
+	}
+}
+
+func assertToolExists(t *testing.T, names []string, name string) {
+	t.Helper()
+	for _, n := range names {
+		if n == name {
+			return
+		}
+	}
+	t.Fatalf("expected tool %s, got %v", name, names)
+}
+
+func assertToolMissing(t *testing.T, names []string, name string) {
+	t.Helper()
+	for _, n := range names {
+		if n == name {
+			t.Fatalf("expected tool %s to be missing, got %v", name, names)
+		}
+	}
+}
+
+func TestRemoteSearch_ShowsDiscoveryTools(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("rt", "Remote tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rt"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	client := NewClient(ts.URL, nil, "ns")
+	if err := host.RegisterRemoteServer(client, WithRemoteSearch()); err != nil {
+		t.Fatalf("register remote with search: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolExists(t, names, "local")
+	assertToolExists(t, names, "ns__rt")
+	assertToolExists(t, names, "tool_search")
+	assertToolExists(t, names, "execute_tool")
+}
+
+func TestRemoteSearch_DiscoveryToolsGoneAfterUnregister(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("rt", "Remote tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rt"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	client := NewClient(ts.URL, nil, "ns")
+	if err := host.RegisterRemoteServer(client, WithRemoteSearch()); err != nil {
+		t.Fatalf("register remote with search: %v", err)
+	}
+
+	assertToolExists(t, toolNames(host.ListTools()), "tool_search")
+
+	host.UnregisterRemoteServer(client)
+
+	names := toolNames(host.ListTools())
+	if len(names) != 1 {
+		t.Fatalf("expected only local tool, got %v", names)
+	}
+	assertToolMissing(t, names, "tool_search")
+	assertToolMissing(t, names, "execute_tool")
+}
+
+func TestReplaceRemoteServers_RemovesOldNativeTools(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("old_tool", "Old"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("old"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	client := NewClient(ts.URL, nil, "ns")
+	if err := host.RegisterRemoteServer(client); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	assertToolExists(t, toolNames(host.ListTools()), "ns__old_tool")
+
+	if err := host.ReplaceRemoteServers(nil); err != nil {
+		t.Fatalf("replace with empty: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	if len(names) != 1 {
+		t.Fatalf("expected only local tool after replace with empty, got %v", names)
+	}
+	assertToolExists(t, names, "local")
+	assertToolMissing(t, names, "ns__old_tool")
+}
+
+func TestReplaceRemoteServers_RemovesOldDiscoverableTools(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("hidden", "Hidden tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("hidden"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	if err := host.RegisterRemoteServerDiscoverable(NewClient(ts.URL, nil, "ns")); err != nil {
+		t.Fatalf("register disc: %v", err)
+	}
+
+	assertToolExists(t, toolNames(host.ListTools()), "tool_search")
+
+	if err := host.ReplaceRemoteServers(nil); err != nil {
+		t.Fatalf("replace with empty: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolMissing(t, names, "tool_search")
+	assertToolMissing(t, names, "execute_tool")
+	assertToolExists(t, names, "local")
+}
+
+func TestReplaceRemoteServers_RemovesOldRemoteSearch(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("rt", "Remote tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rt"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	client := NewClient(ts.URL, nil, "ns")
+	if err := host.RegisterRemoteServer(client, WithRemoteSearch()); err != nil {
+		t.Fatalf("register with search: %v", err)
+	}
+
+	assertToolExists(t, toolNames(host.ListTools()), "tool_search")
+
+	if err := host.ReplaceRemoteServers(nil); err != nil {
+		t.Fatalf("replace with empty: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolMissing(t, names, "tool_search")
+	assertToolMissing(t, names, "execute_tool")
+}
+
+func TestReplaceRemoteServers_ReplacesWithNewServers(t *testing.T) {
+	oldRemote := NewServer("old", "1")
+	oldRemote.RegisterTool(NewTool("old_tool", "Old"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("old"), nil
+	})
+	tsOld := httptest.NewServer(http.HandlerFunc(oldRemote.HandleRequest))
+	defer tsOld.Close()
+
+	newRemote := NewServer("new", "1")
+	newRemote.RegisterTool(NewTool("new_tool", "New"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("new"), nil
+	})
+	tsNew := httptest.NewServer(http.HandlerFunc(newRemote.HandleRequest))
+	defer tsNew.Close()
+
+	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local", "Local"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("local"), nil
+	})
+
+	if err := host.RegisterRemoteServer(NewClient(tsOld.URL, nil, "old")); err != nil {
+		t.Fatalf("register old: %v", err)
+	}
+	assertToolExists(t, toolNames(host.ListTools()), "old__old_tool")
+
+	if err := host.ReplaceRemoteServers([]RemoteServerEntry{
+		{Client: NewClient(tsNew.URL, nil, "new"), Visibility: ToolVisibilityNative},
+	}); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolMissing(t, names, "old__old_tool")
+	assertToolExists(t, names, "new__new_tool")
+	assertToolExists(t, names, "local")
+}
+
+func TestVisibilityTransition_NativeToDiscoverablePreservesRemoteTools(t *testing.T) {
+	remote := NewServer("remote", "1")
+	remote.RegisterTool(NewTool("rt", "Remote tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rt"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	host := NewServer("host", "1")
+
+	handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	}
+
+	host.RegisterTool(NewTool("my_tool", "Native"), handler)
+	if err := host.RegisterRemoteServer(NewClient(ts.URL, nil, "ns")); err != nil {
+		t.Fatalf("register remote: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolExists(t, names, "my_tool")
+	assertToolExists(t, names, "ns__rt")
+
+	host.RegisterTool(NewTool("my_tool", "Now discoverable").Discoverable("kw"), handler)
+
+	names = toolNames(host.ListTools())
+	assertToolMissing(t, names, "my_tool")
+	assertToolExists(t, names, "ns__rt")
+	assertToolExists(t, names, "tool_search")
+	assertToolExists(t, names, "execute_tool")
+
+	host.RegisterTool(NewTool("my_tool", "Back to native"), handler)
+
+	names = toolNames(host.ListTools())
+	assertToolExists(t, names, "my_tool")
+	assertToolExists(t, names, "ns__rt")
+	assertToolMissing(t, names, "tool_search")
+	assertToolMissing(t, names, "execute_tool")
+}
+
+func TestVisibilityTransition_DiscoverableToNativePreservesRemoteDiscoverable(t *testing.T) {
+	remoteDisc := NewServer("remote-disc", "1")
+	remoteDisc.RegisterTool(NewTool("rd", "Remote disc"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("rd"), nil
+	})
+	tsDisc := httptest.NewServer(http.HandlerFunc(remoteDisc.HandleRequest))
+	defer tsDisc.Close()
+
+	host := NewServer("host", "1")
+	handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	}
+
+	host.RegisterTool(NewTool("my_tool", "Discoverable").Discoverable("kw"), handler)
+	if err := host.RegisterRemoteServerDiscoverable(NewClient(tsDisc.URL, nil, "rd")); err != nil {
+		t.Fatalf("register remote disc: %v", err)
+	}
+
+	names := toolNames(host.ListTools())
+	assertToolMissing(t, names, "my_tool")
+	assertToolExists(t, names, "tool_search")
+
+	host.RegisterTool(NewTool("my_tool", "Now native"), handler)
+
+	names = toolNames(host.ListTools())
+	assertToolExists(t, names, "my_tool")
+	assertToolExists(t, names, "tool_search")
+	assertToolExists(t, names, "execute_tool")
+}
+
+func TestRegisterTool_VisibilityTransition(t *testing.T) {
+	s := NewServer("test", "1.0")
+
+	handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	}
+
+	s.RegisterTool(NewTool("my_tool", "Native tool"), handler)
+	tools := s.ListTools()
+	if len(tools) != 1 || tools[0].Name != "my_tool" {
+		t.Fatalf("expected 1 native tool, got %v", toolNames(tools))
+	}
+
+	s.RegisterTool(NewTool("my_tool", "Now discoverable").Discoverable("secret"), handler)
+	tools = s.ListTools()
+	for _, tl := range tools {
+		if tl.Name == "my_tool" {
+			t.Fatal("my_tool should NOT appear in ListTools after becoming discoverable")
+		}
+	}
+
+	resp, err := s.CallTool(context.Background(), "my_tool", nil)
+	if err != nil {
+		t.Fatalf("calling discoverable tool: %v", err)
+	}
+	if resp.Content[0].Text != "ok" {
+		t.Fatalf("expected ok, got %s", resp.Content[0].Text)
+	}
+
+	s.RegisterTool(NewTool("my_tool", "Back to native"), handler)
+	tools = s.ListTools()
+	if len(tools) != 1 || tools[0].Name != "my_tool" {
+		t.Fatalf("expected my_tool back in ListTools, got %v", toolNames(tools))
+	}
+	if tools[0].Description != "Back to native" {
+		t.Fatalf("expected updated description, got %s", tools[0].Description)
+	}
 }
 
 func TestServer_ConcurrentToolRegistration(t *testing.T) {

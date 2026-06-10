@@ -89,7 +89,23 @@ type Server struct {
 	mu                   sync.RWMutex
 	sessionManager       SessionManager    // Pluggable session management
 	internalRegistry     *internalRegistry // Registry for discoverable tools (searchable)
-	hasDiscoverableTools bool              // Track if any statically-registered discoverable tools exist
+	hasDiscoverableTools bool // Track if any discoverable tools exist (local or remote)
+}
+
+func (s *Server) recalcHasDiscoverableToolsLocked() {
+	s.hasDiscoverableTools = false
+	for _, t := range s.tools {
+		if t.Visibility == ToolVisibilityDiscoverable {
+			s.hasDiscoverableTools = true
+			return
+		}
+	}
+	for _, rc := range s.remoteClients {
+		if rc.visibility == ToolVisibilityDiscoverable || rc.remoteSearch {
+			s.hasDiscoverableTools = true
+			return
+		}
+	}
 }
 
 // registeredClient holds a remote client with its configuration
@@ -339,6 +355,8 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords .
 // Native tools appear in tools/list and are directly callable.
 // Keywords are stored and used in show-all mode when native tools become searchable.
 func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
+	prev, existed := s.tools[tool.name]
+
 	regTool := &registeredTool{
 		Name:         tool.name,
 		Description:  tool.Description(),
@@ -349,44 +367,41 @@ func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler
 	}
 	s.tools[tool.name] = regTool
 
+	s.internalRegistry.UnregisterTool(tool.name)
+
+	if existed && prev.Visibility == ToolVisibilityDiscoverable {
+		s.recalcHasDiscoverableToolsLocked()
+	}
+
 	newTool := MCPTool{
 		Name:        tool.name,
 		Description: tool.Description(),
 		InputSchema: regTool.Schema,
-		Keywords:    keywords, // Store keywords for show-all mode
+		Keywords:    keywords,
 	}
 	if regTool.OutputSchema != nil {
 		newTool.OutputSchema = regTool.OutputSchema
 	}
 
-	// Use binary search to find insertion point for sorted order
 	idx := sort.Search(len(s.nativeToolCache), func(i int) bool {
 		return s.nativeToolCache[i].Name >= tool.name
 	})
 
-	// Check if we're replacing an existing tool
 	if idx < len(s.nativeToolCache) && s.nativeToolCache[idx].Name == tool.name {
-		// Replace in place
 		s.nativeToolCache[idx] = newTool
 	} else {
-		// Insert at sorted position
 		s.nativeToolCache = append(s.nativeToolCache, MCPTool{})
 		copy(s.nativeToolCache[idx+1:], s.nativeToolCache[idx:])
 		s.nativeToolCache[idx] = newTool
 	}
-
-	// Native tools are surfaced to tool_search from nativeToolCache at request time,
-	// so they don't need to be duplicated in the internal discovery registry.
 }
 
 // registerDiscoverableToolLocked registers a discoverable tool while the lock is already held.
 // Discoverable tools do NOT appear in tools/list but can be discovered through tool_search.
 // Keywords from the ToolBuilder are merged with the additional keywords parameter.
 func (s *Server) registerDiscoverableToolLocked(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
-	// Mark that we have statically-registered discoverable tools
 	s.hasDiscoverableTools = true
 
-	// Register tool metadata for execution (but not in nativeToolCache)
 	regTool := &registeredTool{
 		Name:         tool.name,
 		Description:  tool.Description(),
@@ -397,10 +412,15 @@ func (s *Server) registerDiscoverableToolLocked(tool *ToolBuilder, handler ToolH
 	}
 	s.tools[tool.name] = regTool
 
-	// Merge keywords from ToolBuilder and parameter
+	idx := sort.Search(len(s.nativeToolCache), func(i int) bool {
+		return s.nativeToolCache[i].Name >= tool.name
+	})
+	if idx < len(s.nativeToolCache) && s.nativeToolCache[idx].Name == tool.name {
+		s.nativeToolCache = append(s.nativeToolCache[:idx], s.nativeToolCache[idx+1:]...)
+	}
+
 	allKeywords := append(tool.Keywords(), keywords...)
 
-	// Add to internal registry for search
 	s.internalRegistry.RegisterTool(tool, handler, allKeywords...)
 }
 
@@ -477,12 +497,7 @@ func (s *Server) UnregisterTool(name string) bool {
 	}
 
 	s.hasDiscoverableTools = false
-	for _, t := range s.tools {
-		if t.Visibility == ToolVisibilityDiscoverable {
-			s.hasDiscoverableTools = true
-			break
-		}
-	}
+	s.recalcHasDiscoverableToolsLocked()
 
 	return true
 }
@@ -586,6 +601,8 @@ func (s *Server) UnregisterRemoteServer(client *Client) {
 		}
 		s.nativeToolCache = filtered
 	}
+
+	s.recalcHasDiscoverableToolsLocked()
 }
 
 // ReplaceRemoteServers atomically replaces all registered remote servers with the provided list.
@@ -595,7 +612,6 @@ func (s *Server) UnregisterRemoteServer(client *Client) {
 func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 	s.mu.Lock()
 
-	// Remove all remote tools from nativeToolCache and toolToServer
 	newNativeCache := make([]MCPTool, 0, len(s.nativeToolCache))
 	for _, t := range s.nativeToolCache {
 		if _, isRemote := s.toolToServer[t.Name]; !isRemote {
@@ -603,6 +619,18 @@ func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 		}
 	}
 	s.nativeToolCache = newNativeCache
+
+	for name, rc := range s.remoteClients {
+		if rc.visibility == ToolVisibilityDiscoverable {
+			s.internalRegistry.UnregisterTool(name)
+			for toolName, toolRc := range s.toolToServer {
+				if toolRc == rc {
+					s.internalRegistry.UnregisterTool(toolName)
+				}
+			}
+		}
+	}
+
 	s.remoteClients = make(map[string]*registeredClient)
 	s.toolToServer = make(map[string]*registeredClient)
 
@@ -613,6 +641,11 @@ func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 			return err
 		}
 	}
+
+	s.mu.Lock()
+	s.recalcHasDiscoverableToolsLocked()
+	s.mu.Unlock()
+
 	return nil
 }
 
@@ -628,7 +661,7 @@ func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility T
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if visibility == ToolVisibilityDiscoverable {
+	if visibility == ToolVisibilityDiscoverable || remoteSearch {
 		s.hasDiscoverableTools = true
 	}
 
