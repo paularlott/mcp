@@ -79,6 +79,13 @@ func (r *internalRegistry) RegisterMCPTool(tool *MCPTool, handler ToolHandler, k
 	}
 }
 
+// UnregisterTool removes a tool by name from the registry.
+func (r *internalRegistry) UnregisterTool(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 // GetRegisteredTools returns all tools in the registry
 func (r *internalRegistry) GetRegisteredTools() []MCPTool {
 	r.mu.RLock()

@@ -239,6 +239,81 @@ func TestRegisterTool_ReplacesExistingTool(t *testing.T) {
 	}
 }
 
+func TestUnregisterTool_NativeTool(t *testing.T) {
+	s := NewServer("test", "1.0")
+
+	s.RegisterTool(NewTool("alpha", "A tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("a"), nil
+	})
+	s.RegisterTool(NewTool("beta", "B tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("b"), nil
+	})
+	s.RegisterTool(NewTool("gamma", "G tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("g"), nil
+	})
+
+	if len(s.ListTools()) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(s.ListTools()))
+	}
+
+	removed := s.UnregisterTool("beta")
+	if !removed {
+		t.Fatal("expected UnregisterTool to return true")
+	}
+
+	tools := s.ListTools()
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools after unregister, got %d", len(tools))
+	}
+	if tools[0].Name != "alpha" || tools[1].Name != "gamma" {
+		t.Fatalf("expected alpha and gamma, got %v", tools)
+	}
+
+	_, err := s.CallTool(context.Background(), "beta", nil)
+	if err == nil {
+		t.Fatal("expected error calling unregistered tool")
+	}
+
+	removed = s.UnregisterTool("beta")
+	if removed {
+		t.Fatal("expected UnregisterTool to return false for already-removed tool")
+	}
+
+	removed = s.UnregisterTool("nonexistent")
+	if removed {
+		t.Fatal("expected UnregisterTool to return false for nonexistent tool")
+	}
+}
+
+func TestUnregisterTool_DiscoverableTool(t *testing.T) {
+	s := NewServer("test", "1.0")
+
+	s.RegisterTool(NewTool("native", "Native tool"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("native"), nil
+	})
+	s.RegisterTool(NewTool("hidden", "Hidden tool").Discoverable("secret"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("hidden"), nil
+	})
+
+	tools := s.ListTools()
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools (native + 2 discovery tools), got %d: %v", len(tools), tools)
+	}
+
+	removed := s.UnregisterTool("hidden")
+	if !removed {
+		t.Fatal("expected UnregisterTool to return true for discoverable tool")
+	}
+
+	tools = s.ListTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 native tool after unregister (no more discovery tools), got %d: %v", len(tools), tools)
+	}
+	if tools[0].Name != "native" {
+		t.Fatalf("expected native tool, got %s", tools[0].Name)
+	}
+}
+
 func TestServer_ConcurrentToolRegistration(t *testing.T) {
 	s := NewServer("test", "1.0")
 	var wg sync.WaitGroup

@@ -451,6 +451,37 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 	s.rebuildNativeToolCacheLocked()
 }
 
+// UnregisterTool removes a tool by name from the server.
+// Returns true if the tool was found and removed, false otherwise.
+// This is safe to call concurrently.
+func (s *Server) UnregisterTool(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tool, exists := s.tools[name]
+	if !exists {
+		return false
+	}
+
+	delete(s.tools, name)
+
+	if tool.Visibility == ToolVisibilityNative {
+		s.rebuildNativeToolCacheLocked()
+	} else {
+		s.internalRegistry.UnregisterTool(name)
+	}
+
+	s.hasDiscoverableTools = false
+	for _, t := range s.tools {
+		if t.Visibility == ToolVisibilityDiscoverable {
+			s.hasDiscoverableTools = true
+			break
+		}
+	}
+
+	return true
+}
+
 // rebuildNativeToolCacheLocked rebuilds the native tool cache from all native tools.
 // Must be called with s.mu held.
 func (s *Server) rebuildNativeToolCacheLocked() {
