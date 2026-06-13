@@ -528,6 +528,13 @@ func parseToolSearchResponse(resp *ToolResponse) ([]map[string]any, error) {
 	if err := json.Unmarshal([]byte(jsonText), &results); err != nil {
 		return nil, fmt.Errorf("failed to parse tool search response: %w", err)
 	}
+	for _, result := range results {
+		if _, ok := result["inputSchema"]; !ok {
+			if schema, ok := result["input_schema"]; ok {
+				result["inputSchema"] = schema
+			}
+		}
+	}
 
 	return results, nil
 }

@@ -42,6 +42,15 @@ var (
 	ErrToolFiltered     = errors.New("tool is filtered out")
 )
 
+func firstPresent(values map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := values[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
 // registeredTool represents a registered tool
 type registeredTool struct {
 	Name         string
@@ -89,7 +98,7 @@ type Server struct {
 	mu                   sync.RWMutex
 	sessionManager       SessionManager    // Pluggable session management
 	internalRegistry     *internalRegistry // Registry for discoverable tools (searchable)
-	hasDiscoverableTools bool // Track if any discoverable tools exist (local or remote)
+	hasDiscoverableTools bool              // Track if any discoverable tools exist (local or remote)
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
@@ -258,7 +267,7 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 		for _, raw := range searchResults {
 			result := SearchResult{
 				Score:       0,
-				InputSchema: raw["input_schema"],
+				InputSchema: firstPresent(raw, "inputSchema", "input_schema"),
 				Keywords:    nil,
 			}
 			if name, ok := raw["name"].(string); ok {

@@ -14,7 +14,7 @@ type SearchResult struct {
 	Name        string      `json:"name"`
 	Description string      `json:"description"`
 	Score       float64     `json:"score"`
-	InputSchema interface{} `json:"input_schema,omitempty"`
+	InputSchema interface{} `json:"inputSchema,omitempty"`
 	Keywords    []string    `json:"keywords,omitempty"`
 }
 

@@ -144,6 +144,68 @@ func TestRemoteToolSearch(t *testing.T) {
 	})
 }
 
+func TestRemoteToolSearchAcceptsCamelCaseInputSchema(t *testing.T) {
+	raw := map[string]interface{}{
+		"name": "create_space",
+		"inputSchema": map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"custom_fields": map[string]interface{}{
+					"type": "array",
+					"items": map[string]interface{}{
+						"type": "string",
+					},
+				},
+			},
+		},
+	}
+
+	schema := firstPresent(raw, "inputSchema", "input_schema")
+	if schema == nil {
+		t.Fatal("expected camelCase inputSchema to be accepted")
+	}
+}
+
+func TestToolSearchResultUsesCamelCaseInputSchema(t *testing.T) {
+	result := SearchResult{
+		Name: "create_space",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+		},
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("Marshal(SearchResult) failed: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal(SearchResult JSON) failed: %v", err)
+	}
+	if _, ok := raw["inputSchema"]; !ok {
+		t.Fatalf("SearchResult JSON missing inputSchema: %s", data)
+	}
+	if _, ok := raw["input_schema"]; ok {
+		t.Fatalf("SearchResult JSON should not include input_schema: %s", data)
+	}
+}
+
+func TestParseToolSearchResponseNormalizesLegacyInputSchema(t *testing.T) {
+	resp := NewToolResponseText(`[{"name":"create_space","input_schema":{"type":"object"}}]`)
+
+	results, err := parseToolSearchResponse(resp)
+	if err != nil {
+		t.Fatalf("parseToolSearchResponse() failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if _, ok := results[0]["inputSchema"]; !ok {
+		t.Fatalf("legacy input_schema was not normalized: %+v", results[0])
+	}
+}
+
 func TestRemoteExecuteTool(t *testing.T) {
 	remoteServer := NewServer("remote", "1.0.0")
 	remoteServer.RegisterTool(
