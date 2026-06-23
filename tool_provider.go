@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // ShowAllHeader is the HTTP header used to show all tools regardless of visibility
@@ -23,9 +24,19 @@ type ToolProvider interface {
 	// or only via tool_search. Keywords should be populated for discoverable tools.
 	GetTools(ctx context.Context) ([]MCPTool, error)
 
-	// ExecuteTool executes a tool by name and returns the result.
-	// Returns nil, ErrUnknownTool if the tool is not handled by this provider.
-	ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error)
+	// ExecuteTool executes a tool by name and returns its response.
+	//
+	// Miss contract: if this provider does not handle the named tool, return
+	// (nil, nil). This is the canonical "not handled" signal and lets the
+	// server (or a MultiProvider) try the next provider. Returning
+	// (nil, ErrUnknownTool) is also accepted for the same purpose and behaves
+	// identically. Any other non-nil error aborts dispatch and is returned to
+	// the caller, so only use it for genuine failures, not for misses.
+	//
+	// Build the response with the NewToolResponse* constructors. If you have a
+	// loose value (a string or any JSON-encodable type) rather than an
+	// already-built response, wrap it with NewToolResponseAuto.
+	ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error)
 }
 
 // Discovery tool names
@@ -40,6 +51,57 @@ type toolProvidersKey struct{}
 // showAllToolsKey is the context key for show-all mode
 type showAllToolsKey struct{}
 
+// requestMemoKey is the context key for the per-request provider memo.
+type requestMemoKey struct{}
+
+// requestMemo is a per-request scratch space that lets providers compute an
+// expensive value once even though the server may query providers several times
+// while handling a single request (e.g. tools/list checks for discoverable
+// tools and then lists them). It is installed on the context when providers are
+// attached, so its lifetime is exactly the request's lifetime — no global state,
+// nothing to evict.
+type requestMemo struct {
+	mu sync.Mutex
+	m  map[any]*memoSlot
+}
+
+type memoSlot struct {
+	once sync.Once
+	val  any
+	err  error
+}
+
+func getRequestMemo(ctx context.Context) *requestMemo {
+	if ctx == nil {
+		return nil
+	}
+	memo, _ := ctx.Value(requestMemoKey{}).(*requestMemo)
+	return memo
+}
+
+// memoizeRequest runs fn at most once per key for the lifetime of the request's
+// context, returning the cached result on subsequent calls. If no per-request
+// memo is present (e.g. the provider is used outside the normal request flow),
+// fn is simply called each time.
+func memoizeRequest(ctx context.Context, key any, fn func() (any, error)) (any, error) {
+	memo := getRequestMemo(ctx)
+	if memo == nil {
+		return fn()
+	}
+	memo.mu.Lock()
+	slot, ok := memo.m[key]
+	if !ok {
+		slot = &memoSlot{}
+		memo.m[key] = slot
+	}
+	memo.mu.Unlock()
+
+	slot.once.Do(func() {
+		slot.val, slot.err = fn()
+	})
+	return slot.val, slot.err
+}
+
 // WithToolProviders returns a context with the given tool providers attached.
 // Multiple providers can be attached and all will be queried for tools.
 // Tools from providers are filtered by their Visibility field:
@@ -47,9 +109,17 @@ type showAllToolsKey struct{}
 //   - ToolVisibilityDiscoverable: only searchable via tool_search
 //
 // Use WithShowAllTools to make all tools appear in tools/list regardless of visibility.
+//
+// A per-request memo is also installed so providers can cache expensive,
+// request-scoped work (such as resolving a user's remote servers) across the
+// multiple times the server queries providers while handling one request.
 func WithToolProviders(ctx context.Context, providers ...ToolProvider) context.Context {
 	existing := GetToolProviders(ctx)
-	return context.WithValue(ctx, toolProvidersKey{}, append(existing, providers...))
+	ctx = context.WithValue(ctx, toolProvidersKey{}, append(existing, providers...))
+	if getRequestMemo(ctx) == nil {
+		ctx = context.WithValue(ctx, requestMemoKey{}, &requestMemo{m: make(map[any]*memoSlot)})
+	}
+	return ctx
 }
 
 // GetToolProviders returns the tool providers from the context.
@@ -208,7 +278,7 @@ func getNativeToolsFromProviders(ctx context.Context) []MCPTool {
 
 // callToolFromProviders tries to call a tool from the providers in the context.
 // Returns ToolResponse, error - returns ErrUnknownTool if no provider handles the tool.
-func callToolFromProviders(ctx context.Context, name string, params map[string]interface{}) (*ToolResponse, error) {
+func callToolFromProviders(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
 	for _, provider := range GetToolProviders(ctx) {
 		result, err := provider.ExecuteTool(ctx, name, params)
 		if err == ErrUnknownTool {
@@ -219,26 +289,10 @@ func callToolFromProviders(ctx context.Context, name string, params map[string]i
 			return nil, err
 		}
 		if result != nil {
-			// Provider handled the tool - convert result to proper ToolResponse
-			return convertToToolResponse(result), nil
+			// Provider handled the tool
+			return result, nil
 		}
 	}
 
 	return nil, ErrUnknownTool
-}
-
-// convertToToolResponse converts various result types to a ToolResponse.
-func convertToToolResponse(result interface{}) *ToolResponse {
-	// If it's already a ToolResponse, return it
-	if tr, ok := result.(*ToolResponse); ok {
-		return tr
-	}
-
-	// If it's a string, wrap it in a text response
-	if str, ok := result.(string); ok {
-		return NewToolResponseText(str)
-	}
-
-	// For other types, try to create a JSON response
-	return NewToolResponseJSON(result)
 }

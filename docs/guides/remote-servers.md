@@ -124,8 +124,8 @@ dataClient := mcp.NewClient("https://data.example.com/mcp", dataAuth, "data")
 server.RegisterRemoteServer(aiClient)
 server.RegisterRemoteServer(dataClient)
 
-// ListTools returns all tools (local + remote with namespaces)
-tools := server.ListTools() // Returns: ["local-greet", "ai/generate-text", "data/query", ...]
+// ListToolsWithContext returns all tools (local + remote with namespaces)
+tools := server.ListToolsWithContext(ctx) // Returns: ["local-greet", "ai/generate-text", "data/query", ...]
 
 // CallTool with intelligent routing
 result, err := server.CallTool(ctx, "local-greet", args)       // Calls local tool
@@ -278,6 +278,103 @@ When a tool name isn't in the pre-fetched tool list but matches a remote server'
 - If no servers have it enabled, the search path is a no-op with no overhead
 - Remote calls happen sequentially per-server but can be parallelized in the future
 - The `max_results` limit is passed through to remote servers to bound response size
+
+## Per-User Remote Servers (Request-Scoped)
+
+`RegisterRemoteServer` is process-wide: every request sees the same remotes with
+the same credentials. When the set of remote servers, their auth, or their
+enabled tools differs **per user**, use `NewRemoteProvider` instead. It is a
+`ToolProvider` that resolves the current request's servers from the context.
+
+Create it **once** at startup and reuse it for every request. Because it reads
+the user from the context (not from construction), one instance serves all
+users without leaking tools between them, and its per-server tool-list cache
+persists across requests.
+
+```go
+// Created once, at startup.
+remoteProvider := mcp.NewRemoteProvider(func(ctx context.Context) ([]mcp.RemoteProviderConfig, error) {
+    user := userFromContext(ctx) // your own context accessor
+    if user == nil {
+        return nil, nil
+    }
+
+    records, err := store.ListRemoteServersForUser(user.ID)
+    if err != nil {
+        return nil, err
+    }
+
+    configs := make([]mcp.RemoteProviderConfig, 0, len(records))
+    for _, rec := range records {
+        rec := rec
+        configs = append(configs, mcp.RemoteProviderConfig{
+            Name: rec.Namespace,
+            URL:  rec.URL,
+            // Lazy auth: only resolved when this server is actually used.
+            AuthFunc: func(ctx context.Context) (mcp.AuthProvider, error) {
+                return authForServer(ctx, user, rec)
+            },
+            Visibility: visibilityFor(rec), // native or discoverable
+            ToolFilter: rec.IsToolEnabled,  // applied to list and call paths
+            CacheTTL:   time.Duration(rec.CacheSeconds) * time.Second,
+            // Set CacheKey to isolate catalogs per user when needed:
+            CacheKey: fmt.Sprintf("%s|%s", user.ID, rec.ID),
+        })
+    }
+    return configs, nil
+})
+
+// Per request: attach the shared provider.
+func handler(w http.ResponseWriter, r *http.Request) {
+    ctx := mcp.WithShowAllFromRequest(r.Context(), r, remoteProvider)
+    server.HandleRequest(w, r.WithContext(ctx))
+}
+```
+
+### RemoteProviderConfig fields
+
+| Field | Purpose |
+|---|---|
+| `Name` | Namespace prefix for the server's tools (e.g. `github` → `github__list_repos`). Must be unique per resolver result. |
+| `URL` | Remote MCP endpoint. |
+| `Auth` | Static auth provider. Ignored when `AuthFunc` is set. |
+| `AuthFunc` | Lazy per-request auth; only called when the server is listed or called. Use for per-user OAuth/bearer lookups. |
+| `Visibility` | `ToolVisibilityNative` (in `tools/list`) or `ToolVisibilityDiscoverable` (only via `tool_search`). |
+| `ToolFilter` | Restricts exposed tools; receives the original (un-namespaced) name. Applied to both list and call. |
+| `CacheTTL` | Tool-list cache lifetime. Zero uses the 60s default; negative disables caching. |
+| `CacheKey` | Overrides the cache key (defaults to `Name`+URL). Include a user/tenant id to isolate per-user catalogs. |
+| `HTTPPool` | Optional custom HTTP pool (e.g. for self-signed internal services). |
+| `Keywords` | Extra search keywords; the namespace and `remote` are always included. |
+
+### Cache invalidation
+
+When a user's server configuration changes, drop the cached tool list so the
+next request refetches:
+
+```go
+remoteProvider.InvalidateCache(cacheKey) // single server
+remoteProvider.InvalidateAllCache()      // everything
+```
+
+The cache key must match the `CacheKey` you set (or `Name`+URL when unset).
+
+The cache is bounded by an LRU with a configurable maximum (default
+`DefaultRemoteToolCacheMaxEntries`, override with `WithMaxCacheEntries`), so a
+per-user/per-tenant `CacheKey` cannot grow memory without limit — the
+least-recently-used entry is evicted once the cache is full, and entries also
+expire after their `CacheTTL`. For very large active populations, raise the
+maximum or shorten `CacheTTL` so hot users are not evicted prematurely:
+
+```go
+remoteProvider := mcp.NewRemoteProvider(resolver, mcp.WithMaxCacheEntries(10000))
+```
+
+### Native vs static remote registration
+
+- Use `RegisterRemoteServer` / `ReplaceRemoteServers` for **global** remotes
+  shared by every request (e.g. a fixed set of configured servers).
+- Use `NewRemoteProvider` for **per-user/per-tenant** remotes resolved from the
+  request.
 
 ## Authentication
 

@@ -18,7 +18,7 @@ func TestListTools_OutputSchemaAndOrdering(t *testing.T) {
 		return NewToolResponseText("c"), nil
 	})
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 3 {
 		t.Fatalf("expected 3 tools, got %d", len(tools))
 	}
@@ -41,10 +41,10 @@ func (p *testServerNativeProvider) GetTools(ctx context.Context) ([]MCPTool, err
 	return p.tools, nil
 }
 
-func (p *testServerNativeProvider) ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+func (p *testServerNativeProvider) ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
 	for _, tool := range p.tools {
 		if tool.Name == name {
-			return "provider:" + name, nil
+			return NewToolResponseText("provider:" + name), nil
 		}
 	}
 	return nil, nil // Not handled
@@ -67,7 +67,7 @@ func TestListToolsWithContext_IncludesProviderTools(t *testing.T) {
 	}
 
 	// Without context, should only have static tool
-	toolsWithoutCtx := s.ListTools()
+	toolsWithoutCtx := s.ListToolsWithContext(context.Background())
 	if len(toolsWithoutCtx) != 1 {
 		t.Fatalf("expected 1 static tool, got %d", len(toolsWithoutCtx))
 	}

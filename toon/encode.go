@@ -33,7 +33,7 @@ func newEncoder(indentSize int, delimiter string) *encoder {
 	}
 }
 
-func keyToString(key interface{}) string {
+func keyToString(key any) string {
 	switch k := key.(type) {
 	case string:
 		return k
@@ -54,7 +54,7 @@ func keyToString(key interface{}) string {
 	}
 }
 
-func normalizeValue(v interface{}) (interface{}, error) {
+func normalizeValue(v any) (any, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -69,7 +69,7 @@ func normalizeValue(v interface{}) (interface{}, error) {
 	case reflect.Interface:
 		return normalizeValue(val.Elem().Interface())
 	case reflect.Map:
-		result := make(map[string]interface{})
+		result := make(map[string]any)
 		for _, key := range val.MapKeys() {
 			keyStr := keyToString(key.Interface())
 			normVal, err := normalizeValue(val.MapIndex(key).Interface())
@@ -80,7 +80,7 @@ func normalizeValue(v interface{}) (interface{}, error) {
 		}
 		return result, nil
 	case reflect.Slice, reflect.Array:
-		result := make([]interface{}, val.Len())
+		result := make([]any, val.Len())
 		for i := 0; i < val.Len(); i++ {
 			normVal, err := normalizeValue(val.Index(i).Interface())
 			if err != nil {
@@ -94,7 +94,7 @@ func normalizeValue(v interface{}) (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		var result interface{}
+		var result any
 		err = json.Unmarshal(jsonBytes, &result)
 		return result, err
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -108,7 +108,7 @@ func normalizeValue(v interface{}) (interface{}, error) {
 	}
 }
 
-func (e *encoder) encode(v interface{}, depth int) (string, error) {
+func (e *encoder) encode(v any, depth int) (string, error) {
 	switch val := v.(type) {
 	case nil:
 		return "null", nil
@@ -118,9 +118,9 @@ func (e *encoder) encode(v interface{}, depth int) (string, error) {
 		return e.formatNumber(val), nil
 	case string:
 		return e.encodeString(val), nil
-	case map[string]interface{}:
+	case map[string]any:
 		return e.encodeObject(val, depth)
-	case []interface{}:
+	case []any:
 		return e.encodeArray(val, depth, "")
 	default:
 		return "", fmt.Errorf("unsupported type: %T", v)
@@ -303,7 +303,7 @@ func (e *encoder) isValidIdentifier(s string) bool {
 	return true
 }
 
-func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, error) {
+func (e *encoder) encodeObject(obj map[string]any, depth int) (string, error) {
 	if len(obj) == 0 {
 		return "", nil
 	}
@@ -332,7 +332,7 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 		encodedKey := e.encodeKey(key)
 
 		switch v := value.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			b.WriteString(indent)
 			b.WriteString(encodedKey)
 			b.WriteByte(':')
@@ -346,7 +346,7 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 					b.WriteString(nested)
 				}
 			}
-		case []interface{}:
+		case []any:
 			arrayStr, err := e.encodeArray(v, depth, key)
 			if err != nil {
 				return "", err
@@ -368,7 +368,7 @@ func (e *encoder) encodeObject(obj map[string]interface{}, depth int) (string, e
 	return b.String(), nil
 }
 
-func (e *encoder) encodeArray(arr []interface{}, depth int, key string) (string, error) {
+func (e *encoder) encodeArray(arr []any, depth int, key string) (string, error) {
 	length := len(arr)
 
 	if length == 0 {
@@ -389,12 +389,12 @@ func (e *encoder) encodeArray(arr []interface{}, depth int, key string) (string,
 	return e.encodeListArray(arr, depth, key)
 }
 
-func (e *encoder) isTabular(arr []interface{}) bool {
+func (e *encoder) isTabular(arr []any) bool {
 	if len(arr) == 0 {
 		return false
 	}
 
-	firstObj, ok := arr[0].(map[string]interface{})
+	firstObj, ok := arr[0].(map[string]any)
 	if !ok {
 		return false
 	}
@@ -414,7 +414,7 @@ func (e *encoder) isTabular(arr []interface{}) bool {
 
 	// Check remaining objects
 	for i := 1; i < len(arr); i++ {
-		obj, ok := arr[i].(map[string]interface{})
+		obj, ok := arr[i].(map[string]any)
 		if !ok || len(obj) != len(keySet) {
 			return false
 		}
@@ -430,7 +430,7 @@ func (e *encoder) isTabular(arr []interface{}) bool {
 	return true
 }
 
-func (e *encoder) isPrimitive(v interface{}) bool {
+func (e *encoder) isPrimitive(v any) bool {
 	switch v.(type) {
 	case nil, bool, float64, string:
 		return true
@@ -439,7 +439,7 @@ func (e *encoder) isPrimitive(v interface{}) bool {
 	}
 }
 
-func (e *encoder) isPrimitiveArray(arr []interface{}) bool {
+func (e *encoder) isPrimitiveArray(arr []any) bool {
 	for _, item := range arr {
 		if !e.isPrimitive(item) {
 			return false
@@ -448,8 +448,8 @@ func (e *encoder) isPrimitiveArray(arr []interface{}) bool {
 	return true
 }
 
-func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (string, error) {
-	firstObj := arr[0].(map[string]interface{})
+func (e *encoder) encodeTabular(arr []any, depth int, key string) (string, error) {
+	firstObj := arr[0].(map[string]any)
 
 	// Use local key buffer to avoid corruption
 	keyBuffer := make([]string, 0, len(firstObj))
@@ -480,7 +480,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 	for _, item := range arr {
 		b.WriteByte('\n')
 		b.WriteString(indent)
-		obj := item.(map[string]interface{})
+		obj := item.(map[string]any)
 		for i, field := range keyBuffer {
 			if i > 0 {
 				b.WriteString(e.delimiter)
@@ -496,7 +496,7 @@ func (e *encoder) encodeTabular(arr []interface{}, depth int, key string) (strin
 	return b.String(), nil
 }
 
-func (e *encoder) encodePrimitiveArray(arr []interface{}, key string) (string, error) {
+func (e *encoder) encodePrimitiveArray(arr []any, key string) (string, error) {
 	var b strings.Builder
 	if key != "" {
 		b.WriteString(key)
@@ -519,7 +519,7 @@ func (e *encoder) encodePrimitiveArray(arr []interface{}, key string) (string, e
 	return b.String(), nil
 }
 
-func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (string, error) {
+func (e *encoder) encodeListArray(arr []any, depth int, key string) (string, error) {
 	var b strings.Builder
 	if key != "" {
 		b.WriteString(key)
@@ -532,7 +532,7 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 	for _, item := range arr {
 		b.WriteByte('\n')
 		switch v := item.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			if len(v) == 0 {
 				b.WriteString(indent)
 				b.WriteByte('-')
@@ -557,7 +557,7 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 					}
 
 					switch val := value.(type) {
-					case map[string]interface{}:
+					case map[string]any:
 						if i == 0 {
 							b.WriteString(indent)
 							b.WriteString("- ")
@@ -576,7 +576,7 @@ func (e *encoder) encodeListArray(arr []interface{}, depth int, key string) (str
 								b.WriteString(nested)
 							}
 						}
-					case []interface{}:
+					case []any:
 						arrayStr, err := e.encodeArray(val, depth+1, encodedKey)
 						if err != nil {
 							return "", err

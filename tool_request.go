@@ -13,12 +13,12 @@ type ToolHandler func(ctx context.Context, req *ToolRequest) (*ToolResponse, err
 // Use the accessor methods (String, Int, Bool, etc.) to retrieve parameters
 // with automatic type conversion and validation.
 type ToolRequest struct {
-	args map[string]interface{}
+	args map[string]any
 }
 
 // NewToolRequest creates a new ToolRequest with the given arguments.
 // This is typically called by the server when dispatching tool calls.
-func NewToolRequest(args map[string]interface{}) *ToolRequest {
+func NewToolRequest(args map[string]any) *ToolRequest {
 	return &ToolRequest{args: args}
 }
 
@@ -118,7 +118,7 @@ func (r *ToolRequest) StringSlice(name string) ([]string, error) {
 	if !ok {
 		return nil, ErrUnknownParameter
 	}
-	if arr, ok := val.([]interface{}); ok {
+	if arr, ok := val.([]any); ok {
 		result := make([]string, len(arr))
 		for i, item := range arr {
 			if str, ok := item.(string); ok {
@@ -148,7 +148,7 @@ func (r *ToolRequest) IntSlice(name string) ([]int, error) {
 	if !ok {
 		return nil, ErrUnknownParameter
 	}
-	if arr, ok := val.([]interface{}); ok {
+	if arr, ok := val.([]any); ok {
 		result := make([]int, len(arr))
 		for i, item := range arr {
 			switch v := item.(type) {
@@ -180,7 +180,7 @@ func (r *ToolRequest) FloatSlice(name string) ([]float64, error) {
 	if !ok {
 		return nil, ErrUnknownParameter
 	}
-	if arr, ok := val.([]interface{}); ok {
+	if arr, ok := val.([]any); ok {
 		result := make([]float64, len(arr))
 		for i, item := range arr {
 			if num, ok := item.(float64); ok {
@@ -209,7 +209,7 @@ func (r *ToolRequest) BoolSlice(name string) ([]bool, error) {
 	if !ok {
 		return nil, ErrUnknownParameter
 	}
-	if arr, ok := val.([]interface{}); ok {
+	if arr, ok := val.([]any); ok {
 		result := make([]bool, len(arr))
 		for i, item := range arr {
 			if b, ok := item.(bool); ok {
@@ -231,21 +231,21 @@ func (r *ToolRequest) BoolSliceOr(name string, defaultValue []bool) []bool {
 	return defaultValue
 }
 
-// Object returns a parameter as a map[string]interface{} (generic object).
+// Object returns a parameter as a map[string]any (generic object).
 // Returns ErrUnknownParameter if the parameter doesn't exist.
-func (r *ToolRequest) Object(name string) (map[string]interface{}, error) {
+func (r *ToolRequest) Object(name string) (map[string]any, error) {
 	val, ok := r.args[name]
 	if !ok {
 		return nil, ErrUnknownParameter
 	}
-	if obj, ok := val.(map[string]interface{}); ok {
+	if obj, ok := val.(map[string]any); ok {
 		return obj, nil
 	}
 	return nil, fmt.Errorf("parameter '%s' is not an object", name)
 }
 
 // ObjectOr returns a parameter as an object or the default value
-func (r *ToolRequest) ObjectOr(name string, defaultValue map[string]interface{}) map[string]interface{} {
+func (r *ToolRequest) ObjectOr(name string, defaultValue map[string]any) map[string]any {
 	if val, err := r.Object(name); err == nil {
 		return val
 	}
@@ -253,15 +253,15 @@ func (r *ToolRequest) ObjectOr(name string, defaultValue map[string]interface{})
 }
 
 // ObjectSlice returns a parameter as a slice of objects
-func (r *ToolRequest) ObjectSlice(name string) ([]map[string]interface{}, error) {
+func (r *ToolRequest) ObjectSlice(name string) ([]map[string]any, error) {
 	val, ok := r.args[name]
 	if !ok {
 		return nil, ErrUnknownParameter
 	}
-	if arr, ok := val.([]interface{}); ok {
-		result := make([]map[string]interface{}, len(arr))
+	if arr, ok := val.([]any); ok {
+		result := make([]map[string]any, len(arr))
 		for i, item := range arr {
-			if obj, ok := item.(map[string]interface{}); ok {
+			if obj, ok := item.(map[string]any); ok {
 				result[i] = obj
 			} else {
 				return nil, fmt.Errorf("parameter '%s' contains non-object element at index %d", name, i)
@@ -273,7 +273,7 @@ func (r *ToolRequest) ObjectSlice(name string) ([]map[string]interface{}, error)
 }
 
 // ObjectSliceOr returns a parameter as a slice of objects or the default value
-func (r *ToolRequest) ObjectSliceOr(name string, defaultValue []map[string]interface{}) []map[string]interface{} {
+func (r *ToolRequest) ObjectSliceOr(name string, defaultValue []map[string]any) []map[string]any {
 	if val, err := r.ObjectSlice(name); err == nil {
 		return val
 	}
@@ -281,7 +281,8 @@ func (r *ToolRequest) ObjectSliceOr(name string, defaultValue []map[string]inter
 }
 
 // GetObjectProperty extracts a property from an object parameter
-func (r *ToolRequest) GetObjectProperty(objectName, propertyName string) (interface{}, error) {
+// ObjectProperty extracts a property from an object parameter.
+func (r *ToolRequest) ObjectProperty(objectName, propertyName string) (any, error) {
 	obj, err := r.Object(objectName)
 	if err != nil {
 		return nil, err
@@ -293,9 +294,9 @@ func (r *ToolRequest) GetObjectProperty(objectName, propertyName string) (interf
 	return val, nil
 }
 
-// GetObjectStringProperty extracts a string property from an object parameter
-func (r *ToolRequest) GetObjectStringProperty(objectName, propertyName string) (string, error) {
-	val, err := r.GetObjectProperty(objectName, propertyName)
+// ObjectString extracts a string property from an object parameter.
+func (r *ToolRequest) ObjectString(objectName, propertyName string) (string, error) {
+	val, err := r.ObjectProperty(objectName, propertyName)
 	if err != nil {
 		return "", err
 	}
@@ -305,9 +306,19 @@ func (r *ToolRequest) GetObjectStringProperty(objectName, propertyName string) (
 	return "", fmt.Errorf("property '%s' in object '%s' is not a string", propertyName, objectName)
 }
 
-// GetObjectIntProperty extracts an int property from an object parameter
-func (r *ToolRequest) GetObjectIntProperty(objectName, propertyName string) (int, error) {
-	val, err := r.GetObjectProperty(objectName, propertyName)
+// ObjectStringOr extracts a string property from an object parameter, returning
+// defaultValue when the object or property is missing or not a string.
+func (r *ToolRequest) ObjectStringOr(objectName, propertyName, defaultValue string) string {
+	val, err := r.ObjectString(objectName, propertyName)
+	if err != nil {
+		return defaultValue
+	}
+	return val
+}
+
+// ObjectInt extracts an int property from an object parameter.
+func (r *ToolRequest) ObjectInt(objectName, propertyName string) (int, error) {
+	val, err := r.ObjectProperty(objectName, propertyName)
 	if err != nil {
 		return 0, err
 	}
@@ -321,9 +332,19 @@ func (r *ToolRequest) GetObjectIntProperty(objectName, propertyName string) (int
 	}
 }
 
-// GetObjectBoolProperty extracts a bool property from an object parameter
-func (r *ToolRequest) GetObjectBoolProperty(objectName, propertyName string) (bool, error) {
-	val, err := r.GetObjectProperty(objectName, propertyName)
+// ObjectIntOr extracts an int property from an object parameter, returning
+// defaultValue when the object or property is missing or not a number.
+func (r *ToolRequest) ObjectIntOr(objectName, propertyName string, defaultValue int) int {
+	val, err := r.ObjectInt(objectName, propertyName)
+	if err != nil {
+		return defaultValue
+	}
+	return val
+}
+
+// ObjectBool extracts a bool property from an object parameter.
+func (r *ToolRequest) ObjectBool(objectName, propertyName string) (bool, error) {
+	val, err := r.ObjectProperty(objectName, propertyName)
 	if err != nil {
 		return false, err
 	}
@@ -333,7 +354,45 @@ func (r *ToolRequest) GetObjectBoolProperty(objectName, propertyName string) (bo
 	return false, fmt.Errorf("property '%s' in object '%s' is not a boolean", propertyName, objectName)
 }
 
+// ObjectBoolOr extracts a bool property from an object parameter, returning
+// defaultValue when the object or property is missing or not a boolean.
+func (r *ToolRequest) ObjectBoolOr(objectName, propertyName string, defaultValue bool) bool {
+	val, err := r.ObjectBool(objectName, propertyName)
+	if err != nil {
+		return defaultValue
+	}
+	return val
+}
+
+// GetObjectProperty extracts a property from an object parameter.
+//
+// Deprecated: use ObjectProperty.
+func (r *ToolRequest) GetObjectProperty(objectName, propertyName string) (any, error) {
+	return r.ObjectProperty(objectName, propertyName)
+}
+
+// GetObjectStringProperty extracts a string property from an object parameter.
+//
+// Deprecated: use ObjectString (or ObjectStringOr for a default).
+func (r *ToolRequest) GetObjectStringProperty(objectName, propertyName string) (string, error) {
+	return r.ObjectString(objectName, propertyName)
+}
+
+// GetObjectIntProperty extracts an int property from an object parameter.
+//
+// Deprecated: use ObjectInt (or ObjectIntOr for a default).
+func (r *ToolRequest) GetObjectIntProperty(objectName, propertyName string) (int, error) {
+	return r.ObjectInt(objectName, propertyName)
+}
+
+// GetObjectBoolProperty extracts a bool property from an object parameter.
+//
+// Deprecated: use ObjectBool (or ObjectBoolOr for a default).
+func (r *ToolRequest) GetObjectBoolProperty(objectName, propertyName string) (bool, error) {
+	return r.ObjectBool(objectName, propertyName)
+}
+
 // Args returns all arguments as a map
-func (r *ToolRequest) Args() map[string]interface{} {
+func (r *ToolRequest) Args() map[string]any {
 	return r.args
 }

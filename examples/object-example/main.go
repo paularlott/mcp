@@ -130,12 +130,12 @@ func handleCreateUser(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolRespo
 	}
 
 	// Extract properties from the user object
-	name, err := req.GetObjectStringProperty("user", "name")
+	name, err := req.ObjectString("user", "name")
 	if err != nil {
 		return nil, err
 	}
 
-	email, err := req.GetObjectStringProperty("user", "email")
+	email, err := req.ObjectString("user", "email")
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func handleProcessOrders(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolRe
 			}
 		}
 
-		customer, ok := order["customer"].(map[string]interface{})
+		customer, ok := order["customer"].(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("order %d missing or invalid customer", i)
 		}
@@ -232,7 +232,7 @@ func handleCreateProduct(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolRe
 
 	// Handle optional nested specifications object
 	if specs, exists := product["specifications"]; exists {
-		if specsObj, ok := specs.(map[string]interface{}); ok {
+		if specsObj, ok := specs.(map[string]any); ok {
 			result += "\nSpecifications:"
 			for key, value := range specsObj {
 				result += fmt.Sprintf("\n- %s: %v", key, value)

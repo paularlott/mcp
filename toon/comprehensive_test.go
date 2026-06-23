@@ -6,21 +6,21 @@ import (
 
 func TestComplexNestedStructures(t *testing.T) {
 	// Test case 1: Array of objects with mixed field types
-	testData1 := []map[string]interface{}{
+	testData1 := []map[string]any{
 		{
 			"name":        "tool1",
 			"description": "First tool",
 			"score":       1.0,
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"version": "1.0",
 				"tags":    []string{"tag1", "tag2"},
 			},
 		},
 		{
-			"name":        "tool2", 
+			"name":        "tool2",
 			"description": "Second tool",
 			"score":       0.8,
-			"metadata": map[string]interface{}{
+			"metadata": map[string]any{
 				"version": "2.0",
 				"tags":    []string{"tag3"},
 			},
@@ -45,10 +45,10 @@ func TestComplexNestedStructures(t *testing.T) {
 	}
 
 	// Test case 2: Deeply nested objects
-	testData2 := map[string]interface{}{
-		"level1": map[string]interface{}{
-			"level2": map[string]interface{}{
-				"level3": map[string]interface{}{
+	testData2 := map[string]any{
+		"level1": map[string]any{
+			"level2": map[string]any{
+				"level3": map[string]any{
 					"name":  "deep",
 					"value": 42,
 				},
@@ -63,22 +63,22 @@ func TestComplexNestedStructures(t *testing.T) {
 	t.Logf("Test 2 - Deeply nested objects:\\n%s", encoded2)
 
 	// Test case 3: Mixed arrays and objects
-	testData3 := map[string]interface{}{
-		"users": []map[string]interface{}{
+	testData3 := map[string]any{
+		"users": []map[string]any{
 			{
-				"id":   1,
-				"name": "Alice",
+				"id":    1,
+				"name":  "Alice",
 				"roles": []string{"admin", "user"},
-				"profile": map[string]interface{}{
+				"profile": map[string]any{
 					"email": "alice@example.com",
 					"age":   30,
 				},
 			},
 			{
-				"id":   2,
-				"name": "Bob",
+				"id":    2,
+				"name":  "Bob",
 				"roles": []string{"user"},
-				"profile": map[string]interface{}{
+				"profile": map[string]any{
 					"email": "bob@example.com",
 					"age":   25,
 				},

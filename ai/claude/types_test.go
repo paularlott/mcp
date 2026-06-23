@@ -7,7 +7,6 @@ import (
 	"github.com/paularlott/mcp/ai/openai"
 )
 
-
 func TestMessagesRequestToOpenAI(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -206,10 +205,10 @@ func TestOpenAIToMessagesResponse(t *testing.T) {
 				},
 			},
 			expected: MessagesResponse{
-				ID:         "msg_123",
-				Type:       "message",
-				Role:       "assistant",
-				Model:      "test-model",
+				ID:    "msg_123",
+				Type:  "message",
+				Role:  "assistant",
+				Model: "test-model",
 				Content: []ContentBlock{
 					{Type: "text", Text: "Let me check."},
 					{Type: "tool_use", ID: "call_abc", Name: "get_time", Input: map[string]any{"zone": "UTC"}},
@@ -241,10 +240,10 @@ func TestOpenAIToMessagesResponse(t *testing.T) {
 				},
 			},
 			expected: MessagesResponse{
-				ID:         "msg_123",
-				Type:       "message",
-				Role:       "assistant",
-				Model:      "test-model",
+				ID:    "msg_123",
+				Type:  "message",
+				Role:  "assistant",
+				Model: "test-model",
 				Content: []ContentBlock{
 					{Type: "tool_use", ID: "call_abc", Name: "get_time", Input: map[string]any{}},
 				},

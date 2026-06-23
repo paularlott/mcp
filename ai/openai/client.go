@@ -31,7 +31,6 @@ const MAX_TOOL_CALL_ITERATIONS = 20
 
 // MCPServer interface for MCP server operations (local server)
 type MCPServer interface {
-	ListTools() []mcp.MCPTool
 	ListToolsWithContext(ctx context.Context) []mcp.MCPTool
 	CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error)
 }
@@ -42,15 +41,11 @@ type MCPServerFuncs struct {
 	CallToolFunc  func(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error)
 }
 
-func (m *MCPServerFuncs) ListTools() []mcp.MCPTool {
+func (m *MCPServerFuncs) ListToolsWithContext(ctx context.Context) []mcp.MCPTool {
 	if m.ListToolsFunc != nil {
 		return m.ListToolsFunc()
 	}
 	return nil
-}
-
-func (m *MCPServerFuncs) ListToolsWithContext(ctx context.Context) []mcp.MCPTool {
-	return m.ListTools()
 }
 
 func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[string]any) (*mcp.ToolResponse, error) {
@@ -733,7 +728,7 @@ func (c *Client) createResponseSync(ctx context.Context, req CreateResponseReque
 		// Append tool results to input for next iteration
 		// Convert Messages to Response API input format
 		for _, result := range toolResults {
-			req.Input = append(req.Input, map[string]interface{}{
+			req.Input = append(req.Input, map[string]any{
 				"type":         "tool_call_result",
 				"tool_call_id": result.ToolCallID,
 				"content":      result.Content,
@@ -762,7 +757,7 @@ func hasResponseToolCalls(response *ResponseObject) bool {
 	}
 
 	for _, item := range response.Output {
-		if itemMap, ok := item.(map[string]interface{}); ok {
+		if itemMap, ok := item.(map[string]any); ok {
 			if itemType, ok := itemMap["type"].(string); ok {
 				if itemType == "function_call" || itemType == "tool_call" {
 					return true
@@ -783,7 +778,7 @@ func extractToolCallsFromResponse(response *ResponseObject) []ToolCall {
 	}
 
 	for _, item := range response.Output {
-		if itemMap, ok := item.(map[string]interface{}); ok {
+		if itemMap, ok := item.(map[string]any); ok {
 			itemType, _ := itemMap["type"].(string)
 
 			if itemType == "function_call" || itemType == "tool_call" {
@@ -804,11 +799,11 @@ func extractToolCallsFromResponse(response *ResponseObject) []ToolCall {
 					toolCall.Function.Name = name
 				}
 
-				if args, ok := itemMap["arguments"].(map[string]interface{}); ok {
+				if args, ok := itemMap["arguments"].(map[string]any); ok {
 					toolCall.Function.Arguments = args
 				} else if argsRaw, ok := itemMap["arguments"].(string); ok && argsRaw != "" {
 					// Arguments might be a JSON string
-					var argsMap map[string]interface{}
+					var argsMap map[string]any
 					if err := json.Unmarshal([]byte(argsRaw), &argsMap); err == nil {
 						toolCall.Function.Arguments = argsMap
 					}

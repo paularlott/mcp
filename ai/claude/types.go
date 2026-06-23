@@ -41,14 +41,14 @@ func (s SystemField) String() string { return s.text }
 
 // MessagesRequest is the Anthropic Messages API request format (exported for gateway use)
 type MessagesRequest struct {
-	Model       string           `json:"model"`
-	Messages    []ClaudeMessage  `json:"messages"`
-	MaxTokens   int              `json:"max_tokens"`
-	Temperature *float64         `json:"temperature,omitempty"`
-	TopP        *float64         `json:"top_p,omitempty"`
-	Stream      bool             `json:"stream,omitempty"`
-	Tools       []ClaudeTool     `json:"tools,omitempty"`
-	System      SystemField      `json:"system,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []ClaudeMessage `json:"messages"`
+	MaxTokens   int             `json:"max_tokens"`
+	Temperature *float64        `json:"temperature,omitempty"`
+	TopP        *float64        `json:"top_p,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
+	Tools       []ClaudeTool    `json:"tools,omitempty"`
+	System      SystemField     `json:"system,omitempty"`
 }
 
 // MessagesResponse is the Anthropic Messages API response format (exported for gateway use)
@@ -96,29 +96,29 @@ func (m MessageContent) Blocks() []ContentBlock { return m.blocks }
 
 // ImageSource represents the source of an image in Claude format
 type ImageSource struct {
-	Type      string `json:"type"`                  // "base64" or "url"
-	MediaType string `json:"media_type,omitempty"`   // "image/png", "image/jpeg", etc.
-	Data      string `json:"data,omitempty"`         // base64 data (for type="base64")
-	URL       string `json:"url,omitempty"`          // URL (for type="url")
+	Type      string `json:"type"`                 // "base64" or "url"
+	MediaType string `json:"media_type,omitempty"` // "image/png", "image/jpeg", etc.
+	Data      string `json:"data,omitempty"`       // base64 data (for type="base64")
+	URL       string `json:"url,omitempty"`        // URL (for type="url")
 }
 
 // ContentBlock is a content block in the Claude format
 type ContentBlock struct {
-	Type      string                 `json:"type"` // "text", "image", "tool_use", "tool_result"
-	Text      string                 `json:"text,omitempty"`
-	ID        string                 `json:"id,omitempty"`
-	Name      string                 `json:"name,omitempty"`
-	Input     map[string]interface{} `json:"input,omitempty"`
-	ToolUseID string                 `json:"tool_use_id,omitempty"`
-	Content   interface{}            `json:"content,omitempty"`
-	Source    *ImageSource           `json:"source,omitempty"` // image source (for type="image")
+	Type      string         `json:"type"` // "text", "image", "tool_use", "tool_result"
+	Text      string         `json:"text,omitempty"`
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
+	ToolUseID string         `json:"tool_use_id,omitempty"`
+	Content   any            `json:"content,omitempty"`
+	Source    *ImageSource   `json:"source,omitempty"` // image source (for type="image")
 }
 
 // ClaudeTool is a tool definition in the Claude format
 type ClaudeTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	InputSchema map[string]interface{} `json:"input_schema"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 // MessagesRequestToOpenAI converts a MessagesRequest to an OpenAI ChatCompletionRequest
@@ -148,9 +148,9 @@ func MessagesRequestToOpenAI(req *MessagesRequest) openai.ChatCompletionRequest 
 				switch v := b.Content.(type) {
 				case string:
 					content = v
-				case []interface{}:
+				case []any:
 					for _, item := range v {
-						if itemMap, ok := item.(map[string]interface{}); ok {
+						if itemMap, ok := item.(map[string]any); ok {
 							if itemMap["type"] == "text" {
 								if text, ok := itemMap["text"].(string); ok {
 									content += text
@@ -306,7 +306,7 @@ func OpenAIToMessagesResponse(resp *openai.ChatCompletionResponse) *MessagesResp
 }
 
 // WriteSSEEvent writes a single Anthropic SSE event to a writer.
-func WriteSSEEvent(w io.Writer, eventType string, data interface{}) error {
+func WriteSSEEvent(w io.Writer, eventType string, data any) error {
 	b, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -322,7 +322,7 @@ func StreamOpenAIToMessages(w io.Writer, flush func(), stream *openai.ChatStream
 
 	// Block tracking: text block and one per tool call (keyed by OpenAI delta index).
 	nextBlockIdx := 0
-	textBlockIdx := -1  // -1 = not yet opened
+	textBlockIdx := -1                // -1 = not yet opened
 	toolBlockIdx := make(map[int]int) // OpenAI tool-call index -> Claude content block index
 
 	for stream.Next() {
@@ -408,7 +408,7 @@ func StreamOpenAIToMessages(w io.Writer, flush func(), stream *openai.ChatStream
 		if chunk.Choices[0].FinishReason != "" {
 			// Close text block.
 			if textBlockIdx >= 0 {
-				WriteSSEEvent(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": textBlockIdx})
+				WriteSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": textBlockIdx})
 				flush()
 			}
 			// Close all tool_use blocks in the order they were opened.
@@ -417,7 +417,7 @@ func StreamOpenAIToMessages(w io.Writer, flush func(), stream *openai.ChatStream
 				for _, blkIdx := range toolBlockIdx {
 					if !closed[blkIdx] {
 						closed[blkIdx] = true
-						WriteSSEEvent(w, "content_block_stop", map[string]interface{}{"type": "content_block_stop", "index": blkIdx})
+						WriteSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": blkIdx})
 						flush()
 						break
 					}

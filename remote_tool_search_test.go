@@ -43,7 +43,7 @@ func TestRemoteToolSearch(t *testing.T) {
 	}
 
 	t.Run("tool_search_finds_remote_tools_with_namespace", func(t *testing.T) {
-		response, err := mainServer.CallTool(context.Background(), "tool_search", map[string]interface{}{
+		response, err := mainServer.CallTool(context.Background(), "tool_search", map[string]any{
 			"query":       "database",
 			"max_results": 10,
 		})
@@ -73,7 +73,7 @@ func TestRemoteToolSearch(t *testing.T) {
 	})
 
 	t.Run("tool_search_empty_query_finds_all", func(t *testing.T) {
-		response, err := mainServer.CallTool(context.Background(), "tool_search", map[string]interface{}{
+		response, err := mainServer.CallTool(context.Background(), "tool_search", map[string]any{
 			"query":       "",
 			"max_results": 100,
 		})
@@ -123,7 +123,7 @@ func TestRemoteToolSearch(t *testing.T) {
 			t.Fatalf("Failed to register remote server: %v", err)
 		}
 
-		response, err := server.CallTool(context.Background(), "tool_search", map[string]interface{}{
+		response, err := server.CallTool(context.Background(), "tool_search", map[string]any{
 			"query":       "",
 			"max_results": 100,
 		})
@@ -145,14 +145,14 @@ func TestRemoteToolSearch(t *testing.T) {
 }
 
 func TestRemoteToolSearchAcceptsCamelCaseInputSchema(t *testing.T) {
-	raw := map[string]interface{}{
+	raw := map[string]any{
 		"name": "create_space",
-		"inputSchema": map[string]interface{}{
+		"inputSchema": map[string]any{
 			"type": "object",
-			"properties": map[string]interface{}{
-				"custom_fields": map[string]interface{}{
+			"properties": map[string]any{
+				"custom_fields": map[string]any{
 					"type": "array",
-					"items": map[string]interface{}{
+					"items": map[string]any{
 						"type": "string",
 					},
 				},
@@ -169,7 +169,7 @@ func TestRemoteToolSearchAcceptsCamelCaseInputSchema(t *testing.T) {
 func TestToolSearchResultUsesCamelCaseInputSchema(t *testing.T) {
 	result := SearchResult{
 		Name: "create_space",
-		InputSchema: map[string]interface{}{
+		InputSchema: map[string]any{
 			"type": "object",
 		},
 	}
@@ -179,7 +179,7 @@ func TestToolSearchResultUsesCamelCaseInputSchema(t *testing.T) {
 		t.Fatalf("Marshal(SearchResult) failed: %v", err)
 	}
 
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("Unmarshal(SearchResult JSON) failed: %v", err)
 	}
@@ -235,9 +235,9 @@ func TestRemoteExecuteTool(t *testing.T) {
 	}
 
 	t.Run("execute_tool_calls_remote_discovered_tool", func(t *testing.T) {
-		response, err := mainServer.CallTool(context.Background(), "execute_tool", map[string]interface{}{
+		response, err := mainServer.CallTool(context.Background(), "execute_tool", map[string]any{
 			"name": "remote__db_query",
-			"parameters": map[string]interface{}{
+			"parameters": map[string]any{
 				"sql": "SELECT 1",
 			},
 		})
@@ -282,8 +282,8 @@ func TestRemoteToolSearchHTTP(t *testing.T) {
 	mainTS := httptest.NewServer(http.HandlerFunc(mainServer.HandleRequest))
 	defer mainTS.Close()
 
-	callMCP := func(method string, params interface{}) (json.RawMessage, error) {
-		body := map[string]interface{}{
+	callMCP := func(method string, params any) (json.RawMessage, error) {
+		body := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
 			"method":  method,
@@ -313,9 +313,9 @@ func TestRemoteToolSearchHTTP(t *testing.T) {
 	}
 
 	t.Run("HTTP_tool_search_finds_remote_tools", func(t *testing.T) {
-		result, err := callMCP("tools/call", map[string]interface{}{
+		result, err := callMCP("tools/call", map[string]any{
 			"name": "tool_search",
-			"arguments": map[string]interface{}{
+			"arguments": map[string]any{
 				"query":       "secret",
 				"max_results": 10,
 			},
@@ -355,11 +355,11 @@ func TestRemoteToolSearchHTTP(t *testing.T) {
 	})
 
 	t.Run("HTTP_execute_tool_calls_remote_discovered", func(t *testing.T) {
-		result, err := callMCP("tools/call", map[string]interface{}{
+		result, err := callMCP("tools/call", map[string]any{
 			"name": "execute_tool",
-			"arguments": map[string]interface{}{
+			"arguments": map[string]any{
 				"name": "remote__secret_tool",
-				"parameters": map[string]interface{}{
+				"parameters": map[string]any{
 					"msg": "hello",
 				},
 			},

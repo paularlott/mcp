@@ -101,7 +101,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request, mcpServer *mc
 		req.Model = defaultModel
 	}
 
-	mcpTools := mcpServer.ListTools()
+	mcpTools := mcpServer.ListToolsWithContext(context.Background())
 	req.Tools = append(req.Tools, openai.MCPToolsToOpenAI(mcpTools)...)
 
 	if req.Stream {

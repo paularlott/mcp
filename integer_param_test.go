@@ -12,12 +12,12 @@ func TestIntegerParameter(t *testing.T) {
 	)
 
 	schema := tool.BuildSchema()
-	props, ok := schema["properties"].(map[string]interface{})
+	props, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("schema missing properties: %+v", schema)
 	}
 
-	countProp, ok := props["count"].(map[string]interface{})
+	countProp, ok := props["count"].(map[string]any)
 	if !ok {
 		t.Fatalf("count property missing: %+v", props)
 	}
@@ -25,7 +25,7 @@ func TestIntegerParameter(t *testing.T) {
 		t.Errorf("count.type = %v, want %q", got, want)
 	}
 
-	ratioProp, ok := props["ratio"].(map[string]interface{})
+	ratioProp, ok := props["ratio"].(map[string]any)
 	if !ok {
 		t.Fatalf("ratio property missing: %+v", props)
 	}
@@ -48,22 +48,22 @@ func TestIntegerArrayParameter(t *testing.T) {
 	)
 
 	schema := tool.BuildSchema()
-	props := schema["properties"].(map[string]interface{})
+	props := schema["properties"].(map[string]any)
 
-	idsProp := props["ids"].(map[string]interface{})
+	idsProp := props["ids"].(map[string]any)
 	if got := idsProp["type"]; got != "array" {
 		t.Errorf("ids.type = %v, want %q", got, "array")
 	}
-	idsItems := idsProp["items"].(map[string]interface{})
+	idsItems := idsProp["items"].(map[string]any)
 	if got, want := idsItems["type"], "integer"; got != want {
 		t.Errorf("ids.items.type = %v, want %q", got, want)
 	}
 
-	weightsProp := props["weights"].(map[string]interface{})
+	weightsProp := props["weights"].(map[string]any)
 	if got := weightsProp["type"]; got != "array" {
 		t.Errorf("weights.type = %v, want %q", got, "array")
 	}
-	weightsItems := weightsProp["items"].(map[string]interface{})
+	weightsItems := weightsProp["items"].(map[string]any)
 	if got, want := weightsItems["type"], "number"; got != want {
 		t.Errorf("weights.items.type = %v, want %q", got, want)
 	}

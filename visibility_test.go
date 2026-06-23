@@ -25,7 +25,7 @@ func TestNativeToolRegistration(t *testing.T) {
 	)
 
 	// List tools should include greet
-	tools := server.ListTools()
+	tools := server.ListToolsWithContext(context.Background())
 	if len(tools) != 1 {
 		t.Errorf("expected 1 tool, got %d", len(tools))
 	}
@@ -51,7 +51,7 @@ func TestDiscoverableToolRegistration(t *testing.T) {
 
 	// List tools should NOT include search_database
 	// But SHOULD include tool_search and execute_tool
-	tools := server.ListTools()
+	tools := server.ListToolsWithContext(context.Background())
 
 	hasToolSearch := false
 	hasExecuteTool := false
@@ -92,7 +92,7 @@ func TestNoDiscoveryToolsWithoutDiscoverable(t *testing.T) {
 		},
 	)
 
-	tools := server.ListTools()
+	tools := server.ListToolsWithContext(context.Background())
 
 	for _, tool := range tools {
 		if tool.Name == ToolSearchName || tool.Name == ExecuteToolName {
@@ -127,7 +127,7 @@ func TestMixedNativeAndDiscoverable(t *testing.T) {
 		},
 	)
 
-	tools := server.ListTools()
+	tools := server.ListToolsWithContext(context.Background())
 
 	// Should have: get_status, tool_search, execute_tool
 	// Should NOT have: complex_analysis
@@ -170,7 +170,7 @@ func TestToolSearchFindsDiscoverableTools(t *testing.T) {
 	)
 
 	// Call tool_search
-	response, err := server.CallTool(context.Background(), ToolSearchName, map[string]interface{}{
+	response, err := server.CallTool(context.Background(), ToolSearchName, map[string]any{
 		"query": "email",
 	})
 	if err != nil {
@@ -204,9 +204,9 @@ func TestExecuteToolCallsDiscoverableTool(t *testing.T) {
 	)
 
 	// Call via execute_tool
-	response, err := server.CallTool(context.Background(), ExecuteToolName, map[string]interface{}{
+	response, err := server.CallTool(context.Background(), ExecuteToolName, map[string]any{
 		"name":       "count_calls",
-		"parameters": map[string]interface{}{},
+		"parameters": map[string]any{},
 	})
 	if err != nil {
 		t.Fatalf("execute_tool failed: %v", err)
@@ -382,7 +382,7 @@ func TestRemoteServerNativeVisibility(t *testing.T) {
 	}
 
 	// Remote tools should appear in tools/list
-	tools := mainServer.ListTools()
+	tools := mainServer.ListToolsWithContext(context.Background())
 	hasRemoteGreet := false
 	for _, tool := range tools {
 		if strings.Contains(tool.Name, "remote_greet") {
@@ -395,7 +395,7 @@ func TestRemoteServerNativeVisibility(t *testing.T) {
 	}
 
 	// Call the remote tool
-	response, err := mainServer.CallTool(context.Background(), "remote__remote_greet", map[string]interface{}{
+	response, err := mainServer.CallTool(context.Background(), "remote__remote_greet", map[string]any{
 		"name": "World",
 	})
 	if err != nil {
@@ -436,7 +436,7 @@ func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 	}
 
 	// Remote tools should NOT appear in tools/list
-	tools := mainServer.ListTools()
+	tools := mainServer.ListToolsWithContext(context.Background())
 	for _, tool := range tools {
 		if strings.Contains(tool.Name, "remote_analyze") {
 			t.Error("remote_analyze should NOT appear in tools/list with discoverable visibility")
@@ -460,7 +460,7 @@ func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 	}
 
 	// The remote tool should be searchable
-	response, err := mainServer.CallTool(context.Background(), ToolSearchName, map[string]interface{}{
+	response, err := mainServer.CallTool(context.Background(), ToolSearchName, map[string]any{
 		"query": "analyze",
 	})
 	if err != nil {
@@ -472,9 +472,9 @@ func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 	}
 
 	// The remote tool should be callable via execute_tool
-	response, err = mainServer.CallTool(context.Background(), ExecuteToolName, map[string]interface{}{
+	response, err = mainServer.CallTool(context.Background(), ExecuteToolName, map[string]any{
 		"name": "analytics__remote_analyze",
-		"parameters": map[string]interface{}{
+		"parameters": map[string]any{
 			"data": "test data",
 		},
 	})
@@ -490,25 +490,25 @@ func TestRemoteServerDiscoverableVisibility(t *testing.T) {
 // MockToolProvider implements ToolProvider for testing
 type MockToolProvider struct {
 	tools    []MCPTool
-	handlers map[string]func(ctx context.Context, params map[string]interface{}) (interface{}, error)
+	handlers map[string]func(ctx context.Context, params map[string]any) (any, error)
 }
 
 func NewMockToolProvider() *MockToolProvider {
 	return &MockToolProvider{
 		tools:    make([]MCPTool, 0),
-		handlers: make(map[string]func(ctx context.Context, params map[string]interface{}) (interface{}, error)),
+		handlers: make(map[string]func(ctx context.Context, params map[string]any) (any, error)),
 	}
 }
 
-func (p *MockToolProvider) AddTool(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), keywords ...string) {
+func (p *MockToolProvider) AddTool(name, description string, handler func(ctx context.Context, params map[string]any) (any, error), keywords ...string) {
 	p.AddToolWithOptions(name, description, handler, keywords...)
 }
 
-func (p *MockToolProvider) AddToolWithOptions(name, description string, handler func(ctx context.Context, params map[string]interface{}) (interface{}, error), keywords ...string) {
+func (p *MockToolProvider) AddToolWithOptions(name, description string, handler func(ctx context.Context, params map[string]any) (any, error), keywords ...string) {
 	p.tools = append(p.tools, MCPTool{
 		Name:        name,
 		Description: description,
-		InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Keywords:    keywords,
 	})
 	p.handlers[name] = handler
@@ -518,9 +518,16 @@ func (p *MockToolProvider) GetTools(ctx context.Context) ([]MCPTool, error) {
 	return p.tools, nil
 }
 
-func (p *MockToolProvider) ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+func (p *MockToolProvider) ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
 	if handler, ok := p.handlers[name]; ok {
-		return handler(ctx, params)
+		result, err := handler(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		if result == nil {
+			return nil, nil
+		}
+		return NewToolResponseAuto(result), nil
 	}
 	return nil, nil // Not handled
 }
@@ -539,7 +546,7 @@ func TestToolProviderInNormalMode(t *testing.T) {
 
 	// Create provider with a tool
 	provider := NewMockToolProvider()
-	provider.AddTool("provider_tool", "Tool from provider", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	provider.AddTool("provider_tool", "Tool from provider", func(ctx context.Context, params map[string]any) (any, error) {
 		return NewToolResponseText("Provider result"), nil
 	})
 
@@ -573,7 +580,7 @@ func TestToolProviderInShowAllMode(t *testing.T) {
 
 	// Create provider with a native tool
 	provider := NewMockToolProvider()
-	provider.AddTool("provider_tool", "Tool from provider", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	provider.AddTool("provider_tool", "Tool from provider", func(ctx context.Context, params map[string]any) (any, error) {
 		return NewToolResponseText("Provider result"), nil
 	})
 
@@ -620,13 +627,13 @@ func TestToolProviderToolsAreSearchable(t *testing.T) {
 		Visibility:  ToolVisibilityDiscoverable,
 	}
 	provider.tools = append(provider.tools, tool)
-	provider.handlers["user_preferences"] = func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	provider.handlers["user_preferences"] = func(ctx context.Context, params map[string]any) (any, error) {
 		return NewToolResponseText("Preferences loaded"), nil
 	}
 
 	// Search for the provider tool - only discoverable tools are searchable
 	ctx := WithToolProviders(context.Background(), provider)
-	response, err := server.CallTool(ctx, ToolSearchName, map[string]interface{}{
+	response, err := server.CallTool(ctx, ToolSearchName, map[string]any{
 		"query": "preferences",
 	})
 	if err != nil {
@@ -644,7 +651,7 @@ func TestToolProviderToolsAreCallable(t *testing.T) {
 
 	callCount := 0
 	provider := NewMockToolProvider()
-	provider.AddTool("count_provider_calls", "Count calls", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	provider.AddTool("count_provider_calls", "Count calls", func(ctx context.Context, params map[string]any) (any, error) {
 		callCount++
 		return NewToolResponseText("Provider called!"), nil
 	})
@@ -700,14 +707,14 @@ func TestHTTPHandlerRespectsModes(t *testing.T) {
 	var resp MCPResponse
 	json.NewDecoder(rec.Body).Decode(&resp)
 
-	result := resp.Result.(map[string]interface{})
-	tools := result["tools"].([]interface{})
+	result := resp.Result.(map[string]any)
+	tools := result["tools"].([]any)
 
 	// Should have native, tool_search, execute_tool
 	hasNative := false
 	hasToolSearch := false
 	for _, t := range tools {
-		tool := t.(map[string]interface{})
+		tool := t.(map[string]any)
 		if tool["name"] == "native" {
 			hasNative = true
 		}
@@ -735,15 +742,15 @@ func TestHTTPHandlerRespectsModes(t *testing.T) {
 	forceHandler.ServeHTTP(rec, req)
 
 	json.NewDecoder(rec.Body).Decode(&resp)
-	result = resp.Result.(map[string]interface{})
-	tools = result["tools"].([]interface{})
+	result = resp.Result.(map[string]any)
+	tools = result["tools"].([]any)
 
 	// In show-all mode, all tools should appear including native and discoverable
 	hasNativeInShowAll := false
 	hasDiscoverableInShowAll := false
 	hasToolSearchInShowAll := false
 	for _, toolItem := range tools {
-		tool := toolItem.(map[string]interface{})
+		tool := toolItem.(map[string]any)
 		name := tool["name"].(string)
 		if name == "native" {
 			hasNativeInShowAll = true
@@ -783,7 +790,7 @@ func TestToolSearchEmptyQueryListsAllDiscoverableTools(t *testing.T) {
 	}
 
 	// Search with empty query - request enough results to get all tools
-	response, err := server.CallTool(context.Background(), ToolSearchName, map[string]interface{}{
+	response, err := server.CallTool(context.Background(), ToolSearchName, map[string]any{
 		"max_results": 10, // Request more than the 5 discoverable + 2 native tools
 	})
 	if err != nil {
@@ -812,7 +819,7 @@ func TestExecuteToolWithUnknownTool(t *testing.T) {
 	)
 
 	// Try to execute unknown tool
-	response, err := server.CallTool(context.Background(), ExecuteToolName, map[string]interface{}{
+	response, err := server.CallTool(context.Background(), ExecuteToolName, map[string]any{
 		"name": "does_not_exist",
 	})
 	if err != nil {
@@ -948,7 +955,7 @@ func TestProviderToolsInShowAllMode(t *testing.T) {
 
 	// Create provider with both native and discoverable tools
 	provider := NewMockToolProvider()
-	provider.AddTool("provider_native", "A native provider tool", func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	provider.AddTool("provider_native", "A native provider tool", func(ctx context.Context, params map[string]any) (any, error) {
 		return NewToolResponseText("Provider Native"), nil
 	})
 
@@ -960,7 +967,7 @@ func TestProviderToolsInShowAllMode(t *testing.T) {
 		Visibility:  ToolVisibilityDiscoverable,
 	}
 	provider.tools = append(provider.tools, discoverableTool)
-	provider.handlers["provider_discoverable"] = func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
+	provider.handlers["provider_discoverable"] = func(ctx context.Context, params map[string]any) (any, error) {
 		return NewToolResponseText("Provider Discoverable"), nil
 	}
 

@@ -11,7 +11,7 @@ import (
 )
 
 // helper to perform JSON-RPC request against handler
-func doRPC(t *testing.T, h http.HandlerFunc, body interface{}, headers map[string]string) (*http.Response, MCPResponse) {
+func doRPC(t *testing.T, h http.HandlerFunc, body any, headers map[string]string) (*http.Response, MCPResponse) {
 	t.Helper()
 	b, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))

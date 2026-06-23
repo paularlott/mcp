@@ -7,19 +7,26 @@ import (
 
 // mockToolProvider is a test implementation of ToolProvider
 type mockToolProvider struct {
-	tools []MCPTool
-	execFunc func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error)
+	tools    []MCPTool
+	execFunc func(ctx context.Context, name string, params map[string]any) (any, error)
 }
 
 func (m *mockToolProvider) GetTools(ctx context.Context) ([]MCPTool, error) {
 	return m.tools, nil
 }
 
-func (m *mockToolProvider) ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
-	if m.execFunc != nil {
-		return m.execFunc(ctx, name, params)
+func (m *mockToolProvider) ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
+	if m.execFunc == nil {
+		return nil, nil
 	}
-	return nil, nil
+	result, err := m.execFunc(ctx, name, params)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	return NewToolResponseAuto(result), nil
 }
 
 func TestWithToolProviders(t *testing.T) {
@@ -103,9 +110,9 @@ func TestListToolsFromProviders_Deduplication(t *testing.T) {
 
 func TestCallToolFromProviders(t *testing.T) {
 	provider := &mockToolProvider{
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "test_tool" {
-				return map[string]interface{}{"result": "success"}, nil
+				return map[string]any{"result": "success"}, nil
 			}
 			return nil, nil
 		},
@@ -125,7 +132,7 @@ func TestCallToolFromProviders(t *testing.T) {
 
 func TestCallToolFromProviders_NotHandled(t *testing.T) {
 	provider := &mockToolProvider{
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			return nil, nil // Not handled
 		},
 	}
@@ -195,7 +202,7 @@ func TestToolVisibilityFiltering_ShowAllMode(t *testing.T) {
 
 func TestCallToolFromProviders_BothVisibilities(t *testing.T) {
 	provider := &mockToolProvider{
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "native_tool" {
 				return "native result", nil
 			}

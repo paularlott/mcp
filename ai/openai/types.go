@@ -129,10 +129,10 @@ type ChatCompletionResponse struct {
 	Model             string   `json:"model"`
 	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
 	Choices           []Choice `json:"choices"`
-	Usage             *Usage         `json:"usage,omitempty"`
+	Usage             *Usage   `json:"usage,omitempty"`
 	// Retry is non-nil only when the client performed at least one retry before
 	// succeeding. It is always nil on a first-attempt success or on error.
-	Retry             *RetryMetadata `json:"-"`
+	Retry *RetryMetadata `json:"-"`
 }
 
 // Message represents a chat message
@@ -392,11 +392,11 @@ type DeltaFunction struct {
 
 // EmbeddingRequest represents an OpenAI embedding request
 type EmbeddingRequest struct {
-	Model          string      `json:"model"`
-	Input          interface{} `json:"input"`
-	EncodingFormat string      `json:"encoding_format,omitempty"`
-	Dimensions     int         `json:"dimensions,omitempty"`
-	User           string      `json:"user,omitempty"`
+	Model          string `json:"model"`
+	Input          any    `json:"input"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+	Dimensions     int    `json:"dimensions,omitempty"`
+	User           string `json:"user,omitempty"`
 }
 
 // EmbeddingResponse represents an OpenAI embedding response

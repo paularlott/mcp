@@ -33,12 +33,12 @@ func TestProviderIntegration_NativeMode(t *testing.T) {
 			{Name: "calculate", Description: "Perform math", Keywords: []string{"math", "calculate"}},
 			{Name: "convert", Description: "Convert units"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "calculate" {
-				return map[string]interface{}{"result": 42}, nil
+				return map[string]any{"result": 42}, nil
 			}
 			if name == "convert" {
-				return map[string]interface{}{"converted": "5 km"}, nil
+				return map[string]any{"converted": "5 km"}, nil
 			}
 			return nil, nil
 		},
@@ -49,19 +49,19 @@ func TestProviderIntegration_NativeMode(t *testing.T) {
 			{Name: "fetch_api", Description: "Fetch data from API"},
 			{Name: "parse_json", Description: "Parse JSON data"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "fetch_api" {
-				return map[string]interface{}{"status": "ok"}, nil
+				return map[string]any{"status": "ok"}, nil
 			}
 			if name == "parse_json" {
-				return map[string]interface{}{"parsed": true}, nil
+				return map[string]any{"parsed": true}, nil
 			}
 			return nil, nil
 		},
 	}
 
 	// Test 1: List tools without providers
-	toolsWithoutProviders := server.ListTools()
+	toolsWithoutProviders := server.ListToolsWithContext(context.Background())
 	if len(toolsWithoutProviders) == 0 {
 		t.Error("should have at least native and discoverable tools without providers")
 	}
@@ -117,7 +117,7 @@ func TestProviderIntegration_NativeMode(t *testing.T) {
 	}
 
 	// Test 5: Execute native tool should still work
-	resp, err = server.CallTool(ctx2, "greet", map[string]interface{}{"name": "World"})
+	resp, err = server.CallTool(ctx2, "greet", map[string]any{"name": "World"})
 	if err != nil {
 		t.Fatalf("failed to call native tool: %v", err)
 	}
@@ -152,9 +152,9 @@ func TestProviderIntegration_ShowAllMode(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "calculate", Description: "Perform math", Keywords: []string{"math", "calculate", "arithmetic"}, Visibility: ToolVisibilityNative},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "calculate" {
-				return map[string]interface{}{"result": 42}, nil
+				return map[string]any{"result": 42}, nil
 			}
 			return nil, nil
 		},
@@ -210,7 +210,7 @@ func TestProviderIntegration_ShowAllMode(t *testing.T) {
 	}
 
 	// Test 2: All tools are callable
-	resp, err := server.CallTool(ctxShowAll, "greet", map[string]interface{}{"name": "World"})
+	resp, err := server.CallTool(ctxShowAll, "greet", map[string]any{"name": "World"})
 	if err != nil {
 		t.Fatalf("greet should be callable: %v", err)
 	}
@@ -228,7 +228,7 @@ func TestProviderIntegration_ShowAllMode(t *testing.T) {
 	}
 
 	// Test 4: Discoverable tools should be searchable
-	searchResp, err := server.CallTool(ctxShowAll, ToolSearchName, map[string]interface{}{
+	searchResp, err := server.CallTool(ctxShowAll, ToolSearchName, map[string]any{
 		"query":       "",
 		"max_results": 100,
 	})
@@ -274,7 +274,7 @@ func TestProviderIntegration_MixedProviders(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "user_specific", Description: "User-specific tool"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "user_specific" {
 				return "user-specific result", nil
 			}
@@ -372,7 +372,7 @@ func TestProviderIntegration_ExecuteToolMissing(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "exists", Description: "This tool exists"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "exists" {
 				return "result", nil
 			}
@@ -383,9 +383,9 @@ func TestProviderIntegration_ExecuteToolMissing(t *testing.T) {
 	ctx := WithToolProviders(context.Background(), provider)
 
 	// Try to execute non-existent tool via execute_tool
-	resp, err := server.CallTool(ctx, ExecuteToolName, map[string]interface{}{
+	resp, err := server.CallTool(ctx, ExecuteToolName, map[string]any{
 		"name":       "nonexistent",
-		"parameters": map[string]interface{}{},
+		"parameters": map[string]any{},
 	})
 
 	// Should get an error response or error
@@ -405,7 +405,7 @@ func TestProviderIntegration_ConcurrentRequests(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "tool1", Description: "Provider 1"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "tool1" {
 				return "result1", nil
 			}
@@ -417,7 +417,7 @@ func TestProviderIntegration_ConcurrentRequests(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "tool2", Description: "Provider 2"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "tool2" {
 				return "result2", nil
 			}

@@ -25,7 +25,7 @@ func TestRegisterRemoteServerAndCall(t *testing.T) {
 	}
 
 	// List should include namespaced tool
-	tools := host.ListTools()
+	tools := host.ListToolsWithContext(context.Background())
 	found := false
 	for _, tl := range tools {
 		if tl.Name == "ns__rt" {
@@ -60,13 +60,13 @@ func TestUnregisterRemoteServer(t *testing.T) {
 	if err := host.RegisterRemoteServer(client); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if tools := host.ListTools(); len(tools) != 1 {
+	if tools := host.ListToolsWithContext(context.Background()); len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %+v", tools)
 	}
 
 	host.UnregisterRemoteServer(client)
 
-	if tools := host.ListTools(); len(tools) != 0 {
+	if tools := host.ListToolsWithContext(context.Background()); len(tools) != 0 {
 		t.Fatalf("expected 0 tools after unregister, got %+v", tools)
 	}
 	if _, err := host.CallTool(context.Background(), "ns__tool-x", nil); err == nil {
@@ -95,7 +95,7 @@ func TestReplaceRemoteServers(t *testing.T) {
 	if err := host.RegisterRemoteServer(NewClient(tsA.URL, NewBearerTokenAuth("t"), "a")); err != nil {
 		t.Fatalf("initial register: %v", err)
 	}
-	if tools := host.ListTools(); len(tools) != 1 || tools[0].Name != "a__tool-a" {
+	if tools := host.ListToolsWithContext(context.Background()); len(tools) != 1 || tools[0].Name != "a__tool-a" {
 		t.Fatalf("expected a.tool-a, got %+v", tools)
 	}
 
@@ -106,7 +106,7 @@ func TestReplaceRemoteServers(t *testing.T) {
 		t.Fatalf("replace: %v", err)
 	}
 
-	tools := host.ListTools()
+	tools := host.ListToolsWithContext(context.Background())
 	if len(tools) != 1 || tools[0].Name != "b__tool-b" {
 		t.Fatalf("expected only b.tool-b after replace, got %+v", tools)
 	}

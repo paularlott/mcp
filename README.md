@@ -14,6 +14,8 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Parallel Tool Calls**: Execute multiple tools concurrently and collect all results in one call
 - **Searchable Tools**: Reduce context window usage with on-demand tool discovery
 - **Dynamic Tool Providers**: Load tools from external sources (databases, scripts, APIs)
+- **Per-User Remote Servers**: Request-scoped `RemoteProvider` for federating remote MCP servers with per-user auth, filtering, and caching
+- **Provider Composition**: Combine providers with `MultiProvider` using clear miss/error semantics
 - **MCP Compliant**: Full support for protocol versions 2024-11-05 through 2025-11-25
 
 ## Installation

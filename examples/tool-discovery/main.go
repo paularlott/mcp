@@ -216,7 +216,7 @@ Example workflow:
 	http.HandleFunc("/mcp", server.HandleRequest)
 
 	// Print info about registered tools
-	tools := server.ListTools()
+	tools := server.ListToolsWithContext(context.Background())
 	fmt.Printf("Server starting with %d visible tools:\n", len(tools))
 	for _, t := range tools {
 		fmt.Printf("  - %s: %s\n", t.Name, t.Description)

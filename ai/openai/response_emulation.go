@@ -155,9 +155,9 @@ func CompactResponseEmulated(ctx context.Context, manager *ResponseManager, id s
 
 	// Remove reasoning items from output
 	if response.Output != nil {
-		compactedOutput := make([]interface{}, 0)
+		compactedOutput := make([]any, 0)
 		for _, item := range response.Output {
-			if itemMap, ok := item.(map[string]interface{}); ok {
+			if itemMap, ok := item.(map[string]any); ok {
 				itemType, _ := itemMap["type"].(string)
 				// Keep everything except reasoning type
 				if itemType != "reasoning" {
@@ -237,7 +237,7 @@ func ConvertInputToMessages(input []any) []Message {
 	var messages []Message
 
 	for _, item := range input {
-		if itemMap, ok := item.(map[string]interface{}); ok {
+		if itemMap, ok := item.(map[string]any); ok {
 			itemType, _ := itemMap["type"].(string)
 
 			switch itemType {
@@ -317,7 +317,7 @@ func getRoleFromItemType(itemType string) string {
 }
 
 // getString extracts a string value from a map
-func getString(m map[string]interface{}, key string) string {
+func getString(m map[string]any, key string) string {
 	if val, ok := m[key]; ok {
 		if str, ok := val.(string); ok {
 			return str
@@ -342,18 +342,18 @@ func ConvertChatToResponseObject(resp *ChatCompletionResponse, model string) *Re
 	// Convert choices to output format
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
-		output := []interface{}{}
+		output := []any{}
 
-		// Add message output — content must be []interface{} of content parts, matching native format
-		msgOutput := map[string]interface{}{
+		// Add message output — content must be []any of content parts, matching native format
+		msgOutput := map[string]any{
 			"type":   "message",
 			"role":   "assistant",
 			"status": "completed",
-			"content": []interface{}{
-				map[string]interface{}{
+			"content": []any{
+				map[string]any{
 					"type":        "output_text",
 					"text":        choice.Message.GetContentAsString(),
-					"annotations": []interface{}{},
+					"annotations": []any{},
 				},
 			},
 		}
@@ -361,7 +361,7 @@ func ConvertChatToResponseObject(resp *ChatCompletionResponse, model string) *Re
 
 		// Add tool calls if any
 		for _, tc := range choice.Message.ToolCalls {
-			toolCallOutput := map[string]interface{}{
+			toolCallOutput := map[string]any{
 				"type":      "function_call",
 				"id":        tc.ID,
 				"call_id":   tc.ID,

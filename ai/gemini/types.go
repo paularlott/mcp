@@ -4,10 +4,10 @@ package gemini
 // These are converted to/from OpenAI types at the boundary
 
 type GeminiRequest struct {
-	Contents         []Content         `json:"contents"`
-	Tools            []Tool            `json:"tools,omitempty"`
-	GenerationConfig *GenerationConfig `json:"generationConfig,omitempty"`
-	SystemInstruction *Content         `json:"systemInstruction,omitempty"`
+	Contents          []Content         `json:"contents"`
+	Tools             []Tool            `json:"tools,omitempty"`
+	GenerationConfig  *GenerationConfig `json:"generationConfig,omitempty"`
+	SystemInstruction *Content          `json:"systemInstruction,omitempty"`
 }
 
 type Content struct {
@@ -16,19 +16,19 @@ type Content struct {
 }
 
 type Part struct {
-	Text         string        `json:"text,omitempty"`
-	FunctionCall *FunctionCall `json:"functionCall,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	FunctionCall     *FunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *FunctionResponse `json:"functionResponse,omitempty"`
 }
 
 type FunctionCall struct {
-	Name string                 `json:"name"`
-	Args map[string]interface{} `json:"args"`
+	Name string         `json:"name"`
+	Args map[string]any `json:"args"`
 }
 
 type FunctionResponse struct {
-	Name     string                 `json:"name"`
-	Response map[string]interface{} `json:"response"`
+	Name     string         `json:"name"`
+	Response map[string]any `json:"response"`
 }
 
 type Tool struct {
@@ -36,9 +36,9 @@ type Tool struct {
 }
 
 type FunctionDeclaration struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 type GenerationConfig struct {
@@ -48,8 +48,8 @@ type GenerationConfig struct {
 }
 
 type GeminiResponse struct {
-	Candidates     []Candidate     `json:"candidates"`
-	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
+	Candidates    []Candidate    `json:"candidates"`
+	UsageMetadata *UsageMetadata `json:"usageMetadata,omitempty"`
 }
 
 type Candidate struct {

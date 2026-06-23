@@ -19,7 +19,7 @@ func TestRequiredParameterValidation(t *testing.T) {
 	server.RegisterTool(tool, handler)
 
 	// Test with missing required parameter
-	_, err := server.CallTool(context.Background(), "test", map[string]interface{}{})
+	_, err := server.CallTool(context.Background(), "test", map[string]any{})
 	if err == nil {
 		t.Fatal("Expected error for missing required parameter, got nil")
 	}
@@ -34,13 +34,13 @@ func TestRequiredParameterValidation(t *testing.T) {
 	}
 
 	// Test with empty string
-	_, err = server.CallTool(context.Background(), "test", map[string]interface{}{"name": ""})
+	_, err = server.CallTool(context.Background(), "test", map[string]any{"name": ""})
 	if err == nil {
 		t.Fatal("Expected error for empty required parameter, got nil")
 	}
 
 	// Test with valid parameter
-	_, err = server.CallTool(context.Background(), "test", map[string]interface{}{"name": "Alice"})
+	_, err = server.CallTool(context.Background(), "test", map[string]any{"name": "Alice"})
 	if err != nil {
 		t.Fatalf("Expected no error with valid parameter, got %v", err)
 	}

@@ -185,9 +185,9 @@ func (m *ResponseManager) StartCleanupTask(interval time.Duration, maxAge time.D
 
 // Global response manager (singleton)
 var (
-	globalManager      *ResponseManager
-	globalManagerOnce  sync.Once
-	globalManagerLock  sync.RWMutex
+	globalManager     *ResponseManager
+	globalManagerOnce sync.Once
+	globalManagerLock sync.RWMutex
 )
 
 // GetManager returns the global response manager, initializing it on first use

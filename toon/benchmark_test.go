@@ -6,30 +6,30 @@ import (
 
 func BenchmarkEncode(b *testing.B) {
 	// Create a moderately complex data structure
-	data := map[string]interface{}{
-		"users": []interface{}{
-			map[string]interface{}{
+	data := map[string]any{
+		"users": []any{
+			map[string]any{
 				"id":    1,
 				"name":  "Alice",
 				"email": "alice@example.com",
-				"tags":  []interface{}{"admin", "active"},
+				"tags":  []any{"admin", "active"},
 			},
-			map[string]interface{}{
+			map[string]any{
 				"id":    2,
 				"name":  "Bob",
 				"email": "bob@example.com",
-				"tags":  []interface{}{"user", "inactive"},
+				"tags":  []any{"user", "inactive"},
 			},
 		},
-		"config": map[string]interface{}{
+		"config": map[string]any{
 			"debug":   true,
 			"timeout": 30,
-			"servers": []interface{}{"server1", "server2", "server3"},
+			"servers": []any{"server1", "server2", "server3"},
 		},
-		"metrics": []interface{}{
-			map[string]interface{}{"cpu": 45.2, "memory": 78.1},
-			map[string]interface{}{"cpu": 52.8, "memory": 82.3},
-			map[string]interface{}{"cpu": 38.9, "memory": 71.5},
+		"metrics": []any{
+			map[string]any{"cpu": 45.2, "memory": 78.1},
+			map[string]any{"cpu": 52.8, "memory": 82.3},
+			map[string]any{"cpu": 38.9, "memory": 71.5},
 		},
 	}
 

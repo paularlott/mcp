@@ -6,10 +6,10 @@ import (
 
 // SearchResult represents a matched tool from a search (matches main package SearchResult)
 type SearchResult struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Score       float64     `json:"score"`
-	InputSchema interface{} `json:"inputSchema,omitempty"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Score       float64 `json:"score"`
+	InputSchema any     `json:"inputSchema,omitempty"`
 }
 
 func TestSearchResultEncoding(t *testing.T) {
@@ -19,18 +19,18 @@ func TestSearchResultEncoding(t *testing.T) {
 			Name:        "calculator",
 			Description: "A simple calculator that performs basic arithmetic operations",
 			Score:       1.0,
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"a": map[string]interface{}{
+				"properties": map[string]any{
+					"a": map[string]any{
 						"type":        "number",
 						"description": "The first number",
 					},
-					"b": map[string]interface{}{
+					"b": map[string]any{
 						"type":        "number",
 						"description": "The second number",
 					},
-					"operation": map[string]interface{}{
+					"operation": map[string]any{
 						"type":        "string",
 						"description": "The operation to perform: add, subtract, multiply, or divide",
 					},
@@ -43,10 +43,10 @@ func TestSearchResultEncoding(t *testing.T) {
 			Name:        "greet",
 			Description: "A simple tool that greets the user",
 			Score:       1.0,
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"name": map[string]interface{}{
+				"properties": map[string]any{
+					"name": map[string]any{
 						"type":        "string",
 						"description": "The name to greet (optional, defaults to 'World')",
 					},
@@ -88,7 +88,7 @@ func TestSearchResultEncoding(t *testing.T) {
 
 	// Test 2: Wrapped in map (current workaround)
 	t.Run("WrappedInMap", func(t *testing.T) {
-		wrapped := map[string]interface{}{"tools": results}
+		wrapped := map[string]any{"tools": results}
 		encoded, err := Encode(wrapped)
 		if err != nil {
 			t.Fatalf("Failed to encode: %v", err)

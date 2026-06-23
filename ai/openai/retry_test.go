@@ -189,10 +189,10 @@ func TestConfigExplicitValues(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:          srv.URL,
-		MaxRetries:       5,
-		RetryBackoff:     2 * time.Second,
-		RetryOnRateLimit: boolPtr(false),
+		BaseURL:            srv.URL,
+		MaxRetries:         5,
+		RetryBackoff:       2 * time.Second,
+		RetryOnRateLimit:   boolPtr(false),
 		RetryOnServerError: boolPtr(false),
 	})
 	if err != nil {
@@ -277,8 +277,8 @@ func TestRetryOn429(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:     srv.URL,
-		MaxRetries:  3,
+		BaseURL:      srv.URL,
+		MaxRetries:   3,
 		RetryBackoff: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -330,8 +330,8 @@ func TestRetryOn5xx(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:     srv.URL,
-		MaxRetries:  2,
+		BaseURL:      srv.URL,
+		MaxRetries:   2,
 		RetryBackoff: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -415,8 +415,8 @@ func TestRetryExhausted(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:     srv.URL,
-		MaxRetries:  2,
+		BaseURL:      srv.URL,
+		MaxRetries:   2,
 		RetryBackoff: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -473,8 +473,8 @@ func TestRetryRespectsContextCancel(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:     srv.URL,
-		MaxRetries:  10,
+		BaseURL:      srv.URL,
+		MaxRetries:   10,
 		RetryBackoff: 5 * time.Second,
 	})
 	if err != nil {
@@ -507,8 +507,8 @@ func TestRetryNonRetryableError(t *testing.T) {
 	defer srv.Close()
 
 	client, err := New(Config{
-		BaseURL:     srv.URL,
-		MaxRetries:  3,
+		BaseURL:      srv.URL,
+		MaxRetries:   3,
 		RetryBackoff: 10 * time.Millisecond,
 	})
 	if err != nil {
@@ -529,11 +529,11 @@ func TestRetryNonRetryableError(t *testing.T) {
 
 func TestAPIErrorHelpers(t *testing.T) {
 	tests := []struct {
-		name      string
-		err       *APIError
-		isRetry   bool
-		isRate    bool
-		isServer  bool
+		name     string
+		err      *APIError
+		isRetry  bool
+		isRate   bool
+		isServer bool
 	}{
 		{
 			name:     "429",
@@ -564,8 +564,8 @@ func TestAPIErrorHelpers(t *testing.T) {
 			isServer: false,
 		},
 		{
-			name: "503 via status code",
-			err: &APIError{StatusCode: 503, Type: "server_error", Message: "unavailable"},
+			name:     "503 via status code",
+			err:      &APIError{StatusCode: 503, Type: "server_error", Message: "unavailable"},
 			isRetry:  true,
 			isRate:   false,
 			isServer: true,
@@ -618,7 +618,7 @@ func TestStreamRetryOn429(t *testing.T) {
 			Model:  "test",
 			Choices: []Choice{{
 				Index:        0,
-			Delta:        Delta{Content: "hello"},
+				Delta:        Delta{Content: "hello"},
 				FinishReason: "",
 			}},
 		}
@@ -689,7 +689,7 @@ func TestStreamRetryOn5xx(t *testing.T) {
 			Model:  "test",
 			Choices: []Choice{{
 				Index:        0,
-			Delta:        Delta{Content: "hello"},
+				Delta:        Delta{Content: "hello"},
 				FinishReason: "",
 			}},
 		}

@@ -42,7 +42,7 @@ const (
 // When returned from a ToolHandler, the error code and message are sent to the client
 // in the JSON-RPC error response.
 //
-// Example usage in a tool handler:
+// Returning one in a tool handler or provider:
 //
 //	func myHandler(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 //	    name, err := req.String("name")
@@ -51,10 +51,19 @@ const (
 //	    }
 //	    // ... process request
 //	}
+//
+// Detecting one as a caller (middleware, tests, custom transports) — use
+// errors.As, which also unwraps wrapped errors, to recover the code/message/data:
+//
+//	resp, err := server.CallTool(ctx, name, args)
+//	var toolErr *mcp.ToolError
+//	if errors.As(err, &toolErr) {
+//	    log.Printf("tool error %d: %s (data=%v)", toolErr.Code, toolErr.Message, toolErr.Data)
+//	}
 type ToolError struct {
 	Code    int
 	Message string
-	Data    interface{}
+	Data    any
 }
 
 func (e *ToolError) Error() string {
@@ -87,11 +96,11 @@ func NewToolErrorInternal(message string) error {
 //
 // Example:
 //
-//	return nil, mcp.NewToolError(-32001, "Rate limit exceeded", map[string]interface{}{
+//	return nil, mcp.NewToolError(-32001, "Rate limit exceeded", map[string]any{
 //	    "retry_after": 60,
 //	    "limit": 100,
 //	})
-func NewToolError(code int, message string, data interface{}) error {
+func NewToolError(code int, message string, data any) error {
 	return &ToolError{
 		Code:    code,
 		Message: message,

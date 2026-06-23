@@ -67,9 +67,9 @@ func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) 
 		Name:        "get_profile",
 		Description: "Get the current user's profile information",
 		Keywords:    []string{"user", "profile", "me"},
-		InputSchema: map[string]interface{}{
+		InputSchema: map[string]any{
 			"type":                 "object",
-			"properties":           map[string]interface{}{},
+			"properties":           map[string]any{},
 			"additionalProperties": false,
 		},
 	})
@@ -82,9 +82,9 @@ func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) 
 				Name:        "admin_users",
 				Description: "List all users in the system (admin only)",
 				Keywords:    []string{"admin", "users", "list"},
-				InputSchema: map[string]interface{}{
+				InputSchema: map[string]any{
 					"type":                 "object",
-					"properties":           map[string]interface{}{},
+					"properties":           map[string]any{},
 					"additionalProperties": false,
 				},
 			})
@@ -92,10 +92,10 @@ func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) 
 				Name:        "admin_delete_user",
 				Description: "Delete a user from the system (admin only)",
 				Keywords:    []string{"admin", "delete", "user"},
-				InputSchema: map[string]interface{}{
+				InputSchema: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"user_id": map[string]interface{}{
+					"properties": map[string]any{
+						"user_id": map[string]any{
 							"type":        "string",
 							"description": "ID of the user to delete",
 						},
@@ -112,29 +112,29 @@ func (p *UserToolProvider) GetTools(ctx context.Context) ([]mcp.MCPTool, error) 
 }
 
 // ExecuteTool executes a tool for this user
-func (p *UserToolProvider) ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+func (p *UserToolProvider) ExecuteTool(ctx context.Context, name string, params map[string]any) (*mcp.ToolResponse, error) {
 	switch name {
 	case "get_profile":
-		return map[string]interface{}{
+		return mcp.NewToolResponseJSON(map[string]any{
 			"id":    p.user.ID,
 			"name":  p.user.Name,
 			"roles": p.user.Roles,
-		}, nil
+		}), nil
 
 	case "admin_users":
 		// Verify admin access
 		if !p.hasRole("admin") {
 			return nil, fmt.Errorf("access denied: admin role required")
 		}
-		var userList []map[string]interface{}
+		var userList []map[string]any
 		for _, u := range users {
-			userList = append(userList, map[string]interface{}{
+			userList = append(userList, map[string]any{
 				"id":    u.ID,
 				"name":  u.Name,
 				"roles": u.Roles,
 			})
 		}
-		return userList, nil
+		return mcp.NewToolResponseJSON(userList), nil
 
 	case "admin_delete_user":
 		// Verify admin access
@@ -142,11 +142,11 @@ func (p *UserToolProvider) ExecuteTool(ctx context.Context, name string, params 
 			return nil, fmt.Errorf("access denied: admin role required")
 		}
 		userID, _ := params["user_id"].(string)
-		return map[string]interface{}{
+		return mcp.NewToolResponseJSON(map[string]any{
 			"status":  "deleted",
 			"user_id": userID,
 			"message": "User would be deleted (demo mode)",
-		}, nil
+		}), nil
 	}
 
 	return nil, mcp.ErrUnknownTool

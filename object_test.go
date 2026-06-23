@@ -18,12 +18,12 @@ func TestObjectSchemaGeneration(t *testing.T) {
 	schema := tool.BuildSchema()
 
 	// Verify the schema structure
-	properties, ok := schema["properties"].(map[string]interface{})
+	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected properties to be a map")
 	}
 
-	userProp, ok := properties["user"].(map[string]interface{})
+	userProp, ok := properties["user"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected user property to be a map")
 	}
@@ -32,13 +32,13 @@ func TestObjectSchemaGeneration(t *testing.T) {
 		t.Errorf("Expected user type to be 'object', got %v", userProp["type"])
 	}
 
-	userProperties, ok := userProp["properties"].(map[string]interface{})
+	userProperties, ok := userProp["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected user properties to be a map")
 	}
 
 	// Check name property
-	nameProp, ok := userProperties["name"].(map[string]interface{})
+	nameProp, ok := userProperties["name"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected name property to be a map")
 	}
@@ -47,7 +47,7 @@ func TestObjectSchemaGeneration(t *testing.T) {
 	}
 
 	// Check age property
-	ageProp, ok := userProperties["age"].(map[string]interface{})
+	ageProp, ok := userProperties["age"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected age property to be a map")
 	}
@@ -77,12 +77,12 @@ func TestArrayObjectSchemaGeneration(t *testing.T) {
 
 	schema := tool.BuildSchema()
 
-	properties, ok := schema["properties"].(map[string]interface{})
+	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected properties to be a map")
 	}
 
-	itemsProp, ok := properties["items"].(map[string]interface{})
+	itemsProp, ok := properties["items"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected items property to be a map")
 	}
@@ -91,7 +91,7 @@ func TestArrayObjectSchemaGeneration(t *testing.T) {
 		t.Errorf("Expected items type to be 'array', got %v", itemsProp["type"])
 	}
 
-	itemsSchema, ok := itemsProp["items"].(map[string]interface{})
+	itemsSchema, ok := itemsProp["items"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected items schema to be a map")
 	}
@@ -100,13 +100,13 @@ func TestArrayObjectSchemaGeneration(t *testing.T) {
 		t.Errorf("Expected items schema type to be 'object', got %v", itemsSchema["type"])
 	}
 
-	itemProperties, ok := itemsSchema["properties"].(map[string]interface{})
+	itemProperties, ok := itemsSchema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected item properties to be a map")
 	}
 
 	// Check id property
-	idProp, ok := itemProperties["id"].(map[string]interface{})
+	idProp, ok := itemProperties["id"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected id property to be a map")
 	}
@@ -123,12 +123,12 @@ func TestGenericObjectSchema(t *testing.T) {
 
 	schema := tool.BuildSchema()
 
-	properties, ok := schema["properties"].(map[string]interface{})
+	properties, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected properties to be a map")
 	}
 
-	configProp, ok := properties["config"].(map[string]interface{})
+	configProp, ok := properties["config"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected config property to be a map")
 	}
@@ -165,7 +165,7 @@ func TestComplexNestedObjectSchema(t *testing.T) {
 		t.Fatalf("Failed to marshal schema to JSON: %v", err)
 	}
 
-	var unmarshaled map[string]interface{}
+	var unmarshaled map[string]any
 	err = json.Unmarshal(jsonBytes, &unmarshaled)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal schema from JSON: %v", err)

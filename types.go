@@ -2,29 +2,29 @@ package mcp
 
 // MCP Protocol types
 type MCPRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	ID      any    `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
 }
 
 type MCPResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   *MCPError   `json:"error,omitempty"`
+	JSONRPC string    `json:"jsonrpc"`
+	ID      any       `json:"id,omitempty"`
+	Result  any       `json:"result,omitempty"`
+	Error   *MCPError `json:"error,omitempty"`
 }
 
 type MCPError struct {
-	Code    int         `json:"code"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 type initializeParams struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    map[string]interface{} `json:"capabilities"`
-	ClientInfo      clientInfo             `json:"clientInfo"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	Capabilities    map[string]any `json:"capabilities"`
+	ClientInfo      clientInfo     `json:"clientInfo"`
 }
 
 type clientInfo struct {
@@ -40,8 +40,8 @@ type initializeResult struct {
 }
 
 type capabilities struct {
-	Tools     map[string]interface{} `json:"tools"`
-	Resources map[string]interface{} `json:"resources,omitempty"`
+	Tools     map[string]any `json:"tools"`
+	Resources map[string]any `json:"resources,omitempty"`
 }
 
 type serverInfo struct {
@@ -50,22 +50,22 @@ type serverInfo struct {
 }
 
 type MCPTool struct {
-	Name          string         `json:"name"`
-	Description   string         `json:"description"`
-	InputSchema   interface{}    `json:"inputSchema"`
-	OutputSchema  interface{}    `json:"outputSchema,omitempty"`
-	Keywords      []string       `json:"-"` // For discovery search, not serialized to clients
-	Visibility    ToolVisibility `json:"-"` // Native or Discoverable
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	InputSchema  any            `json:"inputSchema"`
+	OutputSchema any            `json:"outputSchema,omitempty"`
+	Keywords     []string       `json:"-"` // For discovery search, not serialized to clients
+	Visibility   ToolVisibility `json:"-"` // Native or Discoverable
 }
 
 type ToolCallParams struct {
-	Name      string                 `json:"name"`
-	Arguments map[string]interface{} `json:"arguments,omitempty"`
+	Name      string         `json:"name"`
+	Arguments map[string]any `json:"arguments,omitempty"`
 }
 
 type ToolResult struct {
 	Content           []ToolContent `json:"content,omitempty"`
-	StructuredContent interface{}   `json:"structuredContent,omitempty"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
 	IsError           bool          `json:"isError,omitempty"`
 }
 

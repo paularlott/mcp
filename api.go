@@ -358,7 +358,7 @@ func BooleanArray(name, description string, options ...Option) Parameter {
 }
 
 // Object creates an object parameter with properties
-func Object(name, description string, propertiesAndOptions ...interface{}) Parameter {
+func Object(name, description string, propertiesAndOptions ...any) Parameter {
 	var properties []Parameter
 	required := false
 
@@ -382,7 +382,7 @@ func Object(name, description string, propertiesAndOptions ...interface{}) Param
 }
 
 // ObjectArray creates an array of objects parameter
-func ObjectArray(name, description string, propertiesAndOptions ...interface{}) Parameter {
+func ObjectArray(name, description string, propertiesAndOptions ...any) Parameter {
 	var properties []Parameter
 	required := false
 

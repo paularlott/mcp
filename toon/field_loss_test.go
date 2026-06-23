@@ -11,15 +11,15 @@ func TestFieldLossInvestigation(t *testing.T) {
 		Name:        "calculator",
 		Description: "A simple calculator",
 		Score:       1.0,
-		InputSchema: map[string]interface{}{
+		InputSchema: map[string]any{
 			"type": "object",
-			"properties": map[string]interface{}{
-				"a": map[string]interface{}{
+			"properties": map[string]any{
+				"a": map[string]any{
 					"type":        "number",
 					"description": "The first number",
 				},
-				"b": map[string]interface{}{
-					"type":        "number", 
+				"b": map[string]any{
+					"type":        "number",
 					"description": "The second number",
 				},
 			},
@@ -37,7 +37,7 @@ func TestFieldLossInvestigation(t *testing.T) {
 	t.Logf("JSON: %s", string(jsonBytes))
 
 	// Step 2: Test JSON unmarshaling
-	var unmarshaled interface{}
+	var unmarshaled any
 	err = json.Unmarshal(jsonBytes, &unmarshaled)
 	if err != nil {
 		t.Fatalf("JSON unmarshal failed: %v", err)
@@ -52,7 +52,7 @@ func TestFieldLossInvestigation(t *testing.T) {
 	t.Logf("Normalized: %+v", normalized)
 
 	// Step 4: Check if normalized has all expected keys
-	normalizedMap, ok := normalized.(map[string]interface{})
+	normalizedMap, ok := normalized.(map[string]any)
 	if !ok {
 		t.Fatalf("Normalized is not a map: %T", normalized)
 	}

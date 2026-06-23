@@ -16,7 +16,7 @@ func TestAddRemoveProvidersToNativeContext(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "tool1", Description: "From provider 1"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "tool1" {
 				return "result1", nil
 			}
@@ -36,7 +36,7 @@ func TestAddRemoveProvidersToNativeContext(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "tool2", Description: "From provider 2"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "tool2" {
 				return "result2", nil
 			}
@@ -91,7 +91,7 @@ func TestAddRemoveProvidersToDiscoverableContext(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "demand_tool", Description: "A tool for discoverable mode", Keywords: []string{"demand"}},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "demand_tool" {
 				return "demand_result", nil
 			}
@@ -184,10 +184,10 @@ func TestProviderToolExecution(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "provider_calc", Description: "Calculate something"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "provider_calc" {
 				// Return a structured result
-				return map[string]interface{}{
+				return map[string]any{
 					"result": 42,
 					"status": "success",
 				}, nil
@@ -218,7 +218,7 @@ func TestProviderToolNotFound(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "existing_tool", Description: "Exists"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "existing_tool" {
 				return "result", nil
 			}
@@ -245,7 +245,7 @@ func TestProviderErrorPropagation(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "error_tool", Description: "Throws error"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "error_tool" {
 				return nil, testError
 			}
@@ -279,7 +279,7 @@ func TestProviderToolVisibilityNativeMode(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "provider_tool", Description: "From provider"},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "provider_tool" {
 				return "provider", nil
 			}
@@ -339,7 +339,7 @@ func TestProviderToolVisibilityShowAllMode(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "provider_tool", Description: "From provider", Keywords: []string{"provider"}},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "provider_tool" {
 				return "provider", nil
 			}
@@ -522,7 +522,7 @@ func TestProviderToolWithParameters(t *testing.T) {
 		tools: []MCPTool{
 			{Name: "add", Description: "Add two numbers", Keywords: []string{"math"}},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "add" {
 				a, ok := params["a"].(float64)
 				if !ok {
@@ -532,7 +532,7 @@ func TestProviderToolWithParameters(t *testing.T) {
 				if !ok {
 					return nil, NewToolErrorInvalidParams("'b' must be a number")
 				}
-				return map[string]interface{}{
+				return map[string]any{
 					"result": a + b,
 				}, nil
 			}
@@ -543,7 +543,7 @@ func TestProviderToolWithParameters(t *testing.T) {
 	ctxWithProvider := WithToolProviders(ctx, provider)
 
 	// Call with parameters
-	params := map[string]interface{}{
+	params := map[string]any{
 		"a": 5.0,
 		"b": 3.0,
 	}
@@ -578,7 +578,7 @@ func TestDynamicToolVisibility(t *testing.T) {
 				Visibility:  ToolVisibilityDiscoverable,
 			},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "native_tool" {
 				return "native result", nil
 			}
@@ -674,7 +674,7 @@ func TestDynamicToolStateTransition_PerRequest(t *testing.T) {
 			{Name: "admin_tools", Description: "Admin functionality", Visibility: ToolVisibilityNative},
 			{Name: "hidden_tools", Description: "Hidden functionality", Visibility: ToolVisibilityDiscoverable, Keywords: []string{"hidden"}},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "admin_tools" {
 				return "admin result", nil
 			}
@@ -761,7 +761,7 @@ func TestDynamicToolStateTransition_ConditionalVisibility(t *testing.T) {
 			{Name: "public_data", Description: "Access public data", Visibility: ToolVisibilityNative},
 			{Name: "sensitive_data", Description: "Access sensitive data", Visibility: ToolVisibilityDiscoverable, Keywords: []string{"sensitive"}},
 		},
-		execFunc: func(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "sensitive_data" {
 				return "sensitive result", nil
 			}
@@ -818,7 +818,7 @@ func TestDynamicToolStateTransition_ConditionalVisibility(t *testing.T) {
 	}
 
 	// Both can search for tools
-	resp1, err := server.CallTool(ctx, ToolSearchName, map[string]interface{}{
+	resp1, err := server.CallTool(ctx, ToolSearchName, map[string]any{
 		"query":       "sensitive",
 		"max_results": 10,
 	})

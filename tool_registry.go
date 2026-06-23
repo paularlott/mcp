@@ -11,11 +11,11 @@ import (
 
 // SearchResult represents a tool found via search
 type SearchResult struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	Score       float64     `json:"score"`
-	InputSchema interface{} `json:"inputSchema,omitempty"`
-	Keywords    []string    `json:"keywords,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Score       float64  `json:"score"`
+	InputSchema any      `json:"inputSchema,omitempty"`
+	Keywords    []string `json:"keywords,omitempty"`
 }
 
 // internalRegistry implements ToolRegistry and provides tool search functionality
@@ -226,7 +226,7 @@ func (r *internalRegistry) GetTool(ctx context.Context, name string) (*MCPTool, 
 }
 
 // CallTool executes a tool by name
-func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
+func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
 	// Check registered tools first
 	r.mu.RLock()
 	if dt, exists := r.tools[name]; exists {
@@ -246,7 +246,7 @@ func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[s
 			return nil, err
 		}
 		if result != nil {
-			return convertToToolResponse(result), nil
+			return result, nil
 		}
 	}
 
@@ -386,8 +386,8 @@ func containsWord(text, query string) bool {
 }
 
 // validateRequiredParameters checks if all required parameters are present and non-empty
-func validateRequiredParameters(inputSchema interface{}, args map[string]interface{}) error {
-	schema, ok := inputSchema.(map[string]interface{})
+func validateRequiredParameters(inputSchema any, args map[string]any) error {
+	schema, ok := inputSchema.(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -397,10 +397,10 @@ func validateRequiredParameters(inputSchema interface{}, args map[string]interfa
 		return nil
 	}
 
-	// Handle both []interface{} and []string
+	// Handle both []any and []string
 	var required []string
 	switch v := requiredRaw.(type) {
-	case []interface{}:
+	case []any:
 		for _, req := range v {
 			if paramName, ok := req.(string); ok {
 				required = append(required, paramName)

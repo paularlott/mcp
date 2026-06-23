@@ -10,10 +10,10 @@ func TestNormalizationDebug(t *testing.T) {
 		Name:        "calculator",
 		Description: "A simple calculator",
 		Score:       1.0,
-		InputSchema: map[string]interface{}{
+		InputSchema: map[string]any{
 			"type": "object",
-			"properties": map[string]interface{}{
-				"a": map[string]interface{}{
+			"properties": map[string]any{
+				"a": map[string]any{
 					"type":        "number",
 					"description": "The first number",
 				},
@@ -29,7 +29,7 @@ func TestNormalizationDebug(t *testing.T) {
 	t.Logf("JSON: %s", string(jsonBytes))
 
 	// Step 2: JSON unmarshal (what normalizeValue does for structs)
-	var normalized interface{}
+	var normalized any
 	err = json.Unmarshal(jsonBytes, &normalized)
 	if err != nil {
 		t.Fatalf("JSON unmarshal failed: %v", err)

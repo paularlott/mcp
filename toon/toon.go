@@ -16,12 +16,12 @@ type DecodeOptions struct {
 }
 
 // Encode converts a Go value to TOON format.
-func Encode(v interface{}) (string, error) {
+func Encode(v any) (string, error) {
 	return EncodeWithOptions(v, nil)
 }
 
 // EncodeWithOptions converts a Go value to TOON format with custom options.
-func EncodeWithOptions(v interface{}, opts *EncodeOptions) (string, error) {
+func EncodeWithOptions(v any, opts *EncodeOptions) (string, error) {
 	if opts == nil {
 		opts = &EncodeOptions{Indent: 2, Delimiter: ","}
 	}
@@ -41,12 +41,12 @@ func EncodeWithOptions(v interface{}, opts *EncodeOptions) (string, error) {
 }
 
 // Decode parses TOON format and returns the decoded value.
-func Decode(data string) (interface{}, error) {
+func Decode(data string) (any, error) {
 	return DecodeWithOptions(data, nil)
 }
 
 // DecodeWithOptions parses TOON format with custom options.
-func DecodeWithOptions(data string, opts *DecodeOptions) (interface{}, error) {
+func DecodeWithOptions(data string, opts *DecodeOptions) (any, error) {
 	if opts == nil {
 		opts = &DecodeOptions{Strict: true, IndentSize: 0}
 	}

@@ -106,7 +106,7 @@ func BuildAssistantMessage(content string) Message {
 
 // ParseToolArguments parses the tool call arguments map into the provided struct.
 // The target should be a pointer to the struct.
-func ParseToolArguments(arguments map[string]any, target interface{}) error {
+func ParseToolArguments(arguments map[string]any, target any) error {
 	// Convert map to JSON then unmarshal to struct
 	data, err := json.Marshal(arguments)
 	if err != nil {
@@ -120,7 +120,7 @@ func ParseToolArguments(arguments map[string]any, target interface{}) error {
 
 // MustParseToolArguments is like ParseToolArguments but panics on error.
 // Use only in situations where you're certain the arguments are valid.
-func MustParseToolArguments(arguments map[string]any, target interface{}) {
+func MustParseToolArguments(arguments map[string]any, target any) {
 	if err := ParseToolArguments(arguments, target); err != nil {
 		panic(err)
 	}

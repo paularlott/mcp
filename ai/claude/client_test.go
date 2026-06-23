@@ -162,9 +162,9 @@ func TestConvertToOpenAIResponse(t *testing.T) {
 				},
 			},
 			expected: openai.ChatCompletionResponse{
-				ID:      "msg_123",
-				Object:  "chat.completion",
-				Model:   "claude-test",
+				ID:     "msg_123",
+				Object: "chat.completion",
+				Model:  "claude-test",
 				Choices: []openai.Choice{
 					{
 						Index: 0,
@@ -204,9 +204,9 @@ func TestConvertToOpenAIResponse(t *testing.T) {
 				},
 			},
 			expected: openai.ChatCompletionResponse{
-				ID:      "msg_123",
-				Object:  "chat.completion",
-				Model:   "claude-test",
+				ID:     "msg_123",
+				Object: "chat.completion",
+				Model:  "claude-test",
 				Choices: []openai.Choice{
 					{
 						Index: 0,
@@ -261,109 +261,110 @@ func TestConvertToClaudeRequest_EdgeCases(t *testing.T) {
 		{
 			name: "Multiple System Prompts (merged or overridden?)",
 			// Let's see what happens if multiple system prompts are passed. Note that the code loops and takes the last one! Wait, no.
-// `system` is a SystemField. For each system message, `claudeReq.System = SystemField{text: msg.GetContentAsString()}`
-// So it overwrites it!
-req: openai.ChatCompletionRequest{
-Model: "test",
-Messages: []openai.Message{
-{Role: "system", Content: "Prompt 1"},
-{Role: "system", Content: "Prompt 2"},
-{Role: "user", Content: "Hi"},
-},
-},
-expected: ClaudeRequest{
-Model: "test",
-System: SystemField{text: "Prompt 2"},
-Messages: []ClaudeMessage{
-{Role: "user", Content: MessageContent{blocks: []ContentBlock{{Type: "text", Text: "Hi"}}}},
-},
-},
-},
-{
-name: "Mixed Content Array Stringification",
-req: openai.ChatCompletionRequest{
-Model: "test",
-Messages: []openai.Message{
-{
-Role: "user",
-Content: []any{
-map[string]any{"type": "text", "text": "Hello "},
-map[string]any{"type": "text", "text": "World"},
-},
-},
-},
-},
-expected: ClaudeRequest{
-Model: "test",
-Messages: []ClaudeMessage{
-{Role: "user", Content: MessageContent{blocks: []ContentBlock{{Type: "text", Text: "Hello World"}}}},
-},
-},
-},
-}
+			// `system` is a SystemField. For each system message, `claudeReq.System = SystemField{text: msg.GetContentAsString()}`
+			// So it overwrites it!
+			req: openai.ChatCompletionRequest{
+				Model: "test",
+				Messages: []openai.Message{
+					{Role: "system", Content: "Prompt 1"},
+					{Role: "system", Content: "Prompt 2"},
+					{Role: "user", Content: "Hi"},
+				},
+			},
+			expected: ClaudeRequest{
+				Model:  "test",
+				System: SystemField{text: "Prompt 2"},
+				Messages: []ClaudeMessage{
+					{Role: "user", Content: MessageContent{blocks: []ContentBlock{{Type: "text", Text: "Hi"}}}},
+				},
+			},
+		},
+		{
+			name: "Mixed Content Array Stringification",
+			req: openai.ChatCompletionRequest{
+				Model: "test",
+				Messages: []openai.Message{
+					{
+						Role: "user",
+						Content: []any{
+							map[string]any{"type": "text", "text": "Hello "},
+							map[string]any{"type": "text", "text": "World"},
+						},
+					},
+				},
+			},
+			expected: ClaudeRequest{
+				Model: "test",
+				Messages: []ClaudeMessage{
+					{Role: "user", Content: MessageContent{blocks: []ContentBlock{{Type: "text", Text: "Hello World"}}}},
+				},
+			},
+		},
+	}
 
-for _, tt := range tests {
-t.Run(tt.name, func(t *testing.T) {
-got := client.convertToClaudeRequest(tt.req)
-if got.System.text != tt.expected.System.text {
-t.Errorf("System = %v, want %v", got.System.text, tt.expected.System.text)
-}
-bGot, _ := json.Marshal(got.Messages)
-bExp, _ := json.Marshal(tt.expected.Messages)
-if string(bGot) != string(bExp) {
-t.Errorf("Messages = %v\nwant %v", string(bGot), string(bExp))
-}
-})
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := client.convertToClaudeRequest(tt.req)
+			if got.System.text != tt.expected.System.text {
+				t.Errorf("System = %v, want %v", got.System.text, tt.expected.System.text)
+			}
+			bGot, _ := json.Marshal(got.Messages)
+			bExp, _ := json.Marshal(tt.expected.Messages)
+			if string(bGot) != string(bExp) {
+				t.Errorf("Messages = %v\nwant %v", string(bGot), string(bExp))
+			}
+		})
+	}
 }
 
 func TestConvertToOpenAIResponse_EdgeCases(t *testing.T) {
-client := &Client{}
-tests := []struct {
-name     string
-resp     ClaudeResponse
-expected openai.ChatCompletionResponse
-}{
-{
-name: "Multiple Tool Use Blocks",
-resp: ClaudeResponse{
-ID: "123", Model: "test", Role: "assistant", StopReason: "tool_use",
-Content: []ContentBlock{
-{Type: "tool_use", ID: "call_1", Name: "tool_a", Input: map[string]any{"a": 1}},
-{Type: "tool_use", ID: "call_2", Name: "tool_b", Input: map[string]any{"b": 2}},
-},
-},
-expected: openai.ChatCompletionResponse{
-ID: "123", Object: "chat.completion", Model: "test",
-Choices: []openai.Choice{
-{
-Index: 0,
-Message: openai.Message{
-Role: "assistant",
-Content: "",
-ToolCalls: []openai.ToolCall{
-{ID: "call_1", Type: "function", Function: openai.ToolCallFunction{Name: "tool_a", Arguments: map[string]any{"a": 1}}},
-{ID: "call_2", Type: "function", Function: openai.ToolCallFunction{Name: "tool_b", Arguments: map[string]any{"b": 2}}},
-},
-},
-FinishReason: "tool_calls",
-},
-},
-Usage: &openai.Usage{},
-},
-},
+	client := &Client{}
+	tests := []struct {
+		name     string
+		resp     ClaudeResponse
+		expected openai.ChatCompletionResponse
+	}{
+		{
+			name: "Multiple Tool Use Blocks",
+			resp: ClaudeResponse{
+				ID: "123", Model: "test", Role: "assistant", StopReason: "tool_use",
+				Content: []ContentBlock{
+					{Type: "tool_use", ID: "call_1", Name: "tool_a", Input: map[string]any{"a": 1}},
+					{Type: "tool_use", ID: "call_2", Name: "tool_b", Input: map[string]any{"b": 2}},
+				},
+			},
+			expected: openai.ChatCompletionResponse{
+				ID: "123", Object: "chat.completion", Model: "test",
+				Choices: []openai.Choice{
+					{
+						Index: 0,
+						Message: openai.Message{
+							Role:    "assistant",
+							Content: "",
+							ToolCalls: []openai.ToolCall{
+								{ID: "call_1", Type: "function", Function: openai.ToolCallFunction{Name: "tool_a", Arguments: map[string]any{"a": 1}}},
+								{ID: "call_2", Type: "function", Function: openai.ToolCallFunction{Name: "tool_b", Arguments: map[string]any{"b": 2}}},
+							},
+						},
+						FinishReason: "tool_calls",
+					},
+				},
+				Usage: &openai.Usage{},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := client.convertToOpenAIResponse(&tt.resp)
+			bGot, _ := json.Marshal(got)
+			bExp, _ := json.Marshal(tt.expected)
+			if string(bGot) != string(bExp) {
+				t.Errorf("Response = %v\nwant %v", string(bGot), string(bExp))
+			}
+		})
+	}
 }
-for _, tt := range tests {
-t.Run(tt.name, func(t *testing.T) {
-got := client.convertToOpenAIResponse(&tt.resp)
-bGot, _ := json.Marshal(got)
-bExp, _ := json.Marshal(tt.expected)
-if string(bGot) != string(bExp) {
-t.Errorf("Response = %v\nwant %v", string(bGot), string(bExp))
-}
-})
-}
-}
+
 // claudeOKResponse returns a minimal valid Claude messages response body.
 func claudeOKResponse() []byte {
 	resp := ClaudeResponse{

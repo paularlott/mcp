@@ -14,7 +14,7 @@ import (
 
 func timeNowUnix() int64 { return time.Now().Unix() }
 
-func jsonMarshal(v interface{}) (json.RawMessage, error) {
+func jsonMarshal(v any) (json.RawMessage, error) {
 	b, err := json.Marshal(v)
 	return json.RawMessage(b), err
 }
@@ -219,10 +219,10 @@ func (c *Client) streamResponseNative(ctx context.Context, req CreateResponseReq
 
 		// Append tool results to input for next iteration
 		for _, result := range toolResults {
-			req.Input = append(req.Input, map[string]interface{}{
-				"type":         "function_call_output",
-				"call_id":      result.ToolCallID,
-				"output":       result.Content,
+			req.Input = append(req.Input, map[string]any{
+				"type":    "function_call_output",
+				"call_id": result.ToolCallID,
+				"output":  result.Content,
 			})
 		}
 	}
@@ -336,7 +336,7 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 	respID := generateID()
 	createdAt := timeNowUnix()
 
-	send := func(eventType string, payload map[string]interface{}) bool {
+	send := func(eventType string, payload map[string]any) bool {
 		payload["type"] = eventType
 		data, _ := jsonMarshal(payload)
 		select {
@@ -347,16 +347,16 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 		}
 	}
 
-	if !send("response.created", map[string]interface{}{
-		"response": map[string]interface{}{
+	if !send("response.created", map[string]any{
+		"response": map[string]any{
 			"id": respID, "object": "response",
 			"status": "in_progress", "model": req.Model, "created_at": createdAt,
 		},
 	}) {
 		return
 	}
-	if !send("response.in_progress", map[string]interface{}{
-		"response": map[string]interface{}{
+	if !send("response.in_progress", map[string]any{
+		"response": map[string]any{
 			"id": respID, "object": "response",
 			"status": "in_progress", "model": req.Model, "created_at": createdAt,
 		},
@@ -365,18 +365,18 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 	}
 
 	msgItemID := generateID()
-	if !send("response.output_item.added", map[string]interface{}{
+	if !send("response.output_item.added", map[string]any{
 		"output_index": 0,
-		"item": map[string]interface{}{
+		"item": map[string]any{
 			"id": msgItemID, "type": "message",
-			"role": "assistant", "status": "in_progress", "content": []interface{}{},
+			"role": "assistant", "status": "in_progress", "content": []any{},
 		},
 	}) {
 		return
 	}
-	if !send("response.content_part.added", map[string]interface{}{
+	if !send("response.content_part.added", map[string]any{
 		"item_id": msgItemID, "output_index": 0, "content_index": 0,
-		"part": map[string]interface{}{"type": "output_text", "text": "", "annotations": []interface{}{}},
+		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 	}) {
 		return
 	}
@@ -397,7 +397,7 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 		}
 		if delta := chunk.Choices[0].Delta.Content; delta != "" {
 			textBuf.WriteString(delta)
-			if !send("response.output_text.delta", map[string]interface{}{
+			if !send("response.output_text.delta", map[string]any{
 				"item_id": msgItemID, "output_index": 0, "content_index": 0, "delta": delta,
 			}) {
 				return
@@ -414,23 +414,23 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 
 	fullText := textBuf.String()
 
-	if !send("response.output_text.done", map[string]interface{}{
+	if !send("response.output_text.done", map[string]any{
 		"item_id": msgItemID, "output_index": 0, "content_index": 0, "text": fullText,
 	}) {
 		return
 	}
-	if !send("response.content_part.done", map[string]interface{}{
+	if !send("response.content_part.done", map[string]any{
 		"item_id": msgItemID, "output_index": 0, "content_index": 0,
-		"part": map[string]interface{}{"type": "output_text", "text": fullText, "annotations": []interface{}{}},
+		"part": map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
 	}) {
 		return
 	}
-	if !send("response.output_item.done", map[string]interface{}{
+	if !send("response.output_item.done", map[string]any{
 		"output_index": 0,
-		"item": map[string]interface{}{
+		"item": map[string]any{
 			"id": msgItemID, "type": "message", "role": "assistant", "status": "completed",
-			"content": []interface{}{
-				map[string]interface{}{"type": "output_text", "text": fullText, "annotations": []interface{}{}},
+			"content": []any{
+				map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
 			},
 		},
 	}) {
@@ -445,14 +445,14 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 		ID: chatID, Object: "response", Status: "completed",
 		CreatedAt: createdAt, Model: req.Model,
 		Usage: toResponseUsage(finalUsage),
-		Output: []interface{}{
-			map[string]interface{}{
+		Output: []any{
+			map[string]any{
 				"id": msgItemID, "type": "message", "role": "assistant", "status": "completed",
-				"content": []interface{}{
-					map[string]interface{}{"type": "output_text", "text": fullText, "annotations": []interface{}{}},
+				"content": []any{
+					map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
 				},
 			},
 		},
 	}
-	send("response.completed", map[string]interface{}{"response": respObj})
+	send("response.completed", map[string]any{"response": respObj})
 }

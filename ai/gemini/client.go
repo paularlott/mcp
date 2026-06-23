@@ -20,14 +20,14 @@ const (
 )
 
 type Client struct {
-	apiKey          string
-	baseURL         string
-	httpPool        pool.HTTPPool
-	provider        string
-	chatClient      *openai.Client // Use OpenAI client for chat/streaming
-	responseManager *openai.ResponseManager
-	maxRetries      int
-	retryBackoff     time.Duration
+	apiKey             string
+	baseURL            string
+	httpPool           pool.HTTPPool
+	provider           string
+	chatClient         *openai.Client // Use OpenAI client for chat/streaming
+	responseManager    *openai.ResponseManager
+	maxRetries         int
+	retryBackoff       time.Duration
 	retryOnRateLimit   bool
 	retryOnServerError bool
 }
@@ -164,7 +164,7 @@ func (c *Client) CreateEmbedding(ctx context.Context, req openai.EmbeddingReques
 		content = []string{v}
 	case []string:
 		content = v
-	case []interface{}:
+	case []any:
 		content = make([]string, len(v))
 		for i, item := range v {
 			if s, ok := item.(string); ok {
@@ -179,8 +179,8 @@ func (c *Client) CreateEmbedding(ctx context.Context, req openai.EmbeddingReques
 
 	embeddings := make([]openai.Embedding, len(content))
 	for i, text := range content {
-		geminiReq := map[string]interface{}{
-			"content": map[string]interface{}{
+		geminiReq := map[string]any{
+			"content": map[string]any{
 				"parts": []map[string]string{{"text": text}},
 			},
 			"taskType": "SEMANTIC_SIMILARITY",
@@ -258,7 +258,7 @@ func parseRetryAfter(header string) time.Duration {
 	return 0
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
+func (c *Client) doRequest(ctx context.Context, method, path string, body any, result any) error {
 	maxAttempts := c.maxRetries + 1
 	if maxAttempts < 1 {
 		maxAttempts = 1

@@ -56,13 +56,13 @@ func TestToolRequestHelpers(t *testing.T) {
 	if v, _ := req.ObjectSlice("objs"); len(v) != 1 {
 		t.Fatal("obj slice")
 	}
-	if v, _ := req.GetObjectStringProperty("obj", "k"); v != "v" {
+	if v, _ := req.ObjectString("obj", "k"); v != "v" {
 		t.Fatal("obj str prop")
 	}
-	if v, _ := req.GetObjectIntProperty("obj", "n"); v != 3 {
+	if v, _ := req.ObjectInt("obj", "n"); v != 3 {
 		t.Fatal("obj int prop")
 	}
-	if v, _ := req.GetObjectBoolProperty("obj", "t"); !v {
+	if v, _ := req.ObjectBool("obj", "t"); !v {
 		t.Fatal("obj bool prop")
 	}
 }

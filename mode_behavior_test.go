@@ -157,7 +157,7 @@ func TestToolSearchInNormalMode(t *testing.T) {
 
 	// Call tool_search via CallTool (the real path)
 	ctx := context.Background()
-	response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+	response, err := server.CallTool(ctx, "tool_search", map[string]any{
 		"query":       "",
 		"max_results": 100,
 	})
@@ -216,7 +216,7 @@ func TestToolSearchInShowAllMode(t *testing.T) {
 
 	// Call tool_search in show-all mode
 	ctx := WithShowAllTools(context.Background())
-	response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+	response, err := server.CallTool(ctx, "tool_search", map[string]any{
 		"query":       "",
 		"max_results": 100,
 	})

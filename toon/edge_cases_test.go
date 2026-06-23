@@ -29,7 +29,7 @@ func TestErrorCases(t *testing.T) {
 func TestSpecialValues(t *testing.T) {
 	tests := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"NaN", math.NaN()},
 		{"Infinity", math.Inf(1)},
@@ -78,12 +78,12 @@ func TestSpecialValues(t *testing.T) {
 func TestEmptyCollections(t *testing.T) {
 	tests := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
-		{"empty object", map[string]interface{}{}},
-		{"empty array", []interface{}{}},
-		{"object with empty array", map[string]interface{}{"arr": []interface{}{}}},
-		{"object with empty object", map[string]interface{}{"obj": map[string]interface{}{}}},
+		{"empty object", map[string]any{}},
+		{"empty array", []any{}},
+		{"object with empty array", map[string]any{"arr": []any{}}},
+		{"object with empty object", map[string]any{"obj": map[string]any{}}},
 	}
 
 	for _, tt := range tests {
@@ -116,19 +116,19 @@ func TestDelimiters(t *testing.T) {
 		name      string
 		delimiter string
 		toonData  string
-		expected  interface{}
+		expected  any
 	}{
 		{
 			"tab delimiter",
 			"\t",
 			"arr[2\t]: 1\t2",
-			map[string]interface{}{"arr": []interface{}{float64(1), float64(2)}},
+			map[string]any{"arr": []any{float64(1), float64(2)}},
 		},
 		{
 			"pipe delimiter",
 			"|",
 			"arr[2|]: 1|2",
-			map[string]interface{}{"arr": []interface{}{float64(1), float64(2)}},
+			map[string]any{"arr": []any{float64(1), float64(2)}},
 		},
 	}
 
@@ -147,7 +147,7 @@ func TestDelimiters(t *testing.T) {
 }
 
 // Helper function for deep comparison that handles float64 properly
-func deepEqual(a, b interface{}) bool {
+func deepEqual(a, b any) bool {
 	// Simple implementation for test purposes
 	return fmt.Sprintf("%+v", a) == fmt.Sprintf("%+v", b)
 }

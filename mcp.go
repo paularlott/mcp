@@ -42,7 +42,7 @@ var (
 	ErrToolFiltered     = errors.New("tool is filtered out")
 )
 
-func firstPresent(values map[string]interface{}, keys ...string) interface{} {
+func firstPresent(values map[string]any, keys ...string) any {
 	for _, key := range keys {
 		if value, ok := values[key]; ok {
 			return value
@@ -55,8 +55,8 @@ func firstPresent(values map[string]interface{}, keys ...string) interface{} {
 type registeredTool struct {
 	Name         string
 	Description  string
-	Schema       map[string]interface{}
-	OutputSchema map[string]interface{}
+	Schema       map[string]any
+	OutputSchema map[string]any
 	Handler      ToolHandler
 	Visibility   ToolVisibility
 }
@@ -87,6 +87,15 @@ type registeredTool struct {
 //
 // Thread Safety: All methods are safe for concurrent use. The server uses RWMutex
 // for read-heavy operations (ListTools, CallTool) with minimal lock contention.
+//
+// Lifecycle: configure the server (SetInstructions, SetSessionManager,
+// RegisterTool/RegisterTools, RegisterRemoteServer/ReplaceRemoteServers) before
+// you start serving with HandleRequest. Each individual method is safe to call
+// concurrently, but mutating registration while requests are in flight is
+// discouraged: a tools/list or tools/call running concurrently with a
+// RegisterTool may observe the tool set either before or after the change. For
+// per-request or per-user tools, prefer ToolProvider with WithToolProviders
+// rather than mutating the shared server.
 type Server struct {
 	name                 string
 	version              string
@@ -303,7 +312,7 @@ func (s *Server) handleExecuteTool(ctx context.Context, req *ToolRequest) (*Tool
 		args, _ = req.Object("arguments")
 	}
 	if args == nil {
-		args = make(map[string]interface{})
+		args = make(map[string]any)
 	}
 
 	// Use server's CallTool which handles local, remote, and provider tools
@@ -755,11 +764,21 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 	for _, rc := range s.remoteClients {
 		remoteClients = append(remoteClients, rc)
 	}
+	// Capture the names of currently-registered discoverable remote tools so we
+	// can remove stale ones from the internal registry after refreshing.
+	oldDiscoverableRemoteTools := make([]string, 0)
+	for toolName, rc := range s.toolToServer {
+		if rc.visibility == ToolVisibilityDiscoverable {
+			oldDiscoverableRemoteTools = append(oldDiscoverableRemoteTools, toolName)
+		}
+	}
 	s.mu.RUnlock()
 
 	// Phase 2: Build new maps without holding lock (network calls happen here)
 	newNativeToolIndex := make(map[string]MCPTool)
 	newToolToServer := make(map[string]*registeredClient)
+	// Fresh discoverable remote tools to (re)register in the internal registry.
+	freshDiscoverableRemoteTools := make([]MCPTool, 0)
 
 	// Add local native tools to new cache
 	for _, tool := range localNativeTools {
@@ -780,6 +799,11 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		// Force a fresh fetch from the remote so RefreshTools genuinely picks up
+		// tool changes (the client otherwise serves its cached list).
+		if err := regClient.client.RefreshToolCache(ctx); err != nil {
+			continue // Skip failed remote servers
+		}
 		tools, err := regClient.client.ListTools(ctx)
 		if err != nil {
 			continue // Skip failed remote servers
@@ -792,12 +816,16 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 			// Add to lookup for execution
 			newToolToServer[toolName] = regClient
 
-			// Only add native remote tools to the native cache
-			if regClient.visibility == ToolVisibilityNative {
+			switch regClient.visibility {
+			case ToolVisibilityNative:
+				// Add native remote tools to the native cache
 				tool.Name = toolName
 				newNativeToolIndex[toolName] = tool
+			case ToolVisibilityDiscoverable:
+				// Collect discoverable remote tools to refresh in the internal registry
+				tool.Name = toolName
+				freshDiscoverableRemoteTools = append(freshDiscoverableRemoteTools, tool)
 			}
-			// Note: Discoverable remote tools are in the internalRegistry which is not refreshed here
 		}
 	}
 
@@ -813,6 +841,22 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 	s.nativeToolCache = newNativeToolCache
 	s.toolToServer = newToolToServer
 	s.mu.Unlock()
+
+	// Phase 4: Refresh discoverable remote tools in the internal registry.
+	// Remove the previously registered discoverable remote tools, then register
+	// the freshly fetched ones so tool_search reflects the current remote state.
+	// The internal registry manages its own lock independently of s.mu.
+	for _, name := range oldDiscoverableRemoteTools {
+		s.internalRegistry.UnregisterTool(name)
+	}
+	for _, tool := range freshDiscoverableRemoteTools {
+		toolCopy := tool
+		localToolName := toolCopy.Name
+		handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return s.CallTool(ctx, localToolName, req.args)
+		}
+		s.internalRegistry.RegisterMCPTool(&toolCopy, handler)
+	}
 
 	return nil
 }
@@ -877,7 +921,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	var req MCPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendMCPError(w, nil, ErrorCodeParseError, "Parse error", map[string]interface{}{
+		s.sendMCPError(w, nil, ErrorCodeParseError, "Parse error", map[string]any{
 			"details": err.Error(),
 		})
 		return
@@ -885,7 +929,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Validate JSONRPC version
 	if req.JSONRPC != "2.0" {
-		s.sendMCPError(w, req.ID, ErrorCodeInvalidRequest, "Invalid Request", map[string]interface{}{
+		s.sendMCPError(w, req.ID, ErrorCodeInvalidRequest, "Invalid Request", map[string]any{
 			"details": "JSONRPC field must be '2.0'",
 		})
 		return
@@ -954,7 +998,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	case "tools/call":
 		s.handleToolsCall(w, r, &req)
 	default:
-		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]interface{}{
+		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]any{
 			"method": req.Method,
 		})
 	}
@@ -984,7 +1028,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 	protocolVersion := MCPProtocolVersionLatest
 	if params.ProtocolVersion != "" {
 		if !isSupportedProtocolVersion(params.ProtocolVersion) {
-			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Unsupported protocol version", map[string]interface{}{
+			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
 				"requested": params.ProtocolVersion,
 				"supported": supportedProtocolVersions,
 			})
@@ -1028,26 +1072,26 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 }
 
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
-	s.sendMCPResponse(w, req.ID, map[string]interface{}{})
+	s.sendMCPResponse(w, req.ID, map[string]any{})
 }
 
 func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	caps := capabilities{
-		Tools: map[string]interface{}{},
+		Tools: map[string]any{},
 	}
 
 	// Add version-specific capabilities
 	switch protocolVersion {
 	case "2024-11-05":
 		// Basic capabilities for 2024-11-05
-		caps.Tools = map[string]interface{}{}
-		caps.Resources = map[string]interface{}{}
+		caps.Tools = map[string]any{}
+		caps.Resources = map[string]any{}
 	default: // 2025-03-26, 2025-06-18 and use latest if unknown
 		// Default to latest
-		caps.Tools = map[string]interface{}{
+		caps.Tools = map[string]any{
 			"listChanged": false,
 		}
-		caps.Resources = map[string]interface{}{
+		caps.Resources = map[string]any{
 			"subscribe":   false,
 			"listChanged": false,
 		}
@@ -1056,37 +1100,20 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	return caps
 }
 
-// ListTools returns all native tools including remote ones (direct API).
-// If discoverable tools are registered, discovery tools (tool_search, execute_tool) are also included.
-// The returned slice is a copy, safe for concurrent use and modification.
+// ListTools returns the server's native tools plus discovery tools when
+// discoverable tools are registered.
 //
-// Performance Note: This method allocates and copies the tool cache on every call.
-// For high-frequency polling scenarios, consider caching the result on the caller side.
-// The tool list only changes when RegisterTool, RegisterRemoteServer, or RefreshTools is called.
+// Deprecated: Use ListToolsWithContext instead. ListTools cannot see
+// request-scoped ToolProviders, so it omits any per-user or per-request tools
+// attached via WithToolProviders. It is retained as a thin wrapper for backwards
+// compatibility and may be removed in a future version.
 func (s *Server) ListTools() []MCPTool {
-	s.mu.RLock()
-	hasDiscoverable := s.hasDiscoverableTools
-	result := make([]MCPTool, len(s.nativeToolCache))
-	copy(result, s.nativeToolCache)
-	s.mu.RUnlock()
-
-	// If we have static discoverable tools, add discovery tools
-	if hasDiscoverable {
-		discoveryTools := s.getDiscoveryTools()
-		result = append(result, discoveryTools...)
-	}
-
-	// Sort for consistent ordering
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
-
-	return result
+	return s.ListToolsWithContext(context.Background())
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	tools := s.ListToolsWithContext(r.Context())
-	result := map[string]interface{}{
+	result := map[string]any{
 		"tools": tools,
 	}
 	s.sendMCPResponse(w, req.ID, result)
@@ -1168,7 +1195,7 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 
 // CallTool executes a tool directly with namespace support (direct API)
 // It checks discovery tools first, then local tools, then remote tools, then providers from context.
-func (s *Server) CallTool(ctx context.Context, name string, args map[string]interface{}) (*ToolResponse, error) {
+func (s *Server) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
 	// Handle discovery tools (tool_search, execute_tool) dynamically
 	if name == ToolSearchName {
 		return s.handleToolSearch(ctx, NewToolRequest(args))
@@ -1250,7 +1277,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 	})
 }
 
-func (s *Server) sendMCPResponse(w http.ResponseWriter, id interface{}, result interface{}) {
+func (s *Server) sendMCPResponse(w http.ResponseWriter, id any, result any) {
 	response := MCPResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -1263,7 +1290,7 @@ func (s *Server) sendMCPResponse(w http.ResponseWriter, id interface{}, result i
 	json.NewEncoder(w).Encode(response)
 }
 
-func (s *Server) parseParams(req *MCPRequest, target interface{}) error {
+func (s *Server) parseParams(req *MCPRequest, target any) error {
 	if req.Params == nil {
 		return nil
 	}
@@ -1274,7 +1301,7 @@ func (s *Server) parseParams(req *MCPRequest, target interface{}) error {
 	return json.Unmarshal(paramsBytes, target)
 }
 
-func (s *Server) sendMCPError(w http.ResponseWriter, id interface{}, code int, message string, data interface{}) {
+func (s *Server) sendMCPError(w http.ResponseWriter, id any, code int, message string, data any) {
 	response := MCPResponse{
 		JSONRPC: "2.0",
 		ID:      id,

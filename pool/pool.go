@@ -175,9 +175,9 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 	return &DefaultPool{
 		httpClient: &http.Client{
 			Transport: transport,
-		// NOTE: Don't set Timeout here - it applies to entire request including
-		// body reading, which breaks streaming. Use context timeouts for overall
-		// request control instead.
+			// NOTE: Don't set Timeout here - it applies to entire request including
+			// body reading, which breaks streaming. Use context timeouts for overall
+			// request control instead.
 		},
 	}
 }

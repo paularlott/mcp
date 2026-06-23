@@ -7,11 +7,11 @@ import (
 
 func TestCorrectnessIssues(t *testing.T) {
 	t.Run("delimiter_specific_quoting", func(t *testing.T) {
-		data := map[string]interface{}{
-			"pipe_value": "has|pipe",
+		data := map[string]any{
+			"pipe_value":  "has|pipe",
 			"comma_value": "has,comma",
 		}
-		
+
 		// With comma delimiter (default), pipe should not be quoted
 		result1, err := EncodeWithOptions(data, &EncodeOptions{Delimiter: ","})
 		if err != nil {
@@ -23,7 +23,7 @@ func TestCorrectnessIssues(t *testing.T) {
 		if !strings.Contains(result1, `comma_value: "has,comma"`) {
 			t.Error("Comma should be quoted with comma delimiter")
 		}
-		
+
 		// With pipe delimiter, comma should not be quoted
 		result2, err := EncodeWithOptions(data, &EncodeOptions{Delimiter: "|"})
 		if err != nil {
@@ -38,16 +38,16 @@ func TestCorrectnessIssues(t *testing.T) {
 	})
 
 	t.Run("canonical_number_formatting", func(t *testing.T) {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"large_number": 1e15,
 			"small_number": 1e-10,
 		}
-		
+
 		result, err := Encode(data)
 		if err != nil {
 			t.Fatal(err)
 		}
-		
+
 		// Should not contain scientific notation (e followed by digits)
 		if strings.Contains(result, "e+") || strings.Contains(result, "e-") || strings.Contains(result, "E+") || strings.Contains(result, "E-") {
 			t.Errorf("Numbers should not use scientific notation: %s", result)
@@ -55,16 +55,16 @@ func TestCorrectnessIssues(t *testing.T) {
 	})
 
 	t.Run("identifier_validation", func(t *testing.T) {
-		data := map[string]interface{}{
+		data := map[string]any{
 			"valid_key":     "value1",
 			"key.with.dots": "value2",
 		}
-		
+
 		result, err := Encode(data)
 		if err != nil {
 			t.Fatal(err)
 		}
-		
+
 		// Keys with dots should be quoted
 		if !strings.Contains(result, `"key.with.dots"`) {
 			t.Error("Keys with dots should be quoted")

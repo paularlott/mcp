@@ -6,11 +6,11 @@ import (
 )
 
 func TestEncodeOptions(t *testing.T) {
-	data := map[string]interface{}{
-		"items": []interface{}{"a", "b", "c"},
-		"users": []interface{}{
-			map[string]interface{}{"id": 1, "name": "Alice"},
-			map[string]interface{}{"id": 2, "name": "Bob"},
+	data := map[string]any{
+		"items": []any{"a", "b", "c"},
+		"users": []any{
+			map[string]any{"id": 1, "name": "Alice"},
+			map[string]any{"id": 2, "name": "Bob"},
 		},
 	}
 
@@ -19,7 +19,7 @@ func TestEncodeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		
+
 		lines := strings.Split(result, "\n")
 		// Check that nested content uses 4-space indentation
 		found := false
@@ -39,7 +39,7 @@ func TestEncodeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		
+
 		if !strings.Contains(result, "a|b|c") {
 			t.Error("Expected pipe delimiter in primitive array")
 		}
@@ -65,10 +65,10 @@ func TestDecodeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		
+
 		// Should decode successfully in non-strict mode
-		obj := result.(map[string]interface{})
-		items := obj["items"].([]interface{})
+		obj := result.(map[string]any)
+		items := obj["items"].([]any)
 		if len(items) != 2 {
 			t.Errorf("Expected 2 items, got %d", len(items))
 		}

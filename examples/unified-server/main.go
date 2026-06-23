@@ -30,7 +30,7 @@ func main() {
 	server.RegisterRemoteServer(client)
 
 	// List all tools (local and remote)
-	allTools := server.ListTools()
+	allTools := server.ListToolsWithContext(context.Background())
 	fmt.Printf("Server has %d tools:\n", len(allTools))
 	for _, tool := range allTools {
 		fmt.Printf("- %s: %s\n", tool.Name, tool.Description)
@@ -40,7 +40,7 @@ func main() {
 	ctx := context.Background()
 
 	// Call local tool (no namespace needed)
-	response, err := server.CallTool(ctx, "local-greet", map[string]interface{}{
+	response, err := server.CallTool(ctx, "local-greet", map[string]any{
 		"name": "Server User",
 	})
 	if err != nil {
@@ -50,7 +50,7 @@ func main() {
 	}
 
 	// Call remote tool with namespace
-	response, err = server.CallTool(ctx, "ai/generate-text", map[string]interface{}{
+	response, err = server.CallTool(ctx, "ai/generate-text", map[string]any{
 		"prompt": "Hello world",
 	})
 	if err != nil {

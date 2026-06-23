@@ -28,7 +28,7 @@ func main() {
 	}
 
 	// Call a tool
-	args := map[string]interface{}{
+	args := map[string]any{
 		"name":     "World",
 		"greeting": "Hello",
 	}

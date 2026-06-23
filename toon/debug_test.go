@@ -20,7 +20,7 @@ func TestNameFieldDebug(t *testing.T) {
 	}
 	t.Logf("JSON: %s", string(jsonBytes))
 
-	var normalized interface{}
+	var normalized any
 	err = json.Unmarshal(jsonBytes, &normalized)
 	if err != nil {
 		t.Fatalf("JSON unmarshal failed: %v", err)
@@ -49,7 +49,7 @@ func TestNameFieldDebug(t *testing.T) {
 	t.Logf("TOON Array: %s", encodedArray)
 
 	// Test wrapped array
-	wrapped := map[string]interface{}{"tools": results}
+	wrapped := map[string]any{"tools": results}
 	encodedWrapped, err := Encode(wrapped)
 	if err != nil {
 		t.Fatalf("TOON encode wrapped failed: %v", err)

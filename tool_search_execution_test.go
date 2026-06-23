@@ -44,7 +44,7 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("CallTool_tool_search_empty_query_returns_all", func(t *testing.T) {
 		ctx := context.Background()
-		response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+		response, err := server.CallTool(ctx, "tool_search", map[string]any{
 			"query":       "",
 			"max_results": 100,
 		})
@@ -83,7 +83,7 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("CallTool_tool_search_by_keyword_finds_native", func(t *testing.T) {
 		ctx := context.Background()
-		response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+		response, err := server.CallTool(ctx, "tool_search", map[string]any{
 			"query": "people",
 		})
 		if err != nil {
@@ -121,7 +121,7 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("CallTool_tool_search_by_topic_finds_native", func(t *testing.T) {
 		ctx := context.Background()
-		response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+		response, err := server.CallTool(ctx, "tool_search", map[string]any{
 			"query": "knot",
 		})
 		if err != nil {
@@ -151,7 +151,7 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("direct_CallTool_can_call_discoverable_tools", func(t *testing.T) {
 		ctx := context.Background()
-		response, err := server.CallTool(ctx, "people_kb", map[string]interface{}{
+		response, err := server.CallTool(ctx, "people_kb", map[string]any{
 			"message": "who is paul?",
 		})
 		if err != nil {
@@ -165,9 +165,9 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("execute_tool_can_call_native_tools", func(t *testing.T) {
 		ctx := context.Background()
-		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
+		response, err := server.CallTool(ctx, "execute_tool", map[string]any{
 			"name": "general_knowledge",
-			"parameters": map[string]interface{}{
+			"parameters": map[string]any{
 				"message": "who is paul?",
 			},
 		})
@@ -182,9 +182,9 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("execute_tool_can_call_discoverable_tools", func(t *testing.T) {
 		ctx := context.Background()
-		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
+		response, err := server.CallTool(ctx, "execute_tool", map[string]any{
 			"name": "people_kb",
-			"parameters": map[string]interface{}{
+			"parameters": map[string]any{
 				"message": "who is paul?",
 			},
 		})
@@ -200,9 +200,9 @@ func TestNativeToolsInToolSearch(t *testing.T) {
 	t.Run("execute_tool_accepts_arguments_as_fallback_for_params", func(t *testing.T) {
 		ctx := context.Background()
 		// Backward compatibility: "arguments" should still work
-		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
+		response, err := server.CallTool(ctx, "execute_tool", map[string]any{
 			"name": "people_kb",
-			"arguments": map[string]interface{}{
+			"arguments": map[string]any{
 				"message": "who is paul?",
 			},
 		})
@@ -243,8 +243,8 @@ func TestNativeToolsInToolSearchHTTP(t *testing.T) {
 	defer ts.Close()
 
 	// Helper to make MCP JSON-RPC calls
-	callMCP := func(method string, params interface{}) (json.RawMessage, error) {
-		body := map[string]interface{}{
+	callMCP := func(method string, params any) (json.RawMessage, error) {
+		body := map[string]any{
 			"jsonrpc": "2.0",
 			"id":      1,
 			"method":  method,
@@ -275,9 +275,9 @@ func TestNativeToolsInToolSearchHTTP(t *testing.T) {
 	}
 
 	t.Run("HTTP_tool_search_returns_native_tools", func(t *testing.T) {
-		result, err := callMCP("tools/call", map[string]interface{}{
+		result, err := callMCP("tools/call", map[string]any{
 			"name": "tool_search",
-			"arguments": map[string]interface{}{
+			"arguments": map[string]any{
 				"query":       "people",
 				"max_results": 10,
 			},
@@ -325,11 +325,11 @@ func TestNativeToolsInToolSearchHTTP(t *testing.T) {
 	})
 
 	t.Run("HTTP_execute_tool_calls_native", func(t *testing.T) {
-		result, err := callMCP("tools/call", map[string]interface{}{
+		result, err := callMCP("tools/call", map[string]any{
 			"name": "execute_tool",
-			"arguments": map[string]interface{}{
+			"arguments": map[string]any{
 				"name": "general_knowledge",
-				"parameters": map[string]interface{}{
+				"parameters": map[string]any{
 					"message": "who is paul?",
 				},
 			},
@@ -353,9 +353,9 @@ func TestNativeToolsInToolSearchHTTP(t *testing.T) {
 	})
 
 	t.Run("HTTP_direct_call_can_call_discoverable", func(t *testing.T) {
-		result, err := callMCP("tools/call", map[string]interface{}{
+		result, err := callMCP("tools/call", map[string]any{
 			"name": "people_kb",
-			"arguments": map[string]interface{}{
+			"arguments": map[string]any{
 				"message": "who is paul?",
 			},
 		})
@@ -387,7 +387,7 @@ func (p *mockProvider) GetTools(ctx context.Context) ([]MCPTool, error) {
 	return p.tools, nil
 }
 
-func (p *mockProvider) ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+func (p *mockProvider) ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
 	for _, tool := range p.tools {
 		if tool.Name == name {
 			msg, _ := params["message"].(string)
@@ -417,10 +417,10 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 			{
 				Name:        "general_knowledge",
 				Description: "Use this agent to fetch data about people, knot and scriptling",
-				InputSchema: map[string]interface{}{
+				InputSchema: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"message": map[string]interface{}{"type": "string"},
+					"properties": map[string]any{
+						"message": map[string]any{"type": "string"},
 					},
 				},
 				Visibility: ToolVisibilityNative,
@@ -429,10 +429,10 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 			{
 				Name:        "crm_search",
 				Description: "Search the CRM for records",
-				InputSchema: map[string]interface{}{
+				InputSchema: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"query": map[string]interface{}{"type": "string"},
+					"properties": map[string]any{
+						"query": map[string]any{"type": "string"},
 					},
 				},
 				Visibility: ToolVisibilityNative,
@@ -441,10 +441,10 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 			{
 				Name:        "people_kb",
 				Description: "Specialist knowledge base about people and contacts",
-				InputSchema: map[string]interface{}{
+				InputSchema: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"message": map[string]interface{}{"type": "string"},
+					"properties": map[string]any{
+						"message": map[string]any{"type": "string"},
 					},
 				},
 				Visibility: ToolVisibilityDiscoverable,
@@ -455,7 +455,7 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("provider_native_tools_found_by_tool_search", func(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
-		response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+		response, err := server.CallTool(ctx, "tool_search", map[string]any{
 			"query":       "",
 			"max_results": 100,
 		})
@@ -493,7 +493,7 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("provider_native_tools_found_by_keyword_search", func(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
-		response, err := server.CallTool(ctx, "tool_search", map[string]interface{}{
+		response, err := server.CallTool(ctx, "tool_search", map[string]any{
 			"query": "people",
 		})
 		if err != nil {
@@ -531,9 +531,9 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("execute_tool_calls_provider_native_tool", func(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
-		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
+		response, err := server.CallTool(ctx, "execute_tool", map[string]any{
 			"name": "general_knowledge",
-			"parameters": map[string]interface{}{
+			"parameters": map[string]any{
 				"message": "who is paul?",
 			},
 		})
@@ -549,9 +549,9 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("execute_tool_calls_provider_discoverable_tool", func(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
-		response, err := server.CallTool(ctx, "execute_tool", map[string]interface{}{
+		response, err := server.CallTool(ctx, "execute_tool", map[string]any{
 			"name": "people_kb",
-			"parameters": map[string]interface{}{
+			"parameters": map[string]any{
 				"message": "who is cindy?",
 			},
 		})
@@ -567,7 +567,7 @@ func TestProviderNativeToolsInToolSearch(t *testing.T) {
 
 	t.Run("direct_CallTool_calls_provider_discoverable_tool", func(t *testing.T) {
 		ctx := WithToolProviders(context.Background(), provider)
-		response, err := server.CallTool(ctx, "people_kb", map[string]interface{}{
+		response, err := server.CallTool(ctx, "people_kb", map[string]any{
 			"message": "who is paul?",
 		})
 		if err != nil {

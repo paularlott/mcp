@@ -202,7 +202,7 @@ func TestBuildMCPTool_SchemaOutput(t *testing.T) {
 	}
 
 	schema := tool.BuildSchema()
-	props, ok := schema["properties"].(map[string]interface{})
+	props, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("schema has no properties map: %+v", schema)
 	}
@@ -217,7 +217,7 @@ func TestBuildMCPTool_SchemaOutput(t *testing.T) {
 		"b_boolean": "boolean",
 	}
 	for name, wantType := range primitives {
-		prop, ok := props[name].(map[string]interface{})
+		prop, ok := props[name].(map[string]any)
 		if !ok {
 			t.Errorf("missing property %q", name)
 			continue
@@ -238,7 +238,7 @@ func TestBuildMCPTool_SchemaOutput(t *testing.T) {
 		"ab_boolean": "boolean",
 	}
 	for name, wantItemType := range arrays {
-		prop, ok := props[name].(map[string]interface{})
+		prop, ok := props[name].(map[string]any)
 		if !ok {
 			t.Errorf("missing array property %q", name)
 			continue
@@ -247,7 +247,7 @@ func TestBuildMCPTool_SchemaOutput(t *testing.T) {
 		if gotType != "array" {
 			t.Errorf("array property %q outer type = %q, want %q", name, gotType, "array")
 		}
-		items, ok := prop["items"].(map[string]interface{})
+		items, ok := prop["items"].(map[string]any)
 		if !ok {
 			t.Errorf("array property %q has no items map: %+v", name, prop)
 			continue

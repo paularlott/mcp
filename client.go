@@ -541,11 +541,11 @@ func parseToolSearchResponse(resp *ToolResponse) ([]map[string]any, error) {
 
 // parseToolsResult parses the tools list result using type assertions where possible
 // to avoid double JSON serialization. Falls back to marshal/unmarshal if needed.
-func parseToolsResult(result interface{}) ([]MCPTool, error) {
+func parseToolsResult(result any) ([]MCPTool, error) {
 	// Try direct type assertion first
 	if resultMap, ok := result.(map[string]any); ok {
 		if toolsRaw, ok := resultMap["tools"]; ok {
-			if toolsSlice, ok := toolsRaw.([]interface{}); ok {
+			if toolsSlice, ok := toolsRaw.([]any); ok {
 				tools := make([]MCPTool, 0, len(toolsSlice))
 				for _, toolRaw := range toolsSlice {
 					if toolMap, ok := toolRaw.(map[string]any); ok {

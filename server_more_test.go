@@ -165,7 +165,7 @@ func TestRegisterTools_BatchRegistration(t *testing.T) {
 		),
 	)
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 3 {
 		t.Fatalf("Expected 3 tools, got %d", len(tools))
 	}
@@ -199,7 +199,7 @@ func TestRegisterTool_MaintainsSortedOrder(t *testing.T) {
 		return NewToolResponseText("m"), nil
 	})
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 3 {
 		t.Fatalf("Expected 3 tools, got %d", len(tools))
 	}
@@ -223,7 +223,7 @@ func TestRegisterTool_ReplacesExistingTool(t *testing.T) {
 		return NewToolResponseText("updated"), nil
 	})
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 1 {
 		t.Fatalf("Expected 1 tool after replacement, got %d", len(tools))
 	}
@@ -252,8 +252,8 @@ func TestUnregisterTool_NativeTool(t *testing.T) {
 		return NewToolResponseText("g"), nil
 	})
 
-	if len(s.ListTools()) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(s.ListTools()))
+	if len(s.ListToolsWithContext(context.Background())) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(s.ListToolsWithContext(context.Background())))
 	}
 
 	removed := s.UnregisterTool("beta")
@@ -261,7 +261,7 @@ func TestUnregisterTool_NativeTool(t *testing.T) {
 		t.Fatal("expected UnregisterTool to return true")
 	}
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 2 {
 		t.Fatalf("expected 2 tools after unregister, got %d", len(tools))
 	}
@@ -295,7 +295,7 @@ func TestUnregisterTool_DiscoverableTool(t *testing.T) {
 		return NewToolResponseText("hidden"), nil
 	})
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 3 {
 		t.Fatalf("expected 3 tools (native + 2 discovery tools), got %d: %v", len(tools), tools)
 	}
@@ -305,7 +305,7 @@ func TestUnregisterTool_DiscoverableTool(t *testing.T) {
 		t.Fatal("expected UnregisterTool to return true for discoverable tool")
 	}
 
-	tools = s.ListTools()
+	tools = s.ListToolsWithContext(context.Background())
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 native tool after unregister (no more discovery tools), got %d: %v", len(tools), tools)
 	}
@@ -336,7 +336,7 @@ func TestUnregisterTool_PreservesRemoteServerTools(t *testing.T) {
 		t.Fatalf("register remote: %v", err)
 	}
 
-	tools := host.ListTools()
+	tools := host.ListToolsWithContext(context.Background())
 	if len(tools) != 3 {
 		t.Fatalf("expected 3 tools (2 local + 1 remote), got %d: %v", len(tools), tools)
 	}
@@ -346,7 +346,7 @@ func TestUnregisterTool_PreservesRemoteServerTools(t *testing.T) {
 		t.Fatal("expected UnregisterTool to return true")
 	}
 
-	tools = host.ListTools()
+	tools = host.ListToolsWithContext(context.Background())
 	if len(tools) != 2 {
 		names := make([]string, len(tools))
 		for i, t := range tools {
@@ -397,7 +397,7 @@ func TestUnregisterTool_MixedTypes(t *testing.T) {
 		t.Fatalf("register remote disc: %v", err)
 	}
 
-	tools := host.ListTools()
+	tools := host.ListToolsWithContext(context.Background())
 	names := toolNames(tools)
 	if len(tools) != 4 {
 		t.Fatalf("expected 4 visible tools (1 local native + 1 remote native + 2 discovery tools), got %d: %v", len(tools), names)
@@ -419,7 +419,7 @@ func TestUnregisterTool_MixedTypes(t *testing.T) {
 	if !host.UnregisterTool("local_native") {
 		t.Fatal("expected true unregistering local_native")
 	}
-	tools = host.ListTools()
+	tools = host.ListToolsWithContext(context.Background())
 	names = toolNames(tools)
 	assertHas(t, names, "rn__r_native")
 	for _, n := range names {
@@ -431,7 +431,7 @@ func TestUnregisterTool_MixedTypes(t *testing.T) {
 	if !host.UnregisterTool("local_disc") {
 		t.Fatal("expected true unregistering local_disc")
 	}
-	tools = host.ListTools()
+	tools = host.ListToolsWithContext(context.Background())
 	names = toolNames(tools)
 	assertHas(t, names, "rn__r_native")
 	assertHas(t, names, "tool_search")
@@ -467,7 +467,7 @@ func TestUnregisterRemoteServer_RemovesNativeTools(t *testing.T) {
 		t.Fatalf("register remote: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	if len(names) != 3 {
 		t.Fatalf("expected 3 tools, got %v", names)
 	}
@@ -477,7 +477,7 @@ func TestUnregisterRemoteServer_RemovesNativeTools(t *testing.T) {
 
 	host.UnregisterRemoteServer(client)
 
-	names = toolNames(host.ListTools())
+	names = toolNames(host.ListToolsWithContext(context.Background()))
 	if len(names) != 1 {
 		t.Fatalf("expected 1 tool after unregister, got %v", names)
 	}
@@ -502,14 +502,14 @@ func TestUnregisterRemoteServer_RemovesDiscoveryTools(t *testing.T) {
 		t.Fatalf("register remote disc: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolExists(t, names, "local")
 	assertToolExists(t, names, "tool_search")
 	assertToolExists(t, names, "execute_tool")
 
 	host.UnregisterRemoteServer(client)
 
-	names = toolNames(host.ListTools())
+	names = toolNames(host.ListToolsWithContext(context.Background()))
 	if len(names) != 1 {
 		t.Fatalf("expected only local tool after unregister, got %v", names)
 	}
@@ -558,7 +558,7 @@ func TestRemoteSearch_ShowsDiscoveryTools(t *testing.T) {
 		t.Fatalf("register remote with search: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolExists(t, names, "local")
 	assertToolExists(t, names, "ns__rt")
 	assertToolExists(t, names, "tool_search")
@@ -583,11 +583,11 @@ func TestRemoteSearch_DiscoveryToolsGoneAfterUnregister(t *testing.T) {
 		t.Fatalf("register remote with search: %v", err)
 	}
 
-	assertToolExists(t, toolNames(host.ListTools()), "tool_search")
+	assertToolExists(t, toolNames(host.ListToolsWithContext(context.Background())), "tool_search")
 
 	host.UnregisterRemoteServer(client)
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	if len(names) != 1 {
 		t.Fatalf("expected only local tool, got %v", names)
 	}
@@ -613,13 +613,13 @@ func TestReplaceRemoteServers_RemovesOldNativeTools(t *testing.T) {
 		t.Fatalf("register: %v", err)
 	}
 
-	assertToolExists(t, toolNames(host.ListTools()), "ns__old_tool")
+	assertToolExists(t, toolNames(host.ListToolsWithContext(context.Background())), "ns__old_tool")
 
 	if err := host.ReplaceRemoteServers(nil); err != nil {
 		t.Fatalf("replace with empty: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	if len(names) != 1 {
 		t.Fatalf("expected only local tool after replace with empty, got %v", names)
 	}
@@ -644,13 +644,13 @@ func TestReplaceRemoteServers_RemovesOldDiscoverableTools(t *testing.T) {
 		t.Fatalf("register disc: %v", err)
 	}
 
-	assertToolExists(t, toolNames(host.ListTools()), "tool_search")
+	assertToolExists(t, toolNames(host.ListToolsWithContext(context.Background())), "tool_search")
 
 	if err := host.ReplaceRemoteServers(nil); err != nil {
 		t.Fatalf("replace with empty: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolMissing(t, names, "tool_search")
 	assertToolMissing(t, names, "execute_tool")
 	assertToolExists(t, names, "local")
@@ -674,13 +674,13 @@ func TestReplaceRemoteServers_RemovesOldRemoteSearch(t *testing.T) {
 		t.Fatalf("register with search: %v", err)
 	}
 
-	assertToolExists(t, toolNames(host.ListTools()), "tool_search")
+	assertToolExists(t, toolNames(host.ListToolsWithContext(context.Background())), "tool_search")
 
 	if err := host.ReplaceRemoteServers(nil); err != nil {
 		t.Fatalf("replace with empty: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolMissing(t, names, "tool_search")
 	assertToolMissing(t, names, "execute_tool")
 }
@@ -708,7 +708,7 @@ func TestReplaceRemoteServers_ReplacesWithNewServers(t *testing.T) {
 	if err := host.RegisterRemoteServer(NewClient(tsOld.URL, nil, "old")); err != nil {
 		t.Fatalf("register old: %v", err)
 	}
-	assertToolExists(t, toolNames(host.ListTools()), "old__old_tool")
+	assertToolExists(t, toolNames(host.ListToolsWithContext(context.Background())), "old__old_tool")
 
 	if err := host.ReplaceRemoteServers([]RemoteServerEntry{
 		{Client: NewClient(tsNew.URL, nil, "new"), Visibility: ToolVisibilityNative},
@@ -716,7 +716,7 @@ func TestReplaceRemoteServers_ReplacesWithNewServers(t *testing.T) {
 		t.Fatalf("replace: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolMissing(t, names, "old__old_tool")
 	assertToolExists(t, names, "new__new_tool")
 	assertToolExists(t, names, "local")
@@ -741,13 +741,13 @@ func TestVisibilityTransition_NativeToDiscoverablePreservesRemoteTools(t *testin
 		t.Fatalf("register remote: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolExists(t, names, "my_tool")
 	assertToolExists(t, names, "ns__rt")
 
 	host.RegisterTool(NewTool("my_tool", "Now discoverable").Discoverable("kw"), handler)
 
-	names = toolNames(host.ListTools())
+	names = toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolMissing(t, names, "my_tool")
 	assertToolExists(t, names, "ns__rt")
 	assertToolExists(t, names, "tool_search")
@@ -755,7 +755,7 @@ func TestVisibilityTransition_NativeToDiscoverablePreservesRemoteTools(t *testin
 
 	host.RegisterTool(NewTool("my_tool", "Back to native"), handler)
 
-	names = toolNames(host.ListTools())
+	names = toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolExists(t, names, "my_tool")
 	assertToolExists(t, names, "ns__rt")
 	assertToolMissing(t, names, "tool_search")
@@ -780,13 +780,13 @@ func TestVisibilityTransition_DiscoverableToNativePreservesRemoteDiscoverable(t 
 		t.Fatalf("register remote disc: %v", err)
 	}
 
-	names := toolNames(host.ListTools())
+	names := toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolMissing(t, names, "my_tool")
 	assertToolExists(t, names, "tool_search")
 
 	host.RegisterTool(NewTool("my_tool", "Now native"), handler)
 
-	names = toolNames(host.ListTools())
+	names = toolNames(host.ListToolsWithContext(context.Background()))
 	assertToolExists(t, names, "my_tool")
 	assertToolExists(t, names, "tool_search")
 	assertToolExists(t, names, "execute_tool")
@@ -800,13 +800,13 @@ func TestRegisterTool_VisibilityTransition(t *testing.T) {
 	}
 
 	s.RegisterTool(NewTool("my_tool", "Native tool"), handler)
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 1 || tools[0].Name != "my_tool" {
 		t.Fatalf("expected 1 native tool, got %v", toolNames(tools))
 	}
 
 	s.RegisterTool(NewTool("my_tool", "Now discoverable").Discoverable("secret"), handler)
-	tools = s.ListTools()
+	tools = s.ListToolsWithContext(context.Background())
 	for _, tl := range tools {
 		if tl.Name == "my_tool" {
 			t.Fatal("my_tool should NOT appear in ListTools after becoming discoverable")
@@ -822,7 +822,7 @@ func TestRegisterTool_VisibilityTransition(t *testing.T) {
 	}
 
 	s.RegisterTool(NewTool("my_tool", "Back to native"), handler)
-	tools = s.ListTools()
+	tools = s.ListToolsWithContext(context.Background())
 	if len(tools) != 1 || tools[0].Name != "my_tool" {
 		t.Fatalf("expected my_tool back in ListTools, got %v", toolNames(tools))
 	}
@@ -852,7 +852,7 @@ func TestServer_ConcurrentToolRegistration(t *testing.T) {
 
 	wg.Wait()
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 100 {
 		t.Fatalf("Expected 100 tools, got %d", len(tools))
 	}
@@ -887,7 +887,7 @@ func TestServer_ConcurrentListAndCall(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tools := s.ListTools()
+			tools := s.ListToolsWithContext(context.Background())
 			if len(tools) < 10 {
 				errChan <- fmt.Errorf("expected at least 10 tools, got %d", len(tools))
 			}
@@ -931,7 +931,7 @@ func TestServer_ConcurrentRegistrationAndRead(t *testing.T) {
 					return
 				default:
 					// Should never panic or return inconsistent results
-					tools := s.ListTools()
+					tools := s.ListToolsWithContext(context.Background())
 					_ = tools
 				}
 			}
@@ -959,7 +959,7 @@ func TestServer_ConcurrentRegistrationAndRead(t *testing.T) {
 	wg.Wait()
 
 	// Verify final state
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 50 {
 		t.Fatalf("Expected 50 tools, got %d", len(tools))
 	}

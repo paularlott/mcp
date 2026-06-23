@@ -16,7 +16,7 @@ func TestDuplicateToolRegistration_ReplacesCacheAndHandler(t *testing.T) {
 		return NewToolResponseText("2"), nil
 	})
 
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	count := 0
 	for _, tl := range tools {
 		if tl.Name == "dup" {

@@ -17,7 +17,7 @@ func (p *mockProviderForDiscovery) GetTools(ctx context.Context) ([]MCPTool, err
 	return p.tools, nil
 }
 
-func (p *mockProviderForDiscovery) ExecuteTool(ctx context.Context, name string, params map[string]interface{}) (interface{}, error) {
+func (p *mockProviderForDiscovery) ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
 	return nil, ErrUnknownTool
 }
 
@@ -120,4 +120,3 @@ func TestShowAllModeWithProvidersAttached(t *testing.T) {
 		t.Errorf("Expected 3 tools in show-all mode, got %d", len(listResp.Result.Tools))
 	}
 }
-
