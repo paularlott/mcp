@@ -86,6 +86,14 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 		return s.stdioResourcesRead(ctx, params)
 	})
 
+	srv.Handle("prompts/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"prompts": s.ListPrompts(ctx)}, nil
+	})
+
+	srv.Handle("prompts/get", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return s.stdioPromptsGet(ctx, params)
+	})
+
 	return srv
 }
 
@@ -166,6 +174,30 @@ func (s *Server) stdioResourcesRead(ctx context.Context, raw json.RawMessage) (a
 			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
 		}
 		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Resource read failed: %v", err), nil)
+	}
+	return resp, nil
+}
+
+func (s *Server) stdioPromptsGet(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params promptGetParams
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Invalid params", nil)
+		}
+	}
+	if params.Name == "" {
+		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "name parameter is required", nil)
+	}
+
+	resp, err := s.GetPrompt(ctx, params.Name, params.Arguments)
+	if err != nil {
+		if err == ErrUnknownPrompt {
+			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Prompt not found", nil)
+		}
+		if toolErr, ok := err.(*ToolError); ok {
+			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
+		}
+		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Prompt render failed: %v", err), nil)
 	}
 	return resp, nil
 }

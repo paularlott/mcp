@@ -41,6 +41,7 @@ var (
 	ErrUnknownParameter = errors.New("parameter not found")
 	ErrToolFiltered     = errors.New("tool is filtered out")
 	ErrUnknownResource  = errors.New("unknown resource")
+	ErrUnknownPrompt    = errors.New("unknown prompt")
 )
 
 func firstPresent(values map[string]any, keys ...string) any {
@@ -111,6 +112,7 @@ type Server struct {
 	hasDiscoverableTools bool                           // Track if any discoverable tools exist (local or remote)
 	resources            map[string]*registeredResource // Static resources keyed by URI
 	resourceTemplates    []*registeredResourceTemplate  // Parameterized resource templates
+	prompts              map[string]*registeredPrompt   // Static prompts keyed by name
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
@@ -150,6 +152,7 @@ func NewServer(name, version string) *Server {
 		internalRegistry:  newInternalRegistry(),
 		resources:         make(map[string]*registeredResource),
 		resourceTemplates: make([]*registeredResourceTemplate, 0),
+		prompts:           make(map[string]*registeredPrompt),
 	}
 }
 
@@ -1008,6 +1011,10 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleResourcesRead(w, r, &req)
 	case "resources/templates/list":
 		s.handleResourcesTemplatesList(w, r, &req)
+	case "prompts/list":
+		s.handlePromptsList(w, r, &req)
+	case "prompts/get":
+		s.handlePromptsGet(w, r, &req)
 	default:
 		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]any{
 			"method": req.Method,
@@ -1097,6 +1104,7 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 		// Basic capabilities for 2024-11-05
 		caps.Tools = map[string]any{}
 		caps.Resources = map[string]any{}
+		caps.Prompts = map[string]any{}
 	default: // 2025-03-26, 2025-06-18 and use latest if unknown
 		// Default to latest
 		caps.Tools = map[string]any{
@@ -1104,6 +1112,9 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 		}
 		caps.Resources = map[string]any{
 			"subscribe":   false,
+			"listChanged": false,
+		}
+		caps.Prompts = map[string]any{
 			"listChanged": false,
 		}
 	}

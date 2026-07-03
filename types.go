@@ -42,6 +42,7 @@ type initializeResult struct {
 type capabilities struct {
 	Tools     map[string]any `json:"tools"`
 	Resources map[string]any `json:"resources,omitempty"`
+	Prompts   map[string]any `json:"prompts,omitempty"`
 }
 
 type serverInfo struct {
@@ -111,4 +112,52 @@ type MCPResourceTemplate struct {
 // resourceReadParams is the params object for resources/read.
 type resourceReadParams struct {
 	URI string `json:"uri"`
+}
+
+// MCPPrompt describes a prompt exposed via prompts/list. A prompt is a reusable
+// message template with named arguments that produces messages for the model.
+type MCPPrompt struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Arguments   []MCPPromptArgument `json:"arguments,omitempty"`
+}
+
+// MCPPromptArgument describes one argument a prompt accepts.
+type MCPPromptArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required"`
+}
+
+// PromptMessageRole is the role of a message within a prompt response.
+type PromptMessageRole string
+
+const (
+	// PromptRoleUser marks a message from the user.
+	PromptRoleUser PromptMessageRole = "user"
+	// PromptRoleAssistant marks a message from the assistant.
+	PromptRoleAssistant PromptMessageRole = "assistant"
+)
+
+// PromptMessageContent is the content block of a prompt message. It is the same
+// shape as the content block used by tool responses (text, image, audio, or an
+// embedded resource), so the ToolContent constructors can be reused.
+type PromptMessageContent = ToolContent
+
+// PromptMessage is a single message in a prompt response.
+type PromptMessage struct {
+	Role    PromptMessageRole    `json:"role"`
+	Content PromptMessageContent `json:"content"`
+}
+
+// PromptResponse is the result of prompts/get.
+type PromptResponse struct {
+	Description string          `json:"description,omitempty"`
+	Messages    []PromptMessage `json:"messages"`
+}
+
+// promptGetParams is the params object for prompts/get.
+type promptGetParams struct {
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments,omitempty"`
 }

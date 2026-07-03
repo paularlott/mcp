@@ -57,6 +57,16 @@ func main() {
 		},
 	)
 
+	// A prompt: a reusable message template with arguments. The client fills in
+	// the arguments and gets back rendered messages for the model.
+	server.RegisterPrompt(
+		mcp.NewPrompt("review_request", "Ask the model to review a name").Argument("name", "Name to review", true),
+		func(ctx context.Context, req *mcp.PromptRequest) (*mcp.PromptResponse, error) {
+			name, _ := req.String("name")
+			return mcp.NewPromptResponseText("Please review the name: " + name), nil
+		},
+	)
+
 	// Blocks until stdin reaches EOF (the host closed the connection).
 	if err := server.ServeStdio(context.Background()); err != nil {
 		log.Fatalf("serve: %v", err)

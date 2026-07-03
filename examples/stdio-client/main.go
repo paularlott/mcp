@@ -81,4 +81,23 @@ func main() {
 	if len(greeting.Contents) > 0 {
 		fmt.Println("greeting://Ada ->", greeting.Contents[0].Text)
 	}
+
+	// List prompts exposed by the server.
+	prompts, err := client.ListPrompts(ctx)
+	if err != nil {
+		log.Fatalf("list prompts: %v", err)
+	}
+	fmt.Printf("Available prompts: %d\n", len(prompts))
+	for _, p := range prompts {
+		fmt.Printf("- %s: %s\n", p.Name, p.Description)
+	}
+
+	// Render a prompt with arguments.
+	rendered, err := client.GetPrompt(ctx, "review_request", map[string]string{"name": "Ada"})
+	if err != nil {
+		log.Fatalf("get prompt: %v", err)
+	}
+	for _, msg := range rendered.Messages {
+		fmt.Printf("review_request (%s) -> %s\n", msg.Role, msg.Content.Text)
+	}
 }

@@ -413,6 +413,86 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	return &result, nil
 }
 
+// ListPrompts retrieves the list of prompts from the remote server via
+// prompts/list. Prompts are not cached: each call performs a fresh request.
+func (c *Client) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      "list-prompts",
+		Method:  "prompts/list",
+	}
+
+	var resp MCPResponse
+	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+		return nil, fmt.Errorf("list prompts failed: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("list prompts error: code %d", resp.Error.Code)
+	}
+
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	var parsed struct {
+		Prompts []MCPPrompt `json:"prompts"`
+	}
+	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse prompts response: %w", err)
+	}
+	return parsed.Prompts, nil
+}
+
+// GetPrompt renders a prompt by name with the given string arguments via
+// prompts/get.
+func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]string) (*PromptResponse, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      fmt.Sprintf("get-prompt-%s", name),
+		Method:  "prompts/get",
+		Params: map[string]any{
+			"name":      name,
+			"arguments": args,
+		},
+	}
+
+	var resp MCPResponse
+	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+		return nil, fmt.Errorf("get prompt failed: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, &ToolError{
+			Code:    resp.Error.Code,
+			Message: resp.Error.Message,
+			Data:    resp.Error.Data,
+		}
+	}
+
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	var result PromptResponse
+	if err := json.Unmarshal(resultBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse prompt response: %w", err)
+	}
+	return &result, nil
+}
+
 // sendRequest sends a request to the MCP server. When a non-HTTP transport is
 // configured (e.g. stdio) it is used; otherwise the request is sent over HTTP.
 func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResponse, respHeaders *http.Header) error {
