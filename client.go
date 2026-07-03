@@ -333,6 +333,86 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	}, nil
 }
 
+// ListResources retrieves the list of resources from the remote server via
+// resources/list. Unlike tools, resources are not cached: each call performs a
+// fresh request, since resource sets can change between calls.
+func (c *Client) ListResources(ctx context.Context) ([]MCPResource, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      "list-resources",
+		Method:  "resources/list",
+	}
+
+	var resp MCPResponse
+	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+		return nil, fmt.Errorf("list resources failed: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("list resources error: code %d", resp.Error.Code)
+	}
+
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	var parsed struct {
+		Resources []MCPResource `json:"resources"`
+	}
+	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse resources response: %w", err)
+	}
+	return parsed.Resources, nil
+}
+
+// ReadResource reads a resource by URI from the remote server via
+// resources/read.
+func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceResponse, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      fmt.Sprintf("read-resource-%s", uri),
+		Method:  "resources/read",
+		Params: map[string]any{
+			"uri": uri,
+		},
+	}
+
+	var resp MCPResponse
+	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+		return nil, fmt.Errorf("read resource failed: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, &ToolError{
+			Code:    resp.Error.Code,
+			Message: resp.Error.Message,
+			Data:    resp.Error.Data,
+		}
+	}
+
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	var result ResourceResponse
+	if err := json.Unmarshal(resultBytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse resource response: %w", err)
+	}
+	return &result, nil
+}
+
 // sendRequest sends a request to the MCP server. When a non-HTTP transport is
 // configured (e.g. stdio) it is used; otherwise the request is sent over HTTP.
 func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResponse, respHeaders *http.Header) error {

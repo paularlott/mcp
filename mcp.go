@@ -40,6 +40,7 @@ var (
 	ErrUnknownTool      = errors.New("unknown tool")
 	ErrUnknownParameter = errors.New("parameter not found")
 	ErrToolFiltered     = errors.New("tool is filtered out")
+	ErrUnknownResource  = errors.New("unknown resource")
 )
 
 func firstPresent(values map[string]any, keys ...string) any {
@@ -105,9 +106,11 @@ type Server struct {
 	toolToServer         map[string]*registeredClient // Tool name -> remote client mapping
 	nativeToolCache      []MCPTool                    // Native tools (visible in tools/list)
 	mu                   sync.RWMutex
-	sessionManager       SessionManager    // Pluggable session management
-	internalRegistry     *internalRegistry // Registry for discoverable tools (searchable)
-	hasDiscoverableTools bool              // Track if any discoverable tools exist (local or remote)
+	sessionManager       SessionManager                 // Pluggable session management
+	internalRegistry     *internalRegistry              // Registry for discoverable tools (searchable)
+	hasDiscoverableTools bool                           // Track if any discoverable tools exist (local or remote)
+	resources            map[string]*registeredResource // Static resources keyed by URI
+	resourceTemplates    []*registeredResourceTemplate  // Parameterized resource templates
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
@@ -137,14 +140,16 @@ type registeredClient struct {
 // NewServer creates a new MCP server instance.
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:             name,
-		version:          version,
-		instructions:     "",
-		tools:            make(map[string]*registeredTool),
-		remoteClients:    make(map[string]*registeredClient),
-		toolToServer:     make(map[string]*registeredClient),
-		nativeToolCache:  make([]MCPTool, 0),
-		internalRegistry: newInternalRegistry(),
+		name:              name,
+		version:           version,
+		instructions:      "",
+		tools:             make(map[string]*registeredTool),
+		remoteClients:     make(map[string]*registeredClient),
+		toolToServer:      make(map[string]*registeredClient),
+		nativeToolCache:   make([]MCPTool, 0),
+		internalRegistry:  newInternalRegistry(),
+		resources:         make(map[string]*registeredResource),
+		resourceTemplates: make([]*registeredResourceTemplate, 0),
 	}
 }
 
@@ -997,6 +1002,12 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleToolsList(w, r, &req)
 	case "tools/call":
 		s.handleToolsCall(w, r, &req)
+	case "resources/list":
+		s.handleResourcesList(w, r, &req)
+	case "resources/read":
+		s.handleResourcesRead(w, r, &req)
+	case "resources/templates/list":
+		s.handleResourcesTemplatesList(w, r, &req)
 	default:
 		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]any{
 			"method": req.Method,

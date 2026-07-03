@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/paularlott/mcp"
 )
@@ -34,6 +35,25 @@ func main() {
 			name, _ := req.String("name")
 			greeting := req.StringOr("greeting", "Hello")
 			return mcp.NewToolResponseText(fmt.Sprintf("%s, %s!", greeting, name)), nil
+		},
+	)
+
+	// A static resource: a fixed URI the client can list and read verbatim.
+	server.RegisterResource(
+		mcp.NewResource("config://app", "App Config", "The example application configuration", "application/json"),
+		func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
+			return mcp.NewResourceResponseText(uri, `{"name":"stdio-example","version":"1.0.0","debug":true}`, "application/json"), nil
+		},
+	)
+
+	// A resource template: a URI with a {name} placeholder the client expands.
+	// Reading greeting://Ada resolves to the handler below with that expanded URI.
+	server.RegisterResourceTemplate(
+		mcp.NewResourceTemplate("greeting://{name}", "Greeting", "A personalized greeting for a name", "text/plain"),
+		func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
+			// The handler receives the fully-expanded URI; parse the variable out.
+			name := strings.TrimPrefix(uri, "greeting://")
+			return mcp.NewResourceResponseText(uri, "Hello, "+name+"!", "text/plain"), nil
 		},
 	)
 

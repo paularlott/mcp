@@ -74,6 +74,18 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 		return s.stdioToolsCall(ctx, params)
 	})
 
+	srv.Handle("resources/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"resources": s.ListResources(ctx)}, nil
+	})
+
+	srv.Handle("resources/templates/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"resourceTemplates": s.ListResourceTemplates(ctx)}, nil
+	})
+
+	srv.Handle("resources/read", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return s.stdioResourcesRead(ctx, params)
+	})
+
 	return srv
 }
 
@@ -132,4 +144,28 @@ func (s *Server) stdioToolsCall(ctx context.Context, raw json.RawMessage) (any, 
 		StructuredContent: response.StructuredContent,
 		IsError:           false,
 	}, nil
+}
+
+func (s *Server) stdioResourcesRead(ctx context.Context, raw json.RawMessage) (any, error) {
+	var params resourceReadParams
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &params); err != nil {
+			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Invalid params", nil)
+		}
+	}
+	if params.URI == "" {
+		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "uri parameter is required", nil)
+	}
+
+	resp, err := s.ReadResource(ctx, params.URI)
+	if err != nil {
+		if err == ErrUnknownResource {
+			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Resource not found", nil)
+		}
+		if toolErr, ok := err.(*ToolError); ok {
+			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
+		}
+		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Resource read failed: %v", err), nil)
+	}
+	return resp, nil
 }

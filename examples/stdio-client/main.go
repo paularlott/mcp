@@ -52,4 +52,33 @@ func main() {
 	if len(resp.Content) > 0 {
 		fmt.Println("greet ->", resp.Content[0].Text)
 	}
+
+	// List resources exposed by the server.
+	resources, err := client.ListResources(ctx)
+	if err != nil {
+		log.Fatalf("list resources: %v", err)
+	}
+	fmt.Printf("Available resources: %d\n", len(resources))
+	for _, res := range resources {
+		fmt.Printf("- %s: %s\n", res.URI, res.Name)
+	}
+
+	// Read the static config resource.
+	cfg, err := client.ReadResource(ctx, "config://app")
+	if err != nil {
+		log.Fatalf("read resource: %v", err)
+	}
+	if len(cfg.Contents) > 0 {
+		fmt.Println("config://app ->", cfg.Contents[0].Text)
+	}
+
+	// Expand a resource template and read it. The server registers
+	// greeting://{name}; reading greeting://Ada resolves through it.
+	greeting, err := client.ReadResource(ctx, "greeting://Ada")
+	if err != nil {
+		log.Fatalf("read template resource: %v", err)
+	}
+	if len(greeting.Contents) > 0 {
+		fmt.Println("greeting://Ada ->", greeting.Contents[0].Text)
+	}
 }

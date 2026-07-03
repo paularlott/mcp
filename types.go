@@ -87,3 +87,28 @@ type ResourceContent struct {
 	Text     string `json:"text,omitempty"`
 	Blob     string `json:"blob,omitempty"` // base64 encoded
 }
+
+// MCPResource describes a static resource exposed via resources/list.
+// A resource is data the server can serve to clients by URI, such as a file,
+// a configuration document, or a database record.
+type MCPResource struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// MCPResourceTemplate describes a parameterized resource exposed via
+// resources/templates/list. The URITemplate may contain {var} placeholders
+// (RFC 6570 level 1) that clients expand to concrete URIs and then read.
+type MCPResourceTemplate struct {
+	URITemplate string `json:"uriTemplate"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
+}
+
+// resourceReadParams is the params object for resources/read.
+type resourceReadParams struct {
+	URI string `json:"uri"`
+}
