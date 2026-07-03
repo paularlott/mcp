@@ -40,6 +40,37 @@ type Client struct {
 	mu          sync.RWMutex
 	initialized bool
 	sessionID   string
+	transport   clientTransport // non-nil for non-HTTP transports (e.g. stdio)
+}
+
+// clientTransport abstracts how a client request/response round-trip is
+// performed. The default (nil) transport uses HTTP via sendRequest; stdio and
+// other stream transports supply an implementation.
+type clientTransport interface {
+	roundTrip(ctx context.Context, req *MCPRequest, resp *MCPResponse, respHeaders *http.Header) error
+	Close() error
+}
+
+// batchTransport is implemented by transports that can send several requests
+// as a single wire-level batch. The stdio transport does (it is backed by
+// [jsonrpc.Client.CallBatch]); the default HTTP path does not implement it, so
+// callers fall back to concurrent individual round-trips.
+//
+// Responses are returned in the same order as reqs (this is the guarantee
+// [jsonrpc.Client.CallBatch] itself makes), so implementations need not
+// preserve or interpret the MCPRequest.ID field for correlation.
+type batchTransport interface {
+	batchRoundTrip(ctx context.Context, reqs []*MCPRequest) ([]*MCPResponse, error)
+}
+
+// Close releases resources held by the client's transport. For the default HTTP
+// transport it is a no-op; for a stdio subprocess transport it shuts the child
+// process down.
+func (c *Client) Close() error {
+	if c.transport != nil {
+		return c.transport.Close()
+	}
+	return nil
 }
 
 // NewClient creates a new MCP client using the shared HTTP pool.
@@ -302,8 +333,13 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	}, nil
 }
 
-// sendRequest sends an HTTP request to the MCP server
+// sendRequest sends a request to the MCP server. When a non-HTTP transport is
+// configured (e.g. stdio) it is used; otherwise the request is sent over HTTP.
 func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResponse, respHeaders *http.Header) error {
+	if c.transport != nil {
+		return c.transport.roundTrip(ctx, req, resp, respHeaders)
+	}
+
 	reqBody, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
@@ -444,15 +480,57 @@ type ParallelToolResult struct {
 	Err      error
 }
 
-// CallToolsParallel executes multiple tools concurrently and returns results in the same order as the input.
+// CallToolsParallel executes multiple tools concurrently and returns results in
+// the same order as the input. Over a transport with native batch support
+// (currently the stdio transport, backed by jsonrpc.Client.CallBatch), all
+// calls are sent as a single wire-level batch instead of one round-trip each;
+// otherwise they run as concurrent individual calls.
 func (c *Client) CallToolsParallel(ctx context.Context, calls []ToolCall) []ParallelToolResult {
+	return c.callToolsParallel(ctx, calls, false)
+}
+
+// ExecuteDiscoveredToolsParallel executes multiple discovered tools concurrently
+// and returns results in the same order as the input. It has the same
+// batch-transport behaviour as CallToolsParallel.
+func (c *Client) ExecuteDiscoveredToolsParallel(ctx context.Context, calls []ToolCall) []ParallelToolResult {
+	return c.callToolsParallel(ctx, calls, true)
+}
+
+// callToolsParallel is the shared implementation behind CallToolsParallel and
+// ExecuteDiscoveredToolsParallel. When discovered is true, each call is wrapped
+// as an execute_tool invocation (matching ExecuteDiscoveredTool); otherwise it
+// is a direct tools/call.
+func (c *Client) callToolsParallel(ctx context.Context, calls []ToolCall, discovered bool) []ParallelToolResult {
 	results := make([]ParallelToolResult, len(calls))
+	if len(calls) == 0 {
+		return results
+	}
+
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			for i, call := range calls {
+				results[i] = ParallelToolResult{Name: call.Name, Err: err}
+			}
+			return results
+		}
+	}
+
+	if bt, ok := c.transport.(batchTransport); ok {
+		return c.callToolsBatch(ctx, bt, calls, discovered)
+	}
+
 	var wg sync.WaitGroup
 	for i, call := range calls {
 		wg.Add(1)
 		go func(i int, call ToolCall) {
 			defer wg.Done()
-			resp, err := c.CallTool(ctx, call.Name, call.Arguments)
+			var resp *ToolResponse
+			var err error
+			if discovered {
+				resp, err = c.ExecuteDiscoveredTool(ctx, call.Name, call.Arguments)
+			} else {
+				resp, err = c.CallTool(ctx, call.Name, call.Arguments)
+			}
 			results[i] = ParallelToolResult{Name: call.Name, Response: resp, Err: err}
 		}(i, call)
 	}
@@ -460,20 +538,97 @@ func (c *Client) CallToolsParallel(ctx context.Context, calls []ToolCall) []Para
 	return results
 }
 
-// ExecuteDiscoveredToolsParallel executes multiple discovered tools concurrently and returns results in the same order as the input.
-func (c *Client) ExecuteDiscoveredToolsParallel(ctx context.Context, calls []ToolCall) []ParallelToolResult {
+// callToolsBatch sends every call as one wire-level batch via bt, applying the
+// same namespace stripping and tool-filter checks as CallTool, then decodes
+// each response back into a ParallelToolResult in call order.
+func (c *Client) callToolsBatch(ctx context.Context, bt batchTransport, calls []ToolCall, discovered bool) []ParallelToolResult {
 	results := make([]ParallelToolResult, len(calls))
-	var wg sync.WaitGroup
+	reqs := make([]*MCPRequest, len(calls))
+
+	c.mu.RLock()
+	filter := c.toolFilter
+	c.mu.RUnlock()
+
 	for i, call := range calls {
-		wg.Add(1)
-		go func(i int, call ToolCall) {
-			defer wg.Done()
-			resp, err := c.ExecuteDiscoveredTool(ctx, call.Name, call.Arguments)
-			results[i] = ParallelToolResult{Name: call.Name, Response: resp, Err: err}
-		}(i, call)
+		toolName := call.Name
+		if c.namespace != "" && strings.HasPrefix(toolName, c.namespace) {
+			toolName = toolName[len(c.namespace):]
+		}
+		if filter != nil && !filter(toolName) {
+			results[i] = ParallelToolResult{Name: call.Name, Err: ErrToolFiltered}
+			continue
+		}
+
+		method := "tools/call"
+		params := map[string]any{"name": toolName, "arguments": call.Arguments}
+		if discovered {
+			params = map[string]any{
+				"name":      "execute_tool",
+				"arguments": map[string]any{"name": toolName, "parameters": call.Arguments},
+			}
+		}
+		reqs[i] = &MCPRequest{
+			JSONRPC: "2.0",
+			ID:      fmt.Sprintf("batch-%d", i),
+			Method:  method,
+			Params:  params,
+		}
 	}
-	wg.Wait()
+
+	// Only the calls that passed the filter check need a request on the wire;
+	// build the subset while remembering which result index each belongs to.
+	var wireReqs []*MCPRequest
+	var wireIdx []int
+	for i, req := range reqs {
+		if req != nil {
+			wireReqs = append(wireReqs, req)
+			wireIdx = append(wireIdx, i)
+		}
+	}
+	if len(wireReqs) == 0 {
+		return results
+	}
+
+	resps, err := bt.batchRoundTrip(ctx, wireReqs)
+	if err != nil {
+		for _, i := range wireIdx {
+			results[i] = ParallelToolResult{Name: calls[i].Name, Err: fmt.Errorf("call tool failed: %w", err)}
+		}
+		return results
+	}
+	if len(resps) != len(wireIdx) {
+		for _, i := range wireIdx {
+			results[i] = ParallelToolResult{Name: calls[i].Name, Err: fmt.Errorf("call tool failed: batch returned %d responses, want %d", len(resps), len(wireIdx))}
+		}
+		return results
+	}
+
+	for pos, i := range wireIdx {
+		resp := resps[pos]
+		if resp.Error != nil {
+			results[i] = ParallelToolResult{Name: calls[i].Name, Err: &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}}
+			continue
+		}
+		results[i] = ParallelToolResult{Name: calls[i].Name, Response: decodeToolResult(resp)}
+	}
 	return results
+}
+
+// decodeToolResult decodes a successful tools/call (or execute_tool) response
+// result into a ToolResponse. Callers must check resp.Error first.
+func decodeToolResult(resp *MCPResponse) *ToolResponse {
+	var result ToolResult
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return nil
+	}
+	if err := json.Unmarshal(resultBytes, &result); err != nil {
+		return nil
+	}
+	return &ToolResponse{
+		Content:           result.Content,
+		StructuredContent: result.StructuredContent,
+	}
 }
 
 // ExecuteDiscoveredTool executes a tool by name using the execute_tool MCP tool.

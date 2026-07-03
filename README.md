@@ -4,6 +4,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 
 ## Features
 
+- **HTTP & Stdio Transports**: Serve the same tools over HTTP or newline-delimited JSON-RPC on stdin/stdout, and consume remote servers over either
 - **Simple API**: Fluent interface for defining tools and parameters
 - **Type Safety**: Strongly typed parameter access with automatic conversion
 - **Rich Responses**: Support for text, image, audio, resource, and structured content
@@ -60,6 +61,60 @@ func main() {
     log.Fatal(http.ListenAndServe(":8000", nil))
 }
 ```
+
+## Transports
+
+The same server and its tools can be served over two transports.
+
+### HTTP
+
+Mount the server as an `http.Handler` (as in Quick Start above):
+
+```go
+http.HandleFunc("/mcp", server.HandleRequest)
+```
+
+### Stdio
+
+Serve the MCP protocol over stdin/stdout (newline-delimited JSON-RPC 2.0) — the
+transport a host launches as a subprocess. `ServeStdio` blocks until stdin
+reaches EOF; keep stdout for protocol frames only and send logs to stderr:
+
+```go
+server := mcp.NewServer("my-server", "1.0.0")
+// ... RegisterTool(...) as usual ...
+if err := server.ServeStdio(context.Background()); err != nil {
+    log.Fatal(err)
+}
+```
+
+Use `ServeStream(ctx, in, out)` to serve over any pair of streams (for example
+an in-process pipe) rather than the process's own stdio.
+
+A client connects to a stdio server by launching it as a subprocess:
+
+```go
+client, err := mcp.NewStdioClient("my-server-binary", []string{"--flag"}, "")
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+tools, _ := client.ListTools(ctx)
+resp, _ := client.CallTool(ctx, "greet", map[string]any{"name": "Ada"})
+```
+
+`NewStdioClient` accepts options such as `WithClientStderr`, `WithClientEnv`, and
+`WithClientDir`. To talk to a server over streams you already hold, use
+`NewStreamClient(in, out, namespace)`. The stdio transport is built on the
+[`paularlott/jsonrpc`](https://github.com/paularlott/jsonrpc) package. The
+client API (`ListTools`, `CallTool`, namespacing, filtering) is identical across
+HTTP and stdio.
+
+`CallToolsParallel` and `ExecuteDiscoveredToolsParallel` send every call as a
+single JSON-RPC batch over the stdio transport (one round-trip instead of one
+per call), falling back to concurrent individual calls over HTTP. Either way,
+results are always returned in call order.
 
 ## Documentation
 
@@ -118,7 +173,8 @@ With session management enabled, the mode is stored in the session token. See [T
 
 See the [examples/](examples/) directory for complete, runnable examples:
 
-- [Basic Server](examples/server/)
+- [Basic Server (HTTP)](examples/server/)
+- [Stdio Server](examples/stdio-server/) and [Stdio Client](examples/stdio-client/)
 - [Multi-Tenant Tools](examples/per-user-tools/)
 - [Tool Discovery](examples/tool-discovery/)
 - [Remote Servers](examples/remote-server/)
