@@ -67,11 +67,24 @@ func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, o
 	defer s.notifications.unsubscribe(subID)
 	defer sink.stop()
 
+	// Close the reader on ctx cancellation so decoder.Decode unblocks. Without
+	// this, Ctrl+C cancels the context but the read loop is stuck in Decode and
+	// the process hangs. os.Stdin (the common case) is an io.Closer.
+	if closer, ok := in.(io.Closer); ok {
+		go func() {
+			<-ctx.Done()
+			closer.Close()
+		}()
+	}
+
 	decoder := json.NewDecoder(in)
 	for {
 		var raw json.RawMessage
 		if err := decoder.Decode(&raw); err != nil {
 			wg.Wait() // let in-flight handlers flush their responses
+			if ctx.Err() != nil {
+				return nil // context cancelled (reader closed) — clean shutdown
+			}
 			if err == io.EOF {
 				return nil
 			}
