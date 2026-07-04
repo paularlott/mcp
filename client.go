@@ -450,6 +450,42 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	return &result, nil
 }
 
+// ListResourceTemplates retrieves the resource templates exposed via
+// resources/templates/list from the remote server.
+func (c *Client) ListResourceTemplates(ctx context.Context) ([]MCPResourceTemplate, error) {
+	if !c.initialized {
+		if err := c.Initialize(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	req := MCPRequest{
+		JSONRPC: "2.0",
+		ID:      "list-resource-templates",
+		Method:  "resources/templates/list",
+	}
+
+	var resp MCPResponse
+	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+		return nil, fmt.Errorf("list resource templates failed: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("list resource templates error: code %d", resp.Error.Code)
+	}
+
+	resultBytes, err := json.Marshal(resp.Result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	var parsed struct {
+		ResourceTemplates []MCPResourceTemplate `json:"resourceTemplates"`
+	}
+	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse resource templates response: %w", err)
+	}
+	return parsed.ResourceTemplates, nil
+}
+
 // ListPrompts retrieves the list of prompts from the remote server via
 // prompts/list. Prompts are not cached: each call performs a fresh request.
 func (c *Client) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
