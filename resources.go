@@ -16,11 +16,14 @@ type registeredResource struct {
 }
 
 // registeredResourceTemplate holds a resource template, its read handler, and a
-// precompiled pattern used to match concrete URIs against the template.
+// precompiled pattern used to match concrete URIs against the template. varNames
+// holds the template's placeholder names in order, aligned with the pattern's
+// capturing groups.
 type registeredResourceTemplate struct {
 	descriptor MCPResourceTemplate
 	handler    ResourceHandler
 	pattern    *regexp.Regexp
+	varNames   []string
 }
 
 // RegisterResource registers a static resource. The resource appears in
@@ -63,10 +66,12 @@ func (s *Server) UnregisterResource(uri string) bool {
 func (s *Server) RegisterResourceTemplate(tb *ResourceTemplateBuilder, handler ResourceHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	varNames, pattern := parseResourceTemplate(tb.uriTemplate)
 	s.resourceTemplates = append(s.resourceTemplates, &registeredResourceTemplate{
 		descriptor: tb.ToMCPResourceTemplate(),
 		handler:    handler,
-		pattern:    compileResourceTemplate(tb.uriTemplate),
+		pattern:    pattern,
+		varNames:   varNames,
 	})
 }
 
@@ -125,7 +130,7 @@ func (s *Server) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	if rr, ok := s.resources[uri]; ok {
 		handler := rr.handler
 		s.mu.RUnlock()
-		return handler(ctx, uri)
+		return handler(ctx, NewResourceRequest(uri, nil))
 	}
 
 	// 2. Static template match. Copy the slice so we can release the lock before
@@ -135,8 +140,11 @@ func (s *Server) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	s.mu.RUnlock()
 
 	for _, rt := range templates {
-		if rt.pattern != nil && rt.pattern.MatchString(uri) {
-			return rt.handler(ctx, uri)
+		if rt.pattern == nil {
+			continue
+		}
+		if vars, ok := matchResourceTemplate(rt.pattern, rt.varNames, uri); ok {
+			return rt.handler(ctx, NewResourceRequest(uri, vars))
 		}
 	}
 
@@ -188,12 +196,16 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 	s.sendMCPResponse(w, req.ID, resp)
 }
 
-// compileResourceTemplate compiles an RFC 6570 level-1 URI template (with {var}
-// placeholders) into an anchored regexp that matches concrete URIs. Each
-// placeholder becomes a capturing group matching one or more characters. A
-// malformed template returns nil, in which case the template never matches.
-func compileResourceTemplate(template string) *regexp.Regexp {
-	var b strings.Builder
+// parseResourceTemplate compiles an RFC 6570 level-1 URI template (with {var}
+// placeholders) into an anchored regexp that matches concrete URIs, and returns
+// the placeholder names in order (aligned with the pattern's capturing groups).
+// Each placeholder becomes a group matching one or more characters. A malformed
+// template returns a nil pattern, in which case the template never matches.
+func parseResourceTemplate(template string) ([]string, *regexp.Regexp) {
+	var (
+		b        strings.Builder
+		varNames []string
+	)
 	b.WriteByte('^')
 	i := 0
 	for i < len(template) {
@@ -204,6 +216,8 @@ func compileResourceTemplate(template string) *regexp.Regexp {
 				b.WriteString(regexp.QuoteMeta(template[i:]))
 				break
 			}
+			name := strings.TrimSpace(template[i+1 : i+end])
+			varNames = append(varNames, name)
 			b.WriteString("(.+)")
 			i += end + 1
 			continue
@@ -219,7 +233,44 @@ func compileResourceTemplate(template string) *regexp.Regexp {
 	b.WriteByte('$')
 	re, err := regexp.Compile(b.String())
 	if err != nil {
-		return nil
+		return varNames, nil
 	}
-	return re
+	return varNames, re
+}
+
+// matchResourceTemplate matches uri against a compiled template pattern and, on
+// success, returns the extracted variables keyed by their placeholder names.
+func matchResourceTemplate(pattern *regexp.Regexp, varNames []string, uri string) (map[string]string, bool) {
+	m := pattern.FindStringSubmatch(uri)
+	if m == nil {
+		return nil, false
+	}
+	// m[0] is the full match; m[1:] are the capturing groups in order.
+	vars := make(map[string]string, len(varNames))
+	for i, name := range varNames {
+		if i+1 < len(m) {
+			vars[name] = m[i+1]
+		}
+	}
+	return vars, true
+}
+
+// MatchResourceTemplate extracts the {var} values from uri against an RFC 6570
+// level-1 URI template. It is intended for [ResourceProvider] implementations
+// and advanced uses that need to parse their own template URIs; handlers
+// registered via [Server.RegisterResourceTemplate] receive the variables
+// already extracted on the [ResourceRequest].
+//
+// Returns the variables and nil on a match, or (nil, error) if uri does not
+// match the template.
+func MatchResourceTemplate(template, uri string) (map[string]string, error) {
+	varNames, pattern := parseResourceTemplate(template)
+	if pattern == nil {
+		return nil, fmt.Errorf("invalid resource template: %q", template)
+	}
+	vars, ok := matchResourceTemplate(pattern, varNames, uri)
+	if !ok {
+		return nil, fmt.Errorf("uri %q does not match template %q", uri, template)
+	}
+	return vars, nil
 }

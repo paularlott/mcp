@@ -2,14 +2,64 @@ package mcp
 
 import "context"
 
-// ResourceHandler returns the content of a resource for a given URI.
+// ResourceHandler returns the content of a resource.
 //
-// For a static resource the URI is the resource's own URI. For a resource
-// template the URI is the fully-expanded URI the client requested; the handler
-// is responsible for parsing any variables out of it.
+// The handler receives a [*ResourceRequest]: use [ResourceRequest.URI] for the
+// full URI being read, and [ResourceRequest.String] / [ResourceRequest.StringOr]
+// to read template variables extracted by the server. For a static resource
+// there are no variables, so only URI is meaningful.
 //
-// Build the response with NewResourceResponseText or NewResourceResponseBlob.
-type ResourceHandler func(ctx context.Context, uri string) (*ResourceResponse, error)
+// Build the response with [NewResourceResponseText] or [NewResourceResponseBlob].
+type ResourceHandler func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error)
+
+// ResourceRequest provides the URI and any expanded template variables for a
+// resources/read call. It is the resource analogue of [*ToolRequest] and
+// [*PromptRequest].
+type ResourceRequest struct {
+	uri  string
+	vars map[string]string
+}
+
+// NewResourceRequest builds a ResourceRequest from a URI and an optional map of
+// template variables. Handlers normally receive a ready-made request; this
+// constructor exists for tests and providers that build their own.
+func NewResourceRequest(uri string, vars map[string]string) *ResourceRequest {
+	return &ResourceRequest{uri: uri, vars: vars}
+}
+
+// URI returns the full URI being read. For a template this is the expanded URI
+// the client requested.
+func (r *ResourceRequest) URI() string { return r.uri }
+
+// String returns a template variable by name. Returns ErrUnknownParameter if the
+// variable is not present (for example, on a static resource, which has none).
+func (r *ResourceRequest) String(name string) (string, error) {
+	if r.vars == nil {
+		return "", ErrUnknownParameter
+	}
+	v, ok := r.vars[name]
+	if !ok {
+		return "", ErrUnknownParameter
+	}
+	return v, nil
+}
+
+// StringOr returns a template variable or defaultValue if the variable is absent.
+func (r *ResourceRequest) StringOr(name, defaultValue string) string {
+	if v, err := r.String(name); err == nil {
+		return v
+	}
+	return defaultValue
+}
+
+// Vars returns all expanded template variables. The map is empty for static
+// resources. The returned map is not copied; do not mutate it.
+func (r *ResourceRequest) Vars() map[string]string {
+	if r.vars == nil {
+		return map[string]string{}
+	}
+	return r.vars
+}
 
 // ResourceBuilder is a fluent builder for a static resource. A static resource
 // has a fixed URI, appears in resources/list, and is read verbatim by

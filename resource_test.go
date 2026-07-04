@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -63,20 +64,21 @@ func staticResourceServer(t *testing.T) *Server {
 	s := NewServer("rs", "1")
 	s.RegisterResource(
 		NewResource("config://app", "App Config", "app configuration", "application/json"),
-		func(ctx context.Context, uri string) (*ResourceResponse, error) {
-			return NewResourceResponseText(uri, `{"ok":true}`, "application/json"), nil
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseText(req.URI(), `{"ok":true}`, "application/json"), nil
 		},
 	)
 	s.RegisterResource(
 		NewResource("logo://x", "Logo", "a logo", "image/png"),
-		func(ctx context.Context, uri string) (*ResourceResponse, error) {
-			return NewResourceResponseBlob(uri, []byte{0x89, 0x50, 0x4e, 0x47}, "image/png"), nil
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseBlob(req.URI(), []byte{0x89, 0x50, 0x4e, 0x47}, "image/png"), nil
 		},
 	)
 	s.RegisterResourceTemplate(
 		NewResourceTemplate("user://{id}", "User Profile", "user profile by id", "application/json"),
-		func(ctx context.Context, uri string) (*ResourceResponse, error) {
-			return NewResourceResponseText(uri, `{"id":"`+uri+`"}`, "application/json"), nil
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			id := req.StringOr("id", "unknown")
+			return NewResourceResponseText(req.URI(), `{"id":"`+id+`"}`, "application/json"), nil
 		},
 	)
 	return s
@@ -155,8 +157,38 @@ func TestResourceReadTemplateHTTP(t *testing.T) {
 	if err := json.Unmarshal(raw, &rr); err != nil {
 		t.Fatalf("unmarshal resource response: %v", err)
 	}
-	if len(rr.Contents) != 1 || rr.Contents[0].Text != `{"id":"user://42"}` {
+	if len(rr.Contents) != 1 || rr.Contents[0].Text != `{"id":"42"}` {
 		t.Fatalf("unexpected template content: %+v", rr)
+	}
+}
+
+func TestResourceTemplateExtractsMultipleVars(t *testing.T) {
+	s := NewServer("rs", "1")
+	s.RegisterResourceTemplate(
+		NewResourceTemplate("repo://{owner}/{repo}/readme", "Readme", "repo readme", "text/plain"),
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			owner, _ := req.String("owner")
+			repo, _ := req.String("repo")
+			// StringOr fallback + missing-variable error paths.
+			ref := req.StringOr("ref", "main")
+			if _, err := req.String("nope"); err != ErrUnknownParameter {
+				t.Fatalf("expected ErrUnknownParameter for missing var, got %v", err)
+			}
+			return NewResourceResponseText(req.URI(), owner+"/"+repo+"@"+ref, "text/plain"), nil
+		},
+	)
+
+	res := doMCP(t, s, "resources/read", map[string]any{"uri": "repo://acme/widget/readme"})
+	raw, _ := json.Marshal(res)
+	var rr ResourceResponse
+	if err := json.Unmarshal(raw, &rr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(rr.Contents) != 1 || rr.Contents[0].Text != "acme/widget@main" {
+		t.Fatalf("unexpected content: %+v", rr)
+	}
+	if rr.Contents[0].URI != "repo://acme/widget/readme" {
+		t.Fatalf("unexpected uri: %s", rr.Contents[0].URI)
 	}
 }
 
@@ -237,8 +269,8 @@ func TestResourceProviderListsAndReads(t *testing.T) {
 	// A static resource the provider must not shadow.
 	s.RegisterResource(
 		NewResource("config://app", "App Config", "", "application/json"),
-		func(ctx context.Context, uri string) (*ResourceResponse, error) {
-			return NewResourceResponseText(uri, "static", "application/json"), nil
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseText(req.URI(), "static", "application/json"), nil
 		},
 	)
 
@@ -298,8 +330,8 @@ func TestResourceProviderDedupStaticWins(t *testing.T) {
 	s := NewServer("rs", "1")
 	s.RegisterResource(
 		NewResource("shared://x", "Static", "static wins", ""),
-		func(ctx context.Context, uri string) (*ResourceResponse, error) {
-			return NewResourceResponseText(uri, "static-value", ""), nil
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseText(req.URI(), "static-value", ""), nil
 		},
 	)
 	// Provider also claims the same URI; static must win on list and read.
@@ -359,7 +391,7 @@ func TestResourcesCapabilityAlwaysAdvertised(t *testing.T) {
 	}
 }
 
-func TestCompileResourceTemplate(t *testing.T) {
+func TestMatchResourceTemplate(t *testing.T) {
 	cases := []struct {
 		template string
 		uri      string
@@ -376,12 +408,36 @@ func TestCompileResourceTemplate(t *testing.T) {
 		{"a.b://{x}", "axb://1", false},
 	}
 	for _, c := range cases {
-		re := compileResourceTemplate(c.template)
-		if re == nil {
-			t.Fatalf("compile returned nil for %q", c.template)
+		vars, err := MatchResourceTemplate(c.template, c.uri)
+		if matched := err == nil; matched != c.want {
+			t.Fatalf("template %q match %q = matched:%v err:%v, want matched:%v", c.template, c.uri, matched, err, c.want)
 		}
-		if got := re.MatchString(c.uri); got != c.want {
-			t.Fatalf("template %q match %q = %v, want %v", c.template, c.uri, got, c.want)
+		if !c.want {
+			continue
+		}
+		// On a successful match, templates with placeholders must extract vars.
+		if hasPlaceholders(c.template) && len(vars) == 0 {
+			t.Fatalf("template %q matched %q but extracted no vars: %v", c.template, c.uri, vars)
 		}
 	}
+
+	// Variable extraction by name.
+	vars, err := MatchResourceTemplate("repo://{owner}/{repo}", "repo://acme/widget")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if vars["owner"] != "acme" || vars["repo"] != "widget" {
+		t.Fatalf("unexpected vars: %+v", vars)
+	}
+
+	// Multi-segment path variable.
+	vars, err = MatchResourceTemplate("file:///{path}", "file:///a/b/c.txt")
+	if err != nil || vars["path"] != "a/b/c.txt" {
+		t.Fatalf("unexpected path var: %+v err=%v", vars, err)
+	}
+}
+
+// hasPlaceholders reports whether template contains any {var} placeholder.
+func hasPlaceholders(template string) bool {
+	return strings.Contains(template, "{") && strings.Contains(template, "}")
 }

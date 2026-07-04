@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/paularlott/mcp"
 )
@@ -41,19 +40,20 @@ func main() {
 	// A static resource: a fixed URI the client can list and read verbatim.
 	server.RegisterResource(
 		mcp.NewResource("config://app", "App Config", "The example application configuration", "application/json"),
-		func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
-			return mcp.NewResourceResponseText(uri, `{"name":"stdio-example","version":"1.0.0","debug":true}`, "application/json"), nil
+		func(ctx context.Context, req *mcp.ResourceRequest) (*mcp.ResourceResponse, error) {
+			return mcp.NewResourceResponseText(req.URI(), `{"name":"stdio-example","version":"1.0.0","debug":true}`, "application/json"), nil
 		},
 	)
 
 	// A resource template: a URI with a {name} placeholder the client expands.
-	// Reading greeting://Ada resolves to the handler below with that expanded URI.
+	// Reading greeting://Ada resolves to the handler below. The server matches
+	// the URI against the template and hands the extracted variables to the
+	// handler on the ResourceRequest, so there's no need to parse them yourself.
 	server.RegisterResourceTemplate(
 		mcp.NewResourceTemplate("greeting://{name}", "Greeting", "A personalized greeting for a name", "text/plain"),
-		func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
-			// The handler receives the fully-expanded URI; parse the variable out.
-			name := strings.TrimPrefix(uri, "greeting://")
-			return mcp.NewResourceResponseText(uri, "Hello, "+name+"!", "text/plain"), nil
+		func(ctx context.Context, req *mcp.ResourceRequest) (*mcp.ResourceResponse, error) {
+			name := req.StringOr("name", "world")
+			return mcp.NewResourceResponseText(req.URI(), "Hello, "+name+"!", "text/plain"), nil
 		},
 	)
 

@@ -62,22 +62,39 @@ A resource template has a URI with `{var}` placeholders (RFC 6570 level 1). It a
 ```go
 server.RegisterResourceTemplate(
     mcp.NewResourceTemplate("user://{id}", "User Profile", "A user profile by ID", "application/json"),
-    func(ctx context.Context, uri string) (*mcp.ResourceResponse, error) {
-        // The handler receives the fully-expanded URI. Parse the variable out.
-        id := strings.TrimPrefix(uri, "user://")
+    func(ctx context.Context, req *mcp.ResourceRequest) (*mcp.ResourceResponse, error) {
+        // The server matches the URI against the template and extracts the
+        // variables for you — no manual parsing required.
+        id := req.StringOr("id", "")
         profile := fetchProfile(id)
-        return mcp.NewResourceResponseText(uri, profile, "application/json"), nil
+        return mcp.NewResourceResponseText(req.URI(), profile, "application/json"), nil
     },
 )
 ```
+
+The handler receives a `*ResourceRequest` (the resource analogue of `ToolRequest` / `PromptRequest`):
+
+- `req.URI()` — the full expanded URI the client requested.
+- `req.String("name")` — a template variable, or `ErrUnknownParameter` if absent.
+- `req.StringOr("name", default)` — a variable with a fallback.
+- `req.Vars()` — all extracted variables as a map.
+
+A single template can have several placeholders, e.g. `repo://{owner}/{repo}/readme`, each available by name.
 
 Matching rules:
 
 - Each `{var}` matches one or more characters in the requested URI.
 - On `resources/read`, static resources (exact match) are tried first, then templates in registration order (first match wins), then request-scoped providers.
-- The handler is responsible for parsing its own variables out of the URI.
+- Static resources have no variables; only `req.URI()` is meaningful for them.
 
-A single template can have several placeholders, e.g. `repo://{owner}/{repo}/readme`.
+### Parsing template URIs yourself
+
+`ResourceProvider` implementations (which the server can't match for you) and other advanced cases can extract variables from a template URI with the standalone helper:
+
+```go
+vars, err := mcp.MatchResourceTemplate("repo://{owner}/{repo}", "repo://acme/widget")
+// vars == map[string]string{"owner": "acme", "repo": "widget"}
+```
 
 ## Reading Resources
 
