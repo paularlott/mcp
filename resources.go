@@ -57,6 +57,21 @@ func (s *Server) UnregisterResource(uri string) bool {
 	return existed
 }
 
+// UnregisterResourceTemplate removes a resource template by its URI template
+// string. Returns true if a template was removed.
+func (s *Server) UnregisterResourceTemplate(uriTemplate string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, rt := range s.resourceTemplates {
+		if rt.descriptor.URITemplate == uriTemplate {
+			s.resourceTemplates = append(s.resourceTemplates[:i], s.resourceTemplates[i+1:]...)
+			s.NotifyResourcesChanged()
+			return true
+		}
+	}
+	return false
+}
+
 // RegisterResourceTemplate registers a parameterized resource template. The
 // template appears in resources/templates/list; a client expands it into a
 // concrete URI and reads it via resources/read. The handler receives the
