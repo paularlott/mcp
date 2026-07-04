@@ -8,6 +8,17 @@ type MCPRequest struct {
 	Params  any    `json:"params,omitempty"`
 }
 
+// MCPNotification is a JSON-RPC 2.0 notification — a message that carries no
+// "id" member. Unlike MCPRequest (whose ID field has no omitempty and would
+// serialize as "id":null), this struct makes it structurally impossible to
+// emit an "id" field, conforming to the JSON-RPC 2.0 spec which requires that
+// notifications omit "id" entirely.
+type MCPNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
 type MCPResponse struct {
 	JSONRPC string    `json:"jsonrpc"`
 	ID      any       `json:"id,omitempty"`

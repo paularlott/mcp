@@ -21,6 +21,13 @@ const (
 
 	// DefaultOAuthRefreshTimeout is the default timeout for OAuth token refresh operations
 	DefaultOAuthRefreshTimeout = 30 * time.Second
+
+	// HTTP header names used by the MCP Streamable HTTP transport. Go's
+	// net/http canonicalizes header keys internally (MCP-Session-Id becomes
+	// Mcp-Session-Id on the wire), so the value used in Set/Get calls does
+	// not affect behaviour — but using the spec form aids readability.
+	headerSessionID       = "MCP-Session-Id"
+	headerProtocolVersion = "MCP-Protocol-Version"
 )
 
 // supportedProtocolVersions lists all MCP protocol versions this server accepts.
@@ -912,7 +919,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		sessionID := r.Header.Get("MCP-Session-Id")
+		sessionID := r.Header.Get(headerSessionID)
 		if sessionID == "" {
 			http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
 			return
@@ -976,7 +983,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// For non-initialize requests, validate MCP-Protocol-Version header
 	if req.Method != "initialize" {
-		protocolVersion := r.Header.Get("MCP-Protocol-Version")
+		protocolVersion := r.Header.Get(headerProtocolVersion)
 
 		// Per spec: assume 2025-03-26 if missing for backwards compatibility
 		if protocolVersion == "" {
@@ -992,7 +999,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		// Validate session ID if session management is enabled
 		sm := s.getSessionManager()
 		if sm != nil {
-			sessionID := r.Header.Get("MCP-Session-Id")
+			sessionID := r.Header.Get(headerSessionID)
 			if sessionID == "" {
 				http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
 				return
@@ -1109,7 +1116,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 		}
 
 		// Set session ID header
-		w.Header().Set("MCP-Session-Id", sessionID)
+		w.Header().Set(headerSessionID, sessionID)
 	}
 
 	s.sendMCPResponse(w, req.ID, result)

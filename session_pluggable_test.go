@@ -128,7 +128,7 @@ func TestPluggableSessionManager(t *testing.T) {
 	}
 
 	// Session ID is returned in the MCP-Session-Id header
-	sessionID := w.Header().Get("MCP-Session-Id")
+	sessionID := w.Header().Get(headerSessionID)
 	if sessionID == "" {
 		t.Fatal("Expected session ID in MCP-Session-Id header")
 	}
@@ -280,7 +280,7 @@ func TestSessionWithNativeAndDiscoveryTools(t *testing.T) {
 		t.Fatalf("Initialize failed: %d - %s", w.Code, w.Body.String())
 	}
 
-	normalSessionID := w.Header().Get("MCP-Session-Id")
+	normalSessionID := w.Header().Get(headerSessionID)
 	if normalSessionID == "" {
 		t.Fatal("Expected session ID for normal mode session")
 	}
@@ -289,8 +289,8 @@ func TestSessionWithNativeAndDiscoveryTools(t *testing.T) {
 	listBody := `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`
 	req = httptest.NewRequest("POST", "/mcp", strings.NewReader(listBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Session-Id", normalSessionID)
-	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	req.Header.Set(headerSessionID, normalSessionID)
+	req.Header.Set(headerProtocolVersion, "2025-03-26")
 	w = httptest.NewRecorder()
 	server.HandleRequest(w, req)
 
@@ -315,7 +315,7 @@ func TestSessionWithNativeAndDiscoveryTools(t *testing.T) {
 		t.Fatalf("Initialize with show-all mode failed: %d - %s", w.Code, w.Body.String())
 	}
 
-	showAllSessionID := w.Header().Get("MCP-Session-Id")
+	showAllSessionID := w.Header().Get(headerSessionID)
 	if showAllSessionID == "" {
 		t.Fatal("Expected session ID for show-all mode session")
 	}
@@ -328,8 +328,8 @@ func TestSessionWithNativeAndDiscoveryTools(t *testing.T) {
 	listBody = `{"jsonrpc":"2.0","id":4,"method":"tools/list"}`
 	req = httptest.NewRequest("POST", "/mcp", strings.NewReader(listBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Session-Id", showAllSessionID)
-	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	req.Header.Set(headerSessionID, showAllSessionID)
+	req.Header.Set(headerProtocolVersion, "2025-03-26")
 	w = httptest.NewRecorder()
 	server.HandleRequest(w, req)
 

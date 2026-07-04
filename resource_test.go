@@ -119,6 +119,47 @@ func TestResourcesTemplatesListHTTP(t *testing.T) {
 	}
 }
 
+func TestUnregisterResourceTemplate(t *testing.T) {
+	s := NewServer("ns", "1")
+	s.RegisterResourceTemplate(
+		NewResourceTemplate("greeting://{name}", "Greeting", "greeting template", "text/plain"),
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseText(req.URI(), "hello "+req.StringOr("name", "?"), "text/plain"), nil
+		})
+
+	// Verify the template appears in templates/list.
+	res := doMCP(t, s, "resources/templates/list", nil)
+	raw, _ := json.Marshal(res["resourceTemplates"])
+	var templates []MCPResourceTemplate
+	if err := json.Unmarshal(raw, &templates); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(templates) != 1 || templates[0].URITemplate != "greeting://{name}" {
+		t.Fatalf("expected 1 template, got %+v", templates)
+	}
+
+	// Unregister existing template -> true.
+	if !s.UnregisterResourceTemplate("greeting://{name}") {
+		t.Fatal("expected UnregisterResourceTemplate to return true for existing template")
+	}
+
+	// Verify it's gone from templates/list.
+	res = doMCP(t, s, "resources/templates/list", nil)
+	raw, _ = json.Marshal(res["resourceTemplates"])
+	templates = nil
+	if err := json.Unmarshal(raw, &templates); err != nil {
+		t.Fatalf("unmarshal after unregister: %v", err)
+	}
+	if len(templates) != 0 {
+		t.Fatalf("expected 0 templates after unregister, got %d", len(templates))
+	}
+
+	// Unregister non-existent -> false.
+	if s.UnregisterResourceTemplate("greeting://{name}") {
+		t.Fatal("expected UnregisterResourceTemplate to return false for non-existent template")
+	}
+}
+
 func TestResourceReadStaticHTTP(t *testing.T) {
 	s := staticResourceServer(t)
 

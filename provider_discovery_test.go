@@ -54,7 +54,7 @@ func TestShowAllModeWithProvidersAttached(t *testing.T) {
 	listBody := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(listBody))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Protocol-Version", "2025-03-26")
+	req.Header.Set(headerProtocolVersion, "2025-03-26")
 	req.Header.Set(ShowAllHeader, "true")
 
 	// Attach provider BEFORE calling HandleRequest (like llmrouter does)

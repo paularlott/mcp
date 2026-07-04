@@ -141,7 +141,7 @@ func TestProtocolVersionHeader_WhitespaceTrimming(t *testing.T) {
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
 	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Protocol-Version", "  2024-11-05  ") // whitespace padded
+	req.Header.Set(headerProtocolVersion, "  2024-11-05  ") // whitespace padded
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 

@@ -68,7 +68,7 @@ func TestClient_SendsSessionAndAuth(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(res)
 		case "tools/list":
-			sessionSeen = r.Header.Get("Mcp-Session-Id")
+			sessionSeen = r.Header.Get(headerSessionID)
 			authSeen = r.Header.Get("Authorization")
 			res := MCPResponse{JSONRPC: "2.0", ID: rpc.ID, Result: map[string]any{"tools": []MCPTool{}}}
 			w.Header().Set("Content-Type", "application/json")
@@ -101,14 +101,14 @@ func TestClient_SessionFromHeader(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&rpc)
 		switch rpc.Method {
 		case "initialize":
-			w.Header().Set("Mcp-Session-Id", "hdr-456")
+			w.Header().Set(headerSessionID, "hdr-456")
 			_ = json.NewEncoder(w).Encode(MCPResponse{JSONRPC: "2.0", ID: rpc.ID, Result: map[string]any{
 				"protocolVersion": MCPProtocolVersionLatest,
 				"capabilities":    capabilities{Tools: map[string]any{}},
 				"serverInfo":      serverInfo{Name: "x", Version: "1"},
 			}})
 		case "tools/list":
-			sessionSeen = r.Header.Get("Mcp-Session-Id")
+			sessionSeen = r.Header.Get(headerSessionID)
 			_ = json.NewEncoder(w).Encode(MCPResponse{JSONRPC: "2.0", ID: rpc.ID, Result: map[string]any{"tools": []MCPTool{}}})
 		}
 	})

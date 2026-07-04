@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +123,122 @@ func TestNotificationsManualHookEmits(t *testing.T) {
 	if tools.Load() == 0 || resources.Load() == 0 || prompts.Load() == 0 {
 		t.Fatalf("expected all three callbacks to fire: tools=%d resources=%d prompts=%d",
 			tools.Load(), resources.Load(), prompts.Load())
+	}
+}
+
+// TestNotificationsHTTPResourcesChanged verifies the full round-trip for
+// notifications/resources/listChanged over SSE: the client registers an
+// OnResourcesChanged callback, the server mutates its resource set (auto-emit),
+// and the callback fires so the client re-fetches and sees the new resource.
+func TestNotificationsHTTPResourcesChanged(t *testing.T) {
+	s := NewServer("ns", "1")
+	s.RegisterResource(
+		NewResource("test://a", "a", "resource a", "text/plain"),
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseText("test://a", "a", "text/plain"), nil
+		})
+
+	hs := httptest.NewServer(http.HandlerFunc(s.HandleRequest))
+	defer hs.Close()
+
+	client := NewClient(hs.URL, nil, "")
+	defer client.Close()
+
+	var changed atomic.Int32
+	client.OnResourcesChanged(func() { changed.Add(1) }).EnableNotifications()
+
+	ctx := context.Background()
+	resources, err := client.ListResources(ctx)
+	if err != nil {
+		t.Fatalf("ListResources: %v", err)
+	}
+	if len(resources) != 1 {
+		t.Fatalf("expected 1 resource, got %d", len(resources))
+	}
+
+	waitForSubscribers(t, s, 1)
+
+	// Mutate: register a second resource -> auto-emits notifications/resources/listChanged.
+	s.RegisterResource(
+		NewResource("test://b", "b", "resource b", "text/plain"),
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewResourceResponseText("test://b", "b", "text/plain"), nil
+		})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if changed.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if changed.Load() == 0 {
+		t.Fatal("OnResourcesChanged callback never fired")
+	}
+
+	resources, err = client.ListResources(ctx)
+	if err != nil {
+		t.Fatalf("ListResources after change: %v", err)
+	}
+	if len(resources) != 2 {
+		t.Fatalf("expected 2 resources after notification, got %d", len(resources))
+	}
+}
+
+// TestNotificationsHTTPPromptsChanged verifies the full round-trip for
+// notifications/prompts/listChanged over SSE.
+func TestNotificationsHTTPPromptsChanged(t *testing.T) {
+	s := NewServer("ns", "1")
+	s.RegisterPrompt(
+		NewPrompt("a", "prompt a"),
+		func(ctx context.Context, req *PromptRequest) (*PromptResponse, error) {
+			return NewPromptResponseText("a"), nil
+		})
+
+	hs := httptest.NewServer(http.HandlerFunc(s.HandleRequest))
+	defer hs.Close()
+
+	client := NewClient(hs.URL, nil, "")
+	defer client.Close()
+
+	var changed atomic.Int32
+	client.OnPromptsChanged(func() { changed.Add(1) }).EnableNotifications()
+
+	ctx := context.Background()
+	prompts, err := client.ListPrompts(ctx)
+	if err != nil {
+		t.Fatalf("ListPrompts: %v", err)
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(prompts))
+	}
+
+	waitForSubscribers(t, s, 1)
+
+	// Mutate: register a second prompt -> auto-emits notifications/prompts/listChanged.
+	s.RegisterPrompt(
+		NewPrompt("b", "prompt b"),
+		func(ctx context.Context, req *PromptRequest) (*PromptResponse, error) {
+			return NewPromptResponseText("b"), nil
+		})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if changed.Load() > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if changed.Load() == 0 {
+		t.Fatal("OnPromptsChanged callback never fired")
+	}
+
+	prompts, err = client.ListPrompts(ctx)
+	if err != nil {
+		t.Fatalf("ListPrompts after change: %v", err)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("expected 2 prompts after notification, got %d", len(prompts))
 	}
 }
 
@@ -379,6 +497,89 @@ func TestSSESinkDropsWhenFull(t *testing.T) {
 	// Only the last ~2 are retained; the rest dropped. We just need non-blocking.
 	if cap(sink.ch) != 2 {
 		t.Fatalf("unexpected buffer cap %d", cap(sink.ch))
+	}
+}
+
+// TestMCPNotificationOmitsID ensures notifications are JSON-RPC 2.0 compliant:
+// a notification MUST NOT include an "id" member. Regression test for a bug
+// where MCPRequest (with a non-omitempty "id" tag) was used to serialize
+// notifications, producing "id":null.
+func TestMCPNotificationOmitsID(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		method string
+		params any
+	}{
+		{"tools", NotificationToolsChanged, nil},
+		{"resources", NotificationResourcesChanged, nil},
+		{"prompts", NotificationPromptsChanged, nil},
+		{"with-params", "notifications/progress", map[string]any{"progress": 0.5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(MCPNotification{
+				JSONRPC: "2.0",
+				Method:  tc.method,
+				Params:  tc.params,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if _, ok := raw["id"]; ok {
+				t.Fatalf("notification must not contain \"id\": %s", payload)
+			}
+			if string(raw["jsonrpc"]) != `"2.0"` {
+				t.Fatalf("bad jsonrpc: %s", raw["jsonrpc"])
+			}
+			if string(raw["method"]) != `"`+tc.method+`"` {
+				t.Fatalf("bad method: %s", raw["method"])
+			}
+		})
+	}
+}
+
+// TestSSENotificationWireFormatOmitsID is an end-to-end check: connect an SSE
+// stream, trigger a notification, and verify the raw SSE data line has no
+// "id" field.
+func TestSSENotificationWireFormatOmitsID(t *testing.T) {
+	s := NewServer("ns", "1")
+	s.RegisterTool(NewTool("a", "a"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("a"), nil
+	})
+	hs := httptest.NewServer(http.HandlerFunc(s.handleSSEStream))
+	defer hs.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", hs.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	waitForSubscribers(t, s, 1)
+	s.NotifyToolsChanged()
+
+	// Read one SSE data line.
+	buf := make([]byte, 4096)
+	n, err := resp.Body.Read(buf)
+	if err != nil {
+		t.Fatalf("read SSE: %v", err)
+	}
+	line := string(buf[:n])
+	if !strings.Contains(line, `"method":"notifications/tools/listChanged"`) {
+		t.Fatalf("expected listChanged notification, got: %s", line)
+	}
+	if strings.Contains(line, `"id"`) {
+		t.Fatalf("SSE notification must not contain \"id\": %s", line)
 	}
 }
 

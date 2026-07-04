@@ -122,14 +122,14 @@ func (c *Client) connectAndReadSSE(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("MCP-Protocol-Version", MCPProtocolVersionLatest)
+	req.Header.Set(headerProtocolVersion, MCPProtocolVersionLatest)
 
 	c.mu.RLock()
 	sessionID := c.sessionID
 	auth := c.auth
 	c.mu.RUnlock()
 	if sessionID != "" {
-		req.Header.Set("Mcp-Session-Id", sessionID)
+		req.Header.Set(headerSessionID, sessionID)
 	}
 	if auth != nil {
 		if h, err := auth.GetAuthHeader(); err == nil && h != "" {

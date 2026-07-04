@@ -43,7 +43,7 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate protocol version (default per spec for non-initialize requests).
-	protocolVersion := r.Header.Get("MCP-Protocol-Version")
+	protocolVersion := r.Header.Get(headerProtocolVersion)
 	if protocolVersion == "" {
 		protocolVersion = "2025-03-26"
 	}
@@ -55,14 +55,13 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	// When session management is enabled, require a valid session so a stream is
 	// bound to an authenticated client. Without sessions, the stream is anonymous
 	// (broadcast to all anonymous subscribers).
-	sessionID := ""
 	if sm := s.getSessionManager(); sm != nil {
-		sessionID = r.Header.Get("MCP-Session-Id")
-		if sessionID == "" {
+		sid := r.Header.Get(headerSessionID)
+		if sid == "" {
 			http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
 			return
 		}
-		valid, err := sm.ValidateSession(r.Context(), sessionID)
+		valid, err := sm.ValidateSession(r.Context(), sid)
 		if err != nil {
 			http.Error(w, "Session validation error", http.StatusInternalServerError)
 			return
@@ -81,7 +80,7 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	sink := newSSESink(64)
-	subID := s.notifications.subscribe(sessionID, sink)
+	subID := s.notifications.subscribe(sink)
 	defer s.notifications.unsubscribe(subID)
 
 	heartbeat := time.NewTicker(30 * time.Second)
@@ -90,7 +89,7 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case ev := <-sink.ch:
-			payload, err := json.Marshal(MCPRequest{
+			payload, err := json.Marshal(MCPNotification{
 				JSONRPC: "2.0",
 				Method:  ev.method,
 				Params:  ev.params,

@@ -21,9 +21,8 @@ type notificationSink interface {
 }
 
 type notificationSubscriber struct {
-	id      uint64
-	session string // optional; empty when no session management
-	sink    notificationSink
+	id   uint64
+	sink notificationSink
 }
 
 // notificationHub fans outbound notifications out to every registered sink. The
@@ -38,12 +37,12 @@ func newNotificationHub() *notificationHub {
 	return &notificationHub{subscribers: make(map[uint64]*notificationSubscriber)}
 }
 
-func (h *notificationHub) subscribe(session string, sink notificationSink) uint64 {
+func (h *notificationHub) subscribe(sink notificationSink) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.nextID++
 	id := h.nextID
-	h.subscribers[id] = &notificationSubscriber{id: id, session: session, sink: sink}
+	h.subscribers[id] = &notificationSubscriber{id: id, sink: sink}
 	return id
 }
 

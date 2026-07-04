@@ -181,7 +181,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	}
 
 	// Check for session ID in response headers first
-	if sessionID := respHeaders.Get("Mcp-Session-Id"); sessionID != "" {
+	if sessionID := respHeaders.Get(headerSessionID); sessionID != "" {
 		c.sessionID = sessionID
 	} else if result, ok := resp.Result.(map[string]any); ok {
 		// Check if the server provided a session ID in the response body
@@ -584,11 +584,11 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json,  text/event-stream")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("%s/%s", mcpClientName, mcpClientVersion))
 
 	if c.sessionID != "" && req.Method != "initialize" {
-		httpReq.Header.Set("Mcp-Session-Id", c.sessionID)
+		httpReq.Header.Set(headerSessionID, c.sessionID)
 	}
 
 	if c.auth != nil {

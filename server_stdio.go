@@ -63,7 +63,7 @@ func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, o
 	// a drainer writes them under writeMu. This keeps emit (which can run under
 	// s.mu from RegisterTool) from ever blocking on a slow/stuck client.
 	sink := newStreamNotifySink(out, &writeMu)
-	subID := s.notifications.subscribe("", sink)
+	subID := s.notifications.subscribe(sink)
 	defer s.notifications.unsubscribe(subID)
 	defer sink.stop()
 
@@ -126,7 +126,7 @@ func (sn *streamNotifySink) drain() {
 	for {
 		select {
 		case ev := <-sn.ch:
-			payload, err := json.Marshal(MCPRequest{JSONRPC: "2.0", Method: ev.method, Params: ev.params})
+			payload, err := json.Marshal(MCPNotification{JSONRPC: "2.0", Method: ev.method, Params: ev.params})
 			if err != nil {
 				continue
 			}
