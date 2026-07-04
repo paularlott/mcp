@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/paularlott/jsonrpc"
 )
@@ -38,6 +40,10 @@ func (s *Server) ServeStdio(ctx context.Context, opts ...StdioOption) error {
 // newline-delimited JSON-RPC 2.0 streams. Use it for in-process pipes or any
 // transport that is not the process's own stdio; ServeStdio wraps it for the
 // common case.
+//
+// The read loop runs here (in mcp) rather than in jsonrpc.Server.ServeStream so
+// that outbound notifications can share the stream's write mutex, and so the
+// caller's ctx (which carries the show-all flag) is threaded to handlers.
 func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, opts ...StdioOption) error {
 	cfg := stdioConfig{}
 	for _, opt := range opts {
@@ -46,8 +52,94 @@ func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, o
 	if cfg.showAll {
 		ctx = WithShowAllTools(ctx)
 	}
-	return s.newStdioDispatcher().ServeStream(ctx, in, out)
+
+	srv := s.newStdioDispatcher()
+
+	// A shared write mutex guards out so responses and notifications serialize.
+	var writeMu sync.Mutex
+	var wg sync.WaitGroup
+
+	// The sink is non-blocking: it queues notifications to a buffered channel and
+	// a drainer writes them under writeMu. This keeps emit (which can run under
+	// s.mu from RegisterTool) from ever blocking on a slow/stuck client.
+	sink := newStreamNotifySink(out, &writeMu)
+	subID := s.notifications.subscribe("", sink)
+	defer s.notifications.unsubscribe(subID)
+	defer sink.stop()
+
+	decoder := json.NewDecoder(in)
+	for {
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			wg.Wait() // let in-flight handlers flush their responses
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if len(bytes.TrimSpace(raw)) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(msg json.RawMessage) {
+			defer wg.Done()
+			if resp, hasResp := srv.HandleMessage(ctx, msg); hasResp {
+				writeMu.Lock()
+				_, _ = out.Write(append(resp, '\n'))
+				writeMu.Unlock()
+			}
+		}(raw)
+	}
 }
+
+// streamNotifySink is a notificationSink that writes JSON-RPC notifications to a
+// stdio stream. send is non-blocking: it enqueues to a buffered channel and a
+// drain goroutine does the actual write under the shared response mutex. This
+// keeps a slow/stuck client from stalling notification emission (which can run
+// under s.mu via RegisterTool). Events are dropped if the buffer fills.
+type streamNotifySink struct {
+	ch   chan sseEvent
+	out  io.Writer
+	mu   *sync.Mutex
+	done chan struct{}
+}
+
+func newStreamNotifySink(out io.Writer, mu *sync.Mutex) *streamNotifySink {
+	sn := &streamNotifySink{
+		ch:   make(chan sseEvent, 64),
+		out:  out,
+		mu:   mu,
+		done: make(chan struct{}),
+	}
+	go sn.drain()
+	return sn
+}
+
+func (sn *streamNotifySink) send(method string, params any) {
+	select {
+	case sn.ch <- sseEvent{method: method, params: params}:
+	default: // buffer full: drop (listChanged is an idempotent re-fetch hint)
+	}
+}
+
+func (sn *streamNotifySink) drain() {
+	for {
+		select {
+		case ev := <-sn.ch:
+			payload, err := json.Marshal(MCPRequest{JSONRPC: "2.0", Method: ev.method, Params: ev.params})
+			if err != nil {
+				continue
+			}
+			sn.mu.Lock()
+			_, _ = sn.out.Write(append(payload, '\n'))
+			sn.mu.Unlock()
+		case <-sn.done:
+			return
+		}
+	}
+}
+
+func (sn *streamNotifySink) stop() { close(sn.done) }
 
 // newStdioDispatcher builds the jsonrpc.Server that frames and dispatches MCP
 // methods over a stream. The MCP protocol is JSON-RPC 2.0, so the framing,

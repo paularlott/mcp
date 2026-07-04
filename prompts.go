@@ -26,6 +26,7 @@ func (s *Server) RegisterPrompt(pb *PromptBuilder, handler PromptHandler) {
 		descriptor: pb.ToMCPPrompt(),
 		handler:    handler,
 	}
+	s.NotifyPromptsChanged()
 }
 
 // UnregisterPrompt removes a prompt by name. Returns true if a prompt was removed.
@@ -34,6 +35,9 @@ func (s *Server) UnregisterPrompt(name string) bool {
 	defer s.mu.Unlock()
 	_, existed := s.prompts[name]
 	delete(s.prompts, name)
+	if existed {
+		s.NotifyPromptsChanged()
+	}
 	return existed
 }
 

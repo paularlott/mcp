@@ -41,6 +41,7 @@ func (s *Server) RegisterResource(rb *ResourceBuilder, handler ResourceHandler) 
 		descriptor: rb.ToMCPResource(),
 		handler:    handler,
 	}
+	s.NotifyResourcesChanged()
 }
 
 // UnregisterResource removes a static resource by URI. Returns true if a
@@ -50,6 +51,9 @@ func (s *Server) UnregisterResource(uri string) bool {
 	defer s.mu.Unlock()
 	_, existed := s.resources[uri]
 	delete(s.resources, uri)
+	if existed {
+		s.NotifyResourcesChanged()
+	}
 	return existed
 }
 
@@ -73,6 +77,7 @@ func (s *Server) RegisterResourceTemplate(tb *ResourceTemplateBuilder, handler R
 		pattern:    pattern,
 		varNames:   varNames,
 	})
+	s.NotifyResourcesChanged()
 }
 
 // ListResources returns all registered static resources plus any contributed by

@@ -41,6 +41,25 @@ type Client struct {
 	initialized bool
 	sessionID   string
 	transport   clientTransport // non-nil for non-HTTP transports (e.g. stdio)
+
+	// Notification reader lifecycle. Kept on its own mutex so notification
+	// handling can't deadlock with c.mu (the request/cache lock).
+	readerMu          sync.Mutex
+	readerStarted     bool
+	readerWG          sync.WaitGroup
+	wantNotifications bool // set by EnableNotifications; gates reader startup
+	ctx               context.Context
+	cancel            context.CancelFunc
+
+	// User callbacks invoked on inbound listChanged notifications (HTTP SSE or
+	// stdio). All optional.
+	onToolsChanged     func()
+	onResourcesChanged func()
+	onPromptsChanged   func()
+	// onNotification is an internal hook used by the federation wiring
+	// (RegisterRemoteServer) to propagate upstream listChanged notifications
+	// downstream. It fires for every received notification, after cache handling.
+	onNotification func(method string, params any)
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -64,9 +83,16 @@ type batchTransport interface {
 }
 
 // Close releases resources held by the client's transport. For the default HTTP
-// transport it is a no-op; for a stdio subprocess transport it shuts the child
-// process down.
+// transport it stops the notification reader; for a stdio subprocess transport
+// it shuts the child process down.
 func (c *Client) Close() error {
+	c.readerMu.Lock()
+	if c.cancel != nil {
+		c.cancel()
+	}
+	c.readerMu.Unlock()
+	c.readerWG.Wait()
+
 	if c.transport != nil {
 		return c.transport.Close()
 	}
@@ -167,6 +193,17 @@ func (c *Client) Initialize(ctx context.Context) error {
 	}
 
 	c.initialized = true
+
+	// Start the notification reader (HTTP SSE) only if the caller opted in via
+	// EnableNotifications. No-op for stream transports, which receive
+	// notifications through their own peer handlers. Safe to call under c.mu: it
+	// only touches readerMu.
+	c.readerMu.Lock()
+	want := c.wantNotifications
+	c.readerMu.Unlock()
+	if want {
+		c.startNotifications()
+	}
 	return nil
 }
 

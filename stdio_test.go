@@ -233,3 +233,73 @@ func TestStdioSubprocessOnExit(t *testing.T) {
 		t.Fatal("WithClientOnExit did not fire after Close")
 	}
 }
+
+// TestStdioNotifications verifies a listChanged notification flows over stdio:
+// the server emits on RegisterTool, the stream client (jsonrpc Peer) receives
+// it, invalidates its tool cache, and fires the OnToolsChanged callback.
+func TestStdioNotifications(t *testing.T) {
+	server := mcp.NewServer("stdio-notify", "1.0.0")
+	server.RegisterTool(
+		mcp.NewTool("a", "tool a"),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			return mcp.NewToolResponseText("a"), nil
+		},
+	)
+
+	clientReader, serverWriter := io.Pipe() // server -> client
+	serverReader, clientWriter := io.Pipe() // client -> server
+
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = server.ServeStream(context.Background(), serverReader, serverWriter)
+	}()
+
+	client := mcp.NewStreamClient(clientReader, clientWriter, "")
+	defer func() {
+		client.Close()
+		clientWriter.Close()
+		<-serveDone
+		serverWriter.Close()
+	}()
+
+	changed := make(chan struct{}, 4)
+	client.OnToolsChanged(func() {
+		select {
+		case changed <- struct{}{}:
+		default:
+		}
+	})
+
+	ctx := context.Background()
+	tools, err := client.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+
+	// Mutate: auto-emits notifications/tools/listChanged over the stream.
+	server.RegisterTool(
+		mcp.NewTool("b", "tool b"),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			return mcp.NewToolResponseText("b"), nil
+		},
+	)
+
+	select {
+	case <-changed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnToolsChanged never fired over stdio")
+	}
+
+	// Cache invalidated -> re-list sees the new tool.
+	tools, err = client.ListTools(ctx)
+	if err != nil {
+		t.Fatalf("ListTools after change: %v", err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools after notification, got %d", len(tools))
+	}
+}

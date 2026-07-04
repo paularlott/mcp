@@ -113,6 +113,7 @@ type Server struct {
 	resources            map[string]*registeredResource // Static resources keyed by URI
 	resourceTemplates    []*registeredResourceTemplate  // Parameterized resource templates
 	prompts              map[string]*registeredPrompt   // Static prompts keyed by name
+	notifications        *notificationHub               // Fan-out for listChanged notifications
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
@@ -153,6 +154,7 @@ func NewServer(name, version string) *Server {
 		resources:         make(map[string]*registeredResource),
 		resourceTemplates: make([]*registeredResourceTemplate, 0),
 		prompts:           make(map[string]*registeredPrompt),
+		notifications:     newNotificationHub(),
 	}
 }
 
@@ -375,6 +377,7 @@ func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords .
 	} else {
 		s.registerNativeToolLocked(tool, handler, keywords...)
 	}
+	s.NotifyToolsChanged()
 }
 
 // registerNativeToolLocked registers a native tool while the lock is already held.
@@ -495,6 +498,7 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 
 	// Rebuild native cache from native tools only
 	s.rebuildNativeToolCacheLocked()
+	s.NotifyToolsChanged()
 }
 
 // UnregisterTool removes a tool by name from the server.
@@ -525,6 +529,7 @@ func (s *Server) UnregisterTool(name string) bool {
 	s.hasDiscoverableTools = false
 	s.recalcHasDiscoverableToolsLocked()
 
+	s.NotifyToolsChanged()
 	return true
 }
 
@@ -700,6 +705,21 @@ func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility T
 		remoteSearch: remoteSearch,
 	}
 	s.remoteClients[client.baseURL] = regClient
+
+	// Propagate upstream tool changes downstream: when this remote's tool set
+	// changes, refresh our merged cache and notify our own subscribers. This hook
+	// fires only when the caller has enabled notifications on the client (via
+	// [Client.EnableNotifications]); otherwise no reader is active and the hook
+	// never runs. Resources/prompts aren't federated, so only tools propagate.
+	client.setPropagationHook(func(method string, params any) {
+		if method != NotificationToolsChanged {
+			return
+		}
+		go func() {
+			_ = s.RefreshTools(context.Background())
+			s.NotifyToolsChanged()
+		}()
+	})
 
 	// Fetch tools from the new server
 	ctx := context.Background()
@@ -907,10 +927,16 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle GET requests (SSE streaming not yet implemented)
+	// Handle GET requests: open a long-lived SSE stream for server->client
+	// notifications, but only when the client asks for an event stream (the
+	// Streamable HTTP push channel). A plain GET stays a 405.
 	if r.Method == http.MethodGet {
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			s.handleSSEStream(w, r)
+			return
+		}
 		w.Header().Set("Allow", "POST, OPTIONS")
-		http.Error(w, "Method not allowed - SSE streaming not implemented", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1108,14 +1134,14 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 	default: // 2025-03-26, 2025-06-18 and use latest if unknown
 		// Default to latest
 		caps.Tools = map[string]any{
-			"listChanged": false,
+			"listChanged": true,
 		}
 		caps.Resources = map[string]any{
 			"subscribe":   false,
-			"listChanged": false,
+			"listChanged": true,
 		}
 		caps.Prompts = map[string]any{
-			"listChanged": false,
+			"listChanged": true,
 		}
 	}
 

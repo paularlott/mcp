@@ -148,11 +148,14 @@ func NewStdioClient(command string, args []string, namespace string, opts ...Std
 		procOpts = append(procOpts, jsonrpc.WithOnExit(cfg.onExit))
 	}
 
-	proc, err := jsonrpc.NewProcessTransport(command, args, procOpts...)
+	// Use a bidirectional Peer so inbound listChanged notifications from the
+	// server are delivered to handlers (and on to the client's cache). NewProcessPeer
+	// starts its read loop immediately.
+	peer, err := jsonrpc.NewProcessPeer(command, args, jsonrpc.NewServer(), procOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return newStreamClient(jsonrpc.NewClient(proc), namespace), nil
+	return newPeerClient(peer, namespace), nil
 }
 
 // NewStreamClient returns an MCP client that speaks newline-delimited JSON-RPC
@@ -161,12 +164,15 @@ func NewStdioClient(command string, args []string, namespace string, opts ...Std
 // over an in-process pipe), or any transport you manage yourself. Close stops
 // the client's reader.
 func NewStreamClient(in io.Reader, out io.Writer, namespace string) *Client {
-	transport := jsonrpc.NewStreamTransport(in, out)
-	return newStreamClient(jsonrpc.NewClient(transport), namespace)
+	peer := jsonrpc.NewPeer(in, out, jsonrpc.NewServer())
+	c := newPeerClient(peer, namespace)
+	go func() { _ = peer.Serve() }() // NewPeer does not start the reader itself
+	return c
 }
 
-// newStreamClient builds a Client whose round-trips go through the jsonrpc
-// client, applying the same namespace normalisation as NewClientWithPool.
+// newStreamClient builds a Client from an already-connected jsonrpc.Client. It
+// is retained for callers that have a Client/transport already and do not need
+// inbound notification handling.
 func newStreamClient(rpc *jsonrpc.Client, namespace string) *Client {
 	separator := DefaultNamespaceSeparator
 	namespace = strings.TrimSpace(namespace)
@@ -178,4 +184,37 @@ func newStreamClient(rpc *jsonrpc.Client, namespace string) *Client {
 		separator: separator,
 		transport: &stdioTransport{rpc: rpc},
 	}
+}
+
+// newPeerClient wires a bidirectional jsonrpc.Peer into a Client: outbound calls
+// go through the Peer's Client (unchanged stdioTransport), and inbound
+// listChanged notifications are dispatched to the Client's notification handler.
+func newPeerClient(peer *jsonrpc.Peer, namespace string) *Client {
+	separator := DefaultNamespaceSeparator
+	namespace = strings.TrimSpace(namespace)
+	if namespace != "" && !strings.HasSuffix(namespace, separator) {
+		namespace = namespace + separator
+	}
+	c := &Client{
+		namespace: namespace,
+		separator: separator,
+		transport: &stdioTransport{rpc: peer.Client()},
+	}
+	registerPeerNotificationHandlers(peer, c)
+	return c
+}
+
+// registerPeerNotificationHandlers routes the three listChanged notifications
+// from the remote server to the client's shared handler (which invalidates
+// caches, fires user callbacks, and runs the propagation hook).
+func registerPeerNotificationHandlers(peer *jsonrpc.Peer, c *Client) {
+	mk := func(method string) jsonrpc.Handler {
+		return func(ctx context.Context, params json.RawMessage) (any, error) {
+			c.handleNotification(method, nil)
+			return nil, nil
+		}
+	}
+	peer.Handle(NotificationToolsChanged, mk(NotificationToolsChanged))
+	peer.Handle(NotificationResourcesChanged, mk(NotificationResourcesChanged))
+	peer.Handle(NotificationPromptsChanged, mk(NotificationPromptsChanged))
 }

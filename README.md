@@ -10,6 +10,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Rich Responses**: Support for text, image, audio, resource, and structured content
 - **Resources**: Serve addressable data by URI (`resources/list`, `resources/read`, resource templates), including per-user/session resources via `ResourceProvider`
 - **Prompts**: Reusable message templates with arguments (`prompts/list`, `prompts/get`), including per-user/session prompts via `PromptProvider`
+- **ListChanged Notifications**: Push-based tool/resource/prompt refresh over HTTP (SSE) and stdio, with automatic propagation through federated servers
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts
 - **Thread Safe**: Concurrent request handling with mutex protection
 - **Remote Servers**: Connect to and proxy remote MCP servers with authentication
@@ -132,6 +133,7 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Remote Servers](docs/guides/remote-servers.md)** - Connecting and proxying remote MCP servers, parallel tool calls
 - **[Resources](docs/guides/resources.md)** - Serving addressable data by URI, resource templates, and per-user/session resources
 - **[Prompts](docs/guides/prompts.md)** - Reusable message templates with arguments, and per-user/session prompts
+- **[Notifications](docs/guides/notifications.md)** - Push-based list refresh (listChanged) over HTTP and stdio, with federation propagation
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
 - **[Error Handling](docs/guides/error-handling.md)** - Structured error patterns and best practices
