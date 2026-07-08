@@ -65,6 +65,21 @@ func (s *ChatStream) Next() bool {
 			continue
 		case resp, ok := <-s.responseChan:
 			if !ok {
+				// Response channel closed. Before declaring the stream
+				// done, drain errorChan: the producer goroutine may have
+				// sent an error just before closing both channels, and
+				// select may have picked responseChan first (Go's select
+				// is non-deterministic when multiple cases are ready).
+				// Without this check the error would be silently lost.
+				if s.errorChan != nil {
+					select {
+					case err, eok := <-s.errorChan:
+						if eok && err != nil {
+							s.err = err
+						}
+					default:
+					}
+				}
 				s.done = true
 				return false
 			}
