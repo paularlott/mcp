@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -24,7 +25,7 @@ func CreateResponseEmulated(ctx context.Context, completer ChatCompleter, manage
 	if req.Background {
 		return createResponseBackground(ctx, completer, manager, req)
 	}
-	return createResponseSync(ctx, completer, req)
+	return createResponseSync(ctx, completer, manager, req)
 }
 
 // createResponseBackground creates an async response that processes in background
@@ -33,7 +34,7 @@ func createResponseBackground(ctx context.Context, completer ChatCompleter, mana
 	asyncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 
 	// Create response state
-	state := manager.Create(cancel)
+	state := manager.Create(cancel, req.Model)
 
 	// Start async processing
 	go processResponseAsync(asyncCtx, state, req, completer)
@@ -48,8 +49,10 @@ func createResponseBackground(ctx context.Context, completer ChatCompleter, mana
 	}, nil
 }
 
-// createResponseSync processes the response synchronously
-func createResponseSync(ctx context.Context, completer ChatCompleter, req CreateResponseRequest) (*ResponseObject, error) {
+// createResponseSync processes the response synchronously and registers the
+// result in the manager under a stable response ID so it is retrievable via
+// GetResponseEmulated afterwards.
+func createResponseSync(ctx context.Context, completer ChatCompleter, manager *ResponseManager, req CreateResponseRequest) (*ResponseObject, error) {
 	// Convert CreateResponseRequest to ChatCompletionRequest
 	chatReq, err := ConvertResponseToChatRequest(req)
 	if err != nil {
@@ -62,8 +65,13 @@ func createResponseSync(ctx context.Context, completer ChatCompleter, req Create
 		return nil, err
 	}
 
-	// Convert ChatCompletionResponse to ResponseObject
-	return ConvertChatToResponseObject(chatResp, req.Model), nil
+	// Convert ChatCompletionResponse to ResponseObject and register it so the
+	// caller can later GET/DELETE/CANCEL it by ID.
+	respObj := ConvertChatToResponseObject(chatResp, req.Model)
+	state := manager.Create(nil, req.Model)
+	respObj.ID = state.ID
+	state.SetResult(respObj)
+	return respObj, nil
 }
 
 // GetResponseEmulated retrieves a response by ID (blocking until complete or error)
@@ -109,6 +117,17 @@ func GetResponseEmulated(ctx context.Context, manager *ResponseManager, id strin
 	}
 
 done:
+	if status == StatusCancelled {
+		// Cancelled responses have no result; return a minimal cancelled object
+		// (matching the native API which returns the response in cancelled state).
+		return &ResponseObject{
+			ID:        id,
+			Object:    "response",
+			Status:    "cancelled",
+			CreatedAt: state.created_at.Unix(),
+			Model:     state.model,
+		}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -189,12 +208,19 @@ func processResponseAsync(ctx context.Context, state *ResponseState, req CreateR
 	// Use the completer's ChatCompletion which handles tools automatically
 	chatResp, err := completer.ChatCompletion(ctx, chatReq)
 	if err != nil {
+		// If the response was cancelled while in flight, don't overwrite the
+		// cancelled status with this error.
+		if state.GetStatus() == StatusCancelled {
+			return
+		}
 		state.SetError(err)
 		return
 	}
 
-	// Convert ChatCompletionResponse to ResponseObject
+	// Convert ChatCompletionResponse to ResponseObject, preserving the response
+	// ID assigned at creation so callers can retrieve it by that ID.
 	respObj := ConvertChatToResponseObject(chatResp, req.Model)
+	respObj.ID = state.ID
 
 	state.SetResult(respObj)
 }
@@ -243,7 +269,7 @@ func ConvertInputToMessages(input []any) []Message {
 			switch itemType {
 			case "message", "user_message", "system_message", "assistant_message":
 				msg := Message{
-					Role: getRoleFromItemType(itemType),
+					Role: getRoleFromItemType(itemType, itemMap),
 				}
 				if content, ok := itemMap["content"]; ok {
 					msg.Content = content
@@ -268,6 +294,27 @@ func ConvertInputToMessages(input []any) []Message {
 					msg.Content = content
 				}
 				messages = append(messages, msg)
+
+			case "function_call":
+				// A prior assistant tool call, replayed as an assistant message
+				// carrying tool_calls so the completions provider sees the turn.
+				callID := getString(itemMap, "call_id")
+				if callID == "" {
+					callID = getString(itemMap, "id")
+				}
+				name := getString(itemMap, "name")
+				argsRaw := getString(itemMap, "arguments")
+				var args map[string]any
+				if argsRaw != "" {
+					_ = json.Unmarshal([]byte(argsRaw), &args)
+				}
+				if args == nil {
+					args = map[string]any{}
+				}
+				messages = append(messages, Message{
+					Role:      "assistant",
+					ToolCalls: []ToolCall{{ID: callID, Type: "function", Function: ToolCallFunction{Name: name, Arguments: args}}},
+				})
 			}
 		}
 	}
@@ -302,8 +349,16 @@ func toResponseUsage(u *Usage) *ResponseUsage {
 	return ru
 }
 
-// getRoleFromItemType maps Response API item types to chat roles
-func getRoleFromItemType(itemType string) string {
+// getRoleFromItemType maps Response API item types to chat roles. For the
+// canonical "message" type, the role is carried in the item's "role" field
+// (user/assistant/system/developer); the typed variants imply a fixed role.
+func getRoleFromItemType(itemType string, itemMap map[string]any) string {
+	if itemType == "message" {
+		if role := getString(itemMap, "role"); role != "" {
+			return role
+		}
+		return "user"
+	}
 	switch itemType {
 	case "user_message":
 		return "user"
@@ -361,12 +416,14 @@ func ConvertChatToResponseObject(resp *ChatCompletionResponse, model string) *Re
 
 		// Add tool calls if any
 		for _, tc := range choice.Message.ToolCalls {
+			// Native Responses API returns arguments as a JSON string.
+			argsJSON, _ := json.Marshal(tc.Function.Arguments)
 			toolCallOutput := map[string]any{
 				"type":      "function_call",
 				"id":        tc.ID,
 				"call_id":   tc.ID,
 				"name":      tc.Function.Name,
-				"arguments": tc.Function.Arguments,
+				"arguments": string(argsJSON),
 			}
 			output = append(output, toolCallOutput)
 		}

@@ -1,6 +1,9 @@
 package openai
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // ResponseOutputItem represents a typed output item in a ResponseObject.
 type ResponseOutputItem struct {
@@ -121,6 +124,66 @@ type ResponseInputTokensResponse struct {
 	Data   []TokenDetail `json:"data"`
 }
 
+// ResponseDeleted is the body returned by DELETE /responses/{id}. Per the
+// Responses API spec the endpoint returns HTTP 200 (not 204) with this body,
+// and object is "response" (not "response.deleted").
+type ResponseDeleted struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"` // always "response"
+	Deleted bool   `json:"deleted"`
+}
+
+// NewResponseDeleted returns the spec-shaped body for a successful
+// DELETE /responses/{id}. Use with DeleteStatusCode.
+func NewResponseDeleted(id string) *ResponseDeleted {
+	return &ResponseDeleted{ID: id, Object: "response", Deleted: true}
+}
+
+// ResponseInputTokensCount is the body returned by POST /responses/input_tokens,
+// which counts input tokens for a request without creating a response.
+type ResponseInputTokensCount struct {
+	Object      string `json:"object"` // "response.input_tokens"
+	InputTokens int    `json:"input_tokens"`
+}
+
+// NewResponseInputTokensCount returns the spec-shaped body for
+// POST /responses/input_tokens.
+func NewResponseInputTokensCount(inputTokens int) *ResponseInputTokensCount {
+	return &ResponseInputTokensCount{Object: "response.input_tokens", InputTokens: inputTokens}
+}
+
+// HTTP status codes for the Responses API endpoints. These centralise the spec
+// decisions that are non-obvious (create returns 200 not 201; delete returns
+// 200 not 204) so each consumer doesn't re-derive them.
+const (
+	// CreateStatusCode is returned by POST /responses. The spec returns 200,
+	// not 201 — including background requests, which return a response object
+	// with status "in_progress".
+	CreateStatusCode = http.StatusOK
+
+	// RetrieveStatusCode is returned by GET /responses/{id}.
+	RetrieveStatusCode = http.StatusOK
+
+	// DeleteStatusCode is returned by DELETE /responses/{id}. The spec returns
+	// 200 (not 204) with a NewResponseDeleted body.
+	DeleteStatusCode = http.StatusOK
+
+	// ListStatusCode is returned by GET /responses.
+	ListStatusCode = http.StatusOK
+
+	// CancelStatusCode is returned by POST /responses/{id}/cancel.
+	CancelStatusCode = http.StatusOK
+
+	// CompactStatusCode is returned by POST /responses/{id}/compact.
+	CompactStatusCode = http.StatusOK
+
+	// InputItemsStatusCode is returned by GET /responses/{id}/input_items.
+	InputItemsStatusCode = http.StatusOK
+
+	// InputTokensStatusCode is returned by POST /responses/input_tokens.
+	InputTokensStatusCode = http.StatusOK
+)
+
 // TokenDetail represents detailed information about a token
 type TokenDetail struct {
 	Text        string  `json:"text"`
@@ -193,31 +256,55 @@ func (r CreateResponseRequest) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON captures unknown provider-specific request fields into
 // ExtraBody so routers can preserve them when forwarding requests upstream.
+// The `input` field is accepted either as a string (treated as a single user
+// message, per the Responses API spec) or as an array of input items.
 func (r *CreateResponseRequest) UnmarshalJSON(data []byte) error {
-	type createResponseRequestAlias CreateResponseRequest
-	var raw struct {
-		createResponseRequestAlias
-		ExtraBody map[string]any `json:"extra_body,omitempty"`
+	type alias CreateResponseRequest
+
+	// Probe input: the spec allows a string or an array of items. The Input
+	// field is []any, so a bare string would fail the decode — extract and
+	// normalise it ourselves.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return err
 	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	inputRaw := top["input"]
+
+	decodePayload := data
+	if len(inputRaw) > 0 && string(inputRaw) != "null" {
+		var s string
+		if err := json.Unmarshal(inputRaw, &s); err == nil {
+			// input is a string: drop it from the payload so the []any decode
+			// below doesn't fail, then store it in the normalised array form.
+			delete(top, "input")
+			decodePayload, _ = json.Marshal(top)
+			r.Input = []any{map[string]any{"type": "message", "role": "user", "content": s}}
+		}
+	}
+
+	// Decode all standard fields (alias avoids recursing back into this method).
+	if err := json.Unmarshal(decodePayload, (*alias)(r)); err != nil {
 		return err
 	}
 
-	*r = CreateResponseRequest(raw.createResponseRequestAlias)
-
+	// Capture unknown fields into ExtraBody.
 	var body map[string]any
 	if err := json.Unmarshal(data, &body); err != nil {
 		return err
 	}
-
 	extraBody := make(map[string]any)
 	for key, value := range body {
 		if _, known := createResponseRequestJSONFields[key]; !known {
 			extraBody[key] = value
 		}
 	}
-	for key, value := range raw.ExtraBody {
-		extraBody[key] = value
+	if rawExtra, ok := top["extra_body"]; ok && len(rawExtra) > 0 {
+		var eb map[string]any
+		if json.Unmarshal(rawExtra, &eb) == nil {
+			for k, v := range eb {
+				extraBody[k] = v
+			}
+		}
 	}
 	if len(extraBody) > 0 {
 		r.ExtraBody = extraBody

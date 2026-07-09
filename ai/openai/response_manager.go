@@ -27,6 +27,7 @@ type ResponseState struct {
 	Status     ResponseStatus
 	Result     *ResponseObject
 	Error      error
+	model      string
 	cancel     context.CancelFunc
 	created_at time.Time
 }
@@ -99,8 +100,8 @@ func NewResponseManager() *ResponseManager {
 	}
 }
 
-// Create creates a new response state with the given cancel function
-func (m *ResponseManager) Create(cancel context.CancelFunc) *ResponseState {
+// Create creates a new response state with the given cancel function and model.
+func (m *ResponseManager) Create(cancel context.CancelFunc, model string) *ResponseState {
 	m.Lock()
 	defer m.Unlock()
 
@@ -108,6 +109,7 @@ func (m *ResponseManager) Create(cancel context.CancelFunc) *ResponseState {
 	state := &ResponseState{
 		ID:         id,
 		Status:     StatusInProgress,
+		model:      model,
 		cancel:     cancel,
 		created_at: time.Now(),
 	}

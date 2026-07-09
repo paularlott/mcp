@@ -599,7 +599,7 @@ func (c *Client) createResponseBackground(ctx context.Context, req CreateRespons
 	asyncCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
 
 	// Create response state immediately with in_progress status
-	state := GetManager().Create(cancel)
+	state := GetManager().Create(cancel, req.Model)
 
 	// Start async processing
 	go func() {
