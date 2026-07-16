@@ -88,10 +88,11 @@ func (t *stdioTransport) batchRoundTrip(ctx context.Context, reqs []*MCPRequest)
 type StdioClientOption func(*stdioClientConfig)
 
 type stdioClientConfig struct {
-	stderr io.Writer
-	env    []string
-	dir    string
-	onExit func(error)
+	stderr   io.Writer
+	env      []string
+	extraEnv []string
+	dir      string
+	onExit   func(error)
 }
 
 // WithClientStderr routes the child server's standard error to w (default:
@@ -100,9 +101,25 @@ func WithClientStderr(w io.Writer) StdioClientOption {
 	return func(c *stdioClientConfig) { c.stderr = w }
 }
 
-// WithClientEnv sets the environment for the child server process.
+// WithClientEnv sets the environment for the child server process. It replaces
+// the entire environment: every variable the child sees must be listed,
+// including PATH, HOME, etc. For the more common case of adding or overriding a
+// few variables while keeping the parent environment, use [WithClientExtraEnv]
+// instead.
 func WithClientEnv(env []string) StdioClientOption {
 	return func(c *stdioClientConfig) { c.env = env }
+}
+
+// WithClientExtraEnv adds or overrides the given KEY=VALUE environment variables
+// in the child server process's environment, on top of the environment it would
+// otherwise inherit (the parent's, or the full replacement set by
+// [WithClientEnv]). Entries use os.Environ's "KEY=VALUE" form. Multiple options
+// accumulate; for a repeated key the last value wins.
+//
+// Unlike [WithClientEnv] (which replaces the whole environment), this keeps the
+// parent environment intact so PATH, HOME, etc. remain available to the server.
+func WithClientExtraEnv(kv ...string) StdioClientOption {
+	return func(c *stdioClientConfig) { c.extraEnv = append(c.extraEnv, kv...) }
 }
 
 // WithClientDir sets the working directory for the child server process.
@@ -140,6 +157,9 @@ func NewStdioClient(command string, args []string, namespace string, opts ...Std
 	}
 	if cfg.env != nil {
 		procOpts = append(procOpts, jsonrpc.WithEnv(cfg.env))
+	}
+	if len(cfg.extraEnv) > 0 {
+		procOpts = append(procOpts, jsonrpc.WithExtraEnv(cfg.extraEnv...))
 	}
 	if cfg.dir != "" {
 		procOpts = append(procOpts, jsonrpc.WithDir(cfg.dir))

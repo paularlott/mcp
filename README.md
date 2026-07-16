@@ -107,8 +107,11 @@ tools, _ := client.ListTools(ctx)
 resp, _ := client.CallTool(ctx, "greet", map[string]any{"name": "Ada"})
 ```
 
-`NewStdioClient` accepts options such as `WithClientStderr`, `WithClientEnv`, and
-`WithClientDir`. To talk to a server over streams you already hold, use
+`NewStdioClient` accepts options such as `WithClientStderr`, `WithClientEnv`,
+`WithClientExtraEnv`, and `WithClientDir`. `WithClientEnv` replaces the child's
+whole environment, while `WithClientExtraEnv` adds or overrides individual
+`KEY=VALUE` variables on top of the inherited parent environment (so `PATH`,
+`HOME`, etc. are preserved). To talk to a server over streams you already hold, use
 `NewStreamClient(in, out, namespace)`. The stdio transport is built on the
 [`paularlott/jsonrpc`](https://github.com/paularlott/jsonrpc) package. The
 client API (`ListTools`, `CallTool`, namespacing, filtering) is identical across

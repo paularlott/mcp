@@ -37,6 +37,21 @@ func buildStdioTestServer() *mcp.Server {
 		},
 	)
 
+	// "env" reads a named environment variable, used to verify env options
+	// (WithClientEnv / WithClientExtraEnv) propagate to the child server.
+	s.RegisterTool(
+		mcp.NewTool("env", "Read an environment variable",
+			mcp.String("name", "the variable name", mcp.Required()),
+		),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			name, err := req.String("name")
+			if err != nil {
+				return nil, mcp.NewToolErrorInvalidParams("name is required")
+			}
+			return mcp.NewToolResponseText(os.Getenv(name)), nil
+		},
+	)
+
 	return s
 }
 
@@ -83,8 +98,8 @@ func TestStdioPipeListTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d: %+v", len(tools), tools)
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d: %+v", len(tools), tools)
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
@@ -188,8 +203,8 @@ func TestStdioSubprocess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
+	if len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %d", len(tools))
 	}
 
 	resp, err := client.CallTool(ctx, "greet", map[string]any{"name": "Grace"})
@@ -198,6 +213,44 @@ func TestStdioSubprocess(t *testing.T) {
 	}
 	if resp.Content[0].Text != "Hello, Grace!" {
 		t.Errorf("unexpected content: %+v", resp.Content)
+	}
+}
+
+// TestStdioSubprocessExtraEnv verifies WithClientExtraEnv sets variables in the
+// child server's environment while preserving the inherited parent environment
+// (PATH) and overriding an existing parent variable.
+func TestStdioSubprocessExtraEnv(t *testing.T) {
+	const probe = "MCP_TEST_PARENT_PROBE"
+	t.Setenv(probe, "inherited")
+
+	client, err := mcp.NewStdioClient(
+		os.Args[0], nil, "",
+		mcp.WithClientExtraEnv(stdioChildEnv+"=1", probe+"=overridden"),
+		mcp.WithClientStderr(io.Discard),
+	)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := client.CallTool(ctx, "env", map[string]any{"name": probe})
+	if err != nil {
+		t.Fatalf("CallTool env (probe): %v", err)
+	}
+	if resp.Content[0].Text != "overridden" {
+		t.Errorf("extraEnv did not override parent var: got %q, want %q", resp.Content[0].Text, "overridden")
+	}
+
+	// PATH is inherited from the parent; WithClientExtraEnv must not wipe it.
+	resp, err = client.CallTool(ctx, "env", map[string]any{"name": "PATH"})
+	if err != nil {
+		t.Fatalf("CallTool env (PATH): %v", err)
+	}
+	if resp.Content[0].Text == "" {
+		t.Error("PATH was not inherited by the child; WithClientExtraEnv must preserve the parent environment")
 	}
 }
 
