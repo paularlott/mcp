@@ -218,9 +218,10 @@ client, err := ai.NewClient(ai.Config{
 
 ### Ollama
 
-- Default base URL: `https://ollama.com/v1/`
-- OpenAI-compatible API
+- Default base URL: `https://ollama.com`
+- Native Ollama API (`/api/*`), not the OpenAI-compatibility shim
 - No API key required
+- See [ollama/README.md](ollama/README.md) for details
 
 ### ZAi
 

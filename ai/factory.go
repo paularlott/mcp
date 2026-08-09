@@ -5,6 +5,7 @@ import (
 
 	"github.com/paularlott/mcp/ai/claude"
 	"github.com/paularlott/mcp/ai/gemini"
+	"github.com/paularlott/mcp/ai/ollama"
 	"github.com/paularlott/mcp/ai/openai"
 )
 
@@ -20,8 +21,10 @@ func NewClient(config Config) (Client, error) {
 
 	// Create provider-specific client
 	switch config.Provider {
-	case ProviderOpenAI, ProviderOllama, ProviderZAi, ProviderMistral:
+	case ProviderOpenAI, ProviderZAi, ProviderMistral:
 		return openai.New(config.Config)
+	case ProviderOllama:
+		return ollama.New(config.Config)
 	case ProviderClaude:
 		// Claude requires max_tokens, set default if not provided
 		if config.MaxTokens == 0 {

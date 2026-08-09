@@ -129,7 +129,8 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 func (c *Client) GetModels(ctx context.Context) (*openai.ModelsResponse, error) {
 	type geminiModelResponse struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name            string `json:"name"`
+			InputTokenLimit int    `json:"inputTokenLimit"`
 		} `json:"models"`
 	}
 
@@ -144,8 +145,9 @@ func (c *Client) GetModels(ctx context.Context) (*openai.ModelsResponse, error) 
 		modelID := m.Name
 		modelID = strings.TrimPrefix(modelID, "models/")
 		models = append(models, openai.Model{
-			ID:     modelID,
-			Object: "model",
+			ID:            modelID,
+			Object:        "model",
+			ContextWindow: m.InputTokenLimit,
 		})
 	}
 

@@ -14,10 +14,11 @@ type ModelsResponse struct {
 
 // Model represents an individual model
 type Model struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	Created       int64  `json:"created"`
+	OwnedBy       string `json:"owned_by"`
+	ContextWindow int    `json:"context_window,omitempty"` // max input context in tokens, when known (0 = unknown)
 }
 
 // ChatCompletionRequest represents an OpenAI chat completion request
