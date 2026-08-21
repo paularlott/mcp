@@ -50,6 +50,11 @@ func (d *decoder) decode(data string) (any, error) {
 		return d.decodeRootArray(nonEmptyLines)
 	}
 
+	// Root-level block list (starts with "- " without a key or [N] header)
+	if strings.HasPrefix(firstLine, "- ") || firstLine == "-" {
+		return d.decodeListArray(nonEmptyLines, 0, -1)
+	}
+
 	// Single primitive value
 	if len(nonEmptyLines) == 1 && !strings.Contains(firstLine, ":") {
 		return d.parseValue(firstLine), nil
@@ -101,10 +106,17 @@ func (d *decoder) decodeObject(lines []string, startDepth int) (any, error) {
 			valueStr := strings.TrimSpace(match[2])
 
 			if valueStr == "" {
-				// Nested object
+				// Nested object or block list
 				nestedLines := d.collectNestedLines(lines, i+1, depth+1)
 				if len(nestedLines) == 0 {
 					result[key] = map[string]any{}
+				} else if firstNested := strings.TrimSpace(nestedLines[0]); strings.HasPrefix(firstNested, "- ") || firstNested == "-" {
+					// Block list under a plain key: "tags:" followed by "- item" lines
+					lst, err := d.decodeListArray(nestedLines, depth+1, -1)
+					if err != nil {
+						return nil, err
+					}
+					result[key] = lst
 				} else {
 					nested, err := d.decodeObject(nestedLines, depth+1)
 					if err != nil {
@@ -118,6 +130,11 @@ func (d *decoder) decodeObject(lines []string, startDepth int) (any, error) {
 				i++
 			}
 		} else {
+			// Neither an array header, a key-value line, nor a list item.
+			// Strict mode rejects it; lenient mode skips it.
+			if d.strict {
+				return nil, fmt.Errorf("invalid line: %s", trimmed)
+			}
 			i++
 		}
 	}
@@ -361,7 +378,7 @@ func (d *decoder) decodeListArray(lines []string, startDepth int, expectedLength
 		}
 	}
 
-	if d.strict && len(result) != expectedLength {
+	if d.strict && expectedLength >= 0 && len(result) != expectedLength {
 		return nil, fmt.Errorf("array length mismatch: expected %d, got %d", expectedLength, len(result))
 	}
 
