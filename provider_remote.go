@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/paularlott/mcp/pool"
@@ -12,6 +14,15 @@ import (
 // DefaultRemoteToolCacheTTL is the default lifetime for cached remote tool lists
 // when a RemoteProviderConfig does not specify CacheTTL.
 const DefaultRemoteToolCacheTTL = 60 * time.Second
+
+// DefaultRemoteToolListTimeout bounds how long a single remote server's
+// tools/list call may take before RemoteProvider gives up on it for this
+// request. A zero RemoteProviderConfig.ListTimeout uses this default; a
+// negative ListTimeout disables the bound (waits as long as the caller's
+// context allows). This exists so one unresponsive server cannot hang
+// GetTools indefinitely — without it, a hung server would delay (or, before
+// GetTools ran servers concurrently, block) every other server's tools too.
+const DefaultRemoteToolListTimeout = 10 * time.Second
 
 // AuthResolver lazily resolves the auth provider for a remote server for the
 // current request. It is only called when the provider actually needs to talk
@@ -55,6 +66,25 @@ type RemoteProviderConfig struct {
 	// DefaultRemoteToolCacheTTL. Negative disables caching.
 	CacheTTL time.Duration
 
+	// ListTimeout bounds how long this server's tools/list call may take
+	// before GetTools treats it as failed and skips it. Zero uses
+	// DefaultRemoteToolListTimeout; negative disables the bound (waits as
+	// long as the caller's context allows). Only applies to tools/list —
+	// ExecuteTool has no default timeout (see CallTimeout), since tool calls
+	// (unlike listing) may legitimately run long.
+	ListTimeout time.Duration
+
+	// CallTimeout optionally bounds how long a single ExecuteTool call to
+	// this server may take. Unlike ListTimeout, the zero value here means no
+	// bound at all — waits as long as the caller's context allows — because a
+	// tool call may legitimately run long and a default cap here would risk
+	// silently breaking one. Set this explicitly if you want tool calls to a
+	// specific server bounded (e.g. because you know its tools are quick, or
+	// because you want ExecuteTool to hand a hung server's failure to your
+	// OnServerError hook promptly instead of waiting on the caller's own
+	// context, which may have no deadline).
+	CallTimeout time.Duration
+
 	// CacheKey overrides the cache key for this server's tool list. Defaults to
 	// Name + "\x00" + URL. Set this to include a user/tenant identifier when tool
 	// catalogs differ per user and must not be shared.
@@ -97,8 +127,9 @@ type RemoteProviderResolver func(ctx context.Context) ([]RemoteProviderConfig, e
 //	ctx := mcp.WithToolProviders(r.Context(), provider)
 //	server.HandleRequest(w, r.WithContext(ctx))
 type RemoteProvider struct {
-	resolve RemoteProviderResolver
-	cache   *remoteToolCache
+	resolve       RemoteProviderResolver
+	cache         *remoteToolCache
+	onServerError func(cfg RemoteProviderConfig, err error)
 }
 
 // Ensure RemoteProvider implements ToolProvider.
@@ -109,6 +140,7 @@ type RemoteProviderOption func(*remoteProviderOptions)
 
 type remoteProviderOptions struct {
 	maxCacheEntries int
+	onServerError   func(cfg RemoteProviderConfig, err error)
 }
 
 // WithMaxCacheEntries bounds how many distinct cache keys the provider keeps
@@ -121,6 +153,23 @@ func WithMaxCacheEntries(n int) RemoteProviderOption {
 	}
 }
 
+// WithOnServerError registers a callback invoked whenever a remote server
+// could not be reached or misbehaved — a failed tools/list (GetTools skips
+// the server but does not fail the request), or a genuine transport/protocol
+// failure calling a tool (a *ToolError, meaning the server responded with its
+// own application-level error, does NOT trigger this — that is not a health
+// problem). fn is called synchronously from whichever request goroutine hit
+// the failure and may be called concurrently for different servers; keep it
+// fast and non-blocking (e.g. update in-memory state, log, or send on a
+// channel) rather than doing I/O inline. Use it to log failures and/or drive
+// a health-tracking / background-retry system: nothing else in RemoteProvider
+// surfaces skipped-server failures anywhere.
+func WithOnServerError(fn func(cfg RemoteProviderConfig, err error)) RemoteProviderOption {
+	return func(o *remoteProviderOptions) {
+		o.onServerError = fn
+	}
+}
+
 // NewRemoteProvider creates a remote tool provider driven by the given resolver.
 // Create it once and reuse it across requests.
 func NewRemoteProvider(resolve RemoteProviderResolver, opts ...RemoteProviderOption) *RemoteProvider {
@@ -129,8 +178,17 @@ func NewRemoteProvider(resolve RemoteProviderResolver, opts ...RemoteProviderOpt
 		opt(&o)
 	}
 	return &RemoteProvider{
-		resolve: resolve,
-		cache:   newRemoteToolCache(o.maxCacheEntries),
+		resolve:       resolve,
+		cache:         newRemoteToolCache(o.maxCacheEntries),
+		onServerError: o.onServerError,
+	}
+}
+
+// reportError invokes the configured error hook, if any. Safe to call with a
+// nil hook.
+func (p *RemoteProvider) reportError(cfg RemoteProviderConfig, err error) {
+	if p.onServerError != nil {
+		p.onServerError(cfg, err)
 	}
 }
 
@@ -155,6 +213,29 @@ func (cfg RemoteProviderConfig) newClient(auth AuthProvider) *Client {
 	return NewClient(cfg.URL, auth, cfg.Name)
 }
 
+// withListTimeout returns a context bounded by cfg.ListTimeout (or
+// DefaultRemoteToolListTimeout when unset), and its cancel func. A negative
+// ListTimeout disables the bound, returning ctx unchanged with a no-op cancel.
+func (cfg RemoteProviderConfig) withListTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	d := cfg.ListTimeout
+	switch {
+	case d < 0:
+		return ctx, func() {}
+	case d == 0:
+		d = DefaultRemoteToolListTimeout
+	}
+	return context.WithTimeout(ctx, d)
+}
+
+// withCallTimeout bounds ctx by cfg.CallTimeout when set (> 0). Unlike
+// withListTimeout, zero means no bound at all — this is opt-in, not a default.
+func (cfg RemoteProviderConfig) withCallTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if cfg.CallTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, cfg.CallTimeout)
+}
+
 // resolveServers resolves the request's remote servers, memoized for the
 // lifetime of the request context so the resolver's I/O (e.g. a DB lookup) runs
 // once even though the server queries providers several times per request.
@@ -170,8 +251,12 @@ func (p *RemoteProvider) resolveServers(ctx context.Context) ([]RemoteProviderCo
 }
 
 // GetTools returns the tools for all of the current request's remote servers,
-// applying each server's visibility, keywords and tool filter. Servers that
-// fail to respond are skipped so one bad remote does not break the whole list.
+// applying each server's visibility, keywords and tool filter. Servers are
+// queried concurrently and each is bounded by its ListTimeout, so one slow or
+// unresponsive remote cannot delay or block the others. Servers that fail to
+// respond are skipped so one bad remote does not break the whole list; if
+// WithOnServerError was set, it is called for each skipped server so the host
+// can log it and/or track its health.
 func (p *RemoteProvider) GetTools(ctx context.Context) ([]MCPTool, error) {
 	servers, err := p.resolveServers(ctx)
 	if err != nil {
@@ -181,13 +266,25 @@ func (p *RemoteProvider) GetTools(ctx context.Context) ([]MCPTool, error) {
 		return nil, nil
 	}
 
+	results := make([][]MCPTool, len(servers))
+	var wg sync.WaitGroup
+	for i, cfg := range servers {
+		wg.Add(1)
+		go func(i int, cfg RemoteProviderConfig) {
+			defer wg.Done()
+			serverTools, err := p.toolsForServer(ctx, cfg)
+			if err != nil {
+				// Skip servers we cannot reach; do not fail the entire list.
+				p.reportError(cfg, err)
+				return
+			}
+			results[i] = serverTools
+		}(i, cfg)
+	}
+	wg.Wait()
+
 	var tools []MCPTool
-	for _, cfg := range servers {
-		serverTools, err := p.toolsForServer(ctx, cfg)
-		if err != nil {
-			// Skip servers we cannot reach; do not fail the entire list.
-			continue
-		}
+	for _, serverTools := range results {
 		tools = append(tools, serverTools...)
 	}
 	return tools, nil
@@ -216,7 +313,9 @@ func (p *RemoteProvider) toolsForServer(ctx context.Context, cfg RemoteProviderC
 		client.WithToolFilter(cfg.ToolFilter)
 	}
 
-	remoteTools, err := client.ListTools(ctx)
+	listCtx, cancel := cfg.withListTimeout(ctx)
+	defer cancel()
+	remoteTools, err := client.ListTools(listCtx)
 	if err != nil {
 		return nil, fmt.Errorf("list tools for %q: %w", cfg.Name, err)
 	}
@@ -272,9 +371,19 @@ func (p *RemoteProvider) ExecuteTool(ctx context.Context, name string, params ma
 			client.WithToolFilter(cfg.ToolFilter)
 		}
 
-		result, err := client.CallTool(ctx, name, params)
+		callCtx, cancel := cfg.withCallTimeout(ctx)
+		result, err := client.CallTool(callCtx, name, params)
+		cancel()
 		if err == ErrToolFiltered {
 			return nil, fmt.Errorf("tool %q is disabled on server %q", name, cfg.Name)
+		}
+		// A *ToolError means the server responded with its own application-level
+		// error (the server is fine, this call just failed) — not a health
+		// problem, so it does not trigger the error hook. Any other error means
+		// the server could not be reached or misbehaved at the transport level.
+		var toolErr *ToolError
+		if err != nil && !errors.As(err, &toolErr) {
+			p.reportError(cfg, err)
 		}
 		return result, err
 	}

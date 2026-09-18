@@ -285,3 +285,130 @@ func TestTokenCounterFullRoundTrip(t *testing.T) {
 			usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens)
 	}
 }
+
+func TestTokenCounter_AddPromptTokensFromText(t *testing.T) {
+	tc := NewTokenCounter()
+	tc.AddPromptTokensFromText("hello world")
+	if tc.GetUsage().PromptTokens == 0 {
+		t.Error("expected non-zero PromptTokens")
+	}
+}
+
+func TestTokenCounter_AddCompletionTokensFromDelta(t *testing.T) {
+	tc := NewTokenCounter()
+	tc.AddCompletionTokensFromDelta(nil) // no-op, must not panic
+	if tc.GetUsage().CompletionTokens != 0 {
+		t.Error("expected zero CompletionTokens after nil delta")
+	}
+
+	tc.AddCompletionTokensFromDelta(&Delta{
+		Content:          "hello",
+		ReasoningContent: "thinking",
+		ToolCalls: []DeltaToolCall{
+			{Function: DeltaFunction{Name: "f", Arguments: `{"a":1}`}},
+		},
+	})
+	if tc.GetUsage().CompletionTokens == 0 {
+		t.Error("expected non-zero CompletionTokens")
+	}
+}
+
+func TestTokenCounter_Reset(t *testing.T) {
+	tc := NewTokenCounter()
+	tc.AddPromptTokensFromText("hello")
+	tc.AddCompletionTokensFromText("world")
+	tc.Reset()
+	usage := tc.GetUsage()
+	if usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 {
+		t.Errorf("usage after Reset() = %+v, want all zero", usage)
+	}
+}
+
+func TestTokenCounter_InjectUsageIfMissing(t *testing.T) {
+	t.Run("nil response", func(t *testing.T) {
+		tc := NewTokenCounter()
+		tc.InjectUsageIfMissing(nil) // must not panic
+	})
+
+	t.Run("missing usage entirely", func(t *testing.T) {
+		tc := NewTokenCounter()
+		tc.AddPromptTokensFromText("hello world this is a prompt")
+		tc.AddCompletionTokensFromText("a response")
+		resp := &ChatCompletionResponse{}
+		tc.InjectUsageIfMissing(resp)
+		if resp.Usage == nil {
+			t.Fatal("expected Usage to be injected")
+		}
+		if resp.Usage.PromptTokens == 0 || resp.Usage.CompletionTokens == 0 {
+			t.Errorf("Usage = %+v", resp.Usage)
+		}
+	})
+
+	t.Run("zero components filled in", func(t *testing.T) {
+		tc := NewTokenCounter()
+		tc.AddPromptTokensFromText("hello world this is a prompt")
+		tc.AddCompletionTokensFromText("a response")
+		resp := &ChatCompletionResponse{Usage: &Usage{PromptTokens: 0, CompletionTokens: 0, TotalTokens: 0}}
+		tc.InjectUsageIfMissing(resp)
+		if resp.Usage.PromptTokens == 0 {
+			t.Error("expected PromptTokens to be filled from estimate")
+		}
+	})
+
+	t.Run("estimated exceeds reported uses estimate", func(t *testing.T) {
+		tc := NewTokenCounter()
+		tc.AddPromptTokensFromText("a very long prompt that will estimate to many tokens indeed")
+		tc.AddCompletionTokensFromText("a similarly long completion text estimate")
+		resp := &ChatCompletionResponse{Usage: &Usage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2}}
+		tc.InjectUsageIfMissing(resp)
+		estimated := tc.GetUsage()
+		if resp.Usage.PromptTokens != estimated.PromptTokens {
+			t.Errorf("PromptTokens = %d, want estimated %d", resp.Usage.PromptTokens, estimated.PromptTokens)
+		}
+	})
+
+	t.Run("reported total sufficient, only recompute total", func(t *testing.T) {
+		tc := NewTokenCounter()
+		tc.AddPromptTokensFromText("hi")
+		tc.AddCompletionTokensFromText("hi")
+		resp := &ChatCompletionResponse{Usage: &Usage{PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 999}}
+		tc.InjectUsageIfMissing(resp)
+		if resp.Usage.PromptTokens != 1000 || resp.Usage.CompletionTokens != 1000 {
+			t.Errorf("Usage components changed unexpectedly: %+v", resp.Usage)
+		}
+		if resp.Usage.TotalTokens != 2000 {
+			t.Errorf("TotalTokens = %d, want 2000 (recomputed)", resp.Usage.TotalTokens)
+		}
+	})
+}
+
+func TestTokenCounter_estimateContentTokens_ImageURL(t *testing.T) {
+	tc := NewTokenCounter()
+	tokens := tc.estimateContentTokens([]any{
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "x"}},
+	})
+	if tokens != 85 {
+		t.Errorf("tokens = %d, want 85 for image_url part", tokens)
+	}
+}
+
+func TestTokenCounter_estimateContentTokens_UnsupportedType(t *testing.T) {
+	tc := NewTokenCounter()
+	if tokens := tc.estimateContentTokens(42); tokens != 0 {
+		t.Errorf("tokens = %d, want 0 for unsupported type", tokens)
+	}
+}
+
+func TestTokenCounter_estimateArgsTokens_Nil(t *testing.T) {
+	tc := NewTokenCounter()
+	if tokens := tc.estimateArgsTokens(nil); tokens != 0 {
+		t.Errorf("tokens = %d, want 0 for nil args", tokens)
+	}
+}
+
+func TestEstimateTokens_NegativeGuard(t *testing.T) {
+	// EstimateTokens should never return less than 1 for non-empty input.
+	if got := EstimateTokens("a"); got < 1 {
+		t.Errorf("EstimateTokens(\"a\") = %d, want >= 1", got)
+	}
+}

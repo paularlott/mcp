@@ -316,16 +316,30 @@ func (d *decoder) decodeListArray(lines []string, startDepth int, expectedLength
 			continue
 		}
 
-		if !strings.HasPrefix(trimmed, "- ") {
+		if !strings.HasPrefix(trimmed, "- ") && trimmed != "-" {
 			break
 		}
 
-		itemContent := strings.TrimSpace(trimmed[2:])
+		itemContent := ""
+		if trimmed != "-" {
+			itemContent = strings.TrimSpace(trimmed[2:])
+		}
+
+		// A keyed array header (e.g. "a[2]: x,y") names a field, not an
+		// anonymous array value, so it must be parsed as an object whose
+		// first field is that array - not as a bare nested array, which
+		// would silently discard the key and any sibling fields.
+		isAnonymousArrayHeader := false
+		if d.isArrayHeader(itemContent) {
+			if m := headerRegex.FindStringSubmatch(itemContent); m != nil && m[1] == "" {
+				isAnonymousArrayHeader = true
+			}
+		}
 
 		if itemContent == "" {
 			result = append(result, map[string]any{})
 			i++
-		} else if d.isArrayHeader(itemContent) {
+		} else if isAnonymousArrayHeader {
 			// Nested array
 			arrayLines := []string{itemContent}
 			j := i + 1
@@ -395,7 +409,19 @@ func (d *decoder) decodeListItemObject(lines []string, itemDepth int) (any, erro
 	}
 
 	firstContent := strings.TrimSpace(firstLine[2:])
-	if match := keyValueRegex.FindStringSubmatch(firstContent); match != nil {
+	startIdx := 1
+	if d.isArrayHeader(firstContent) {
+		// First field is itself an array (e.g. "- tags[2]: a,b"). Reuse the
+		// same header/continuation-line collection as decodeArrayFromLines
+		// so multi-line array bodies (tabular/list form) are handled too.
+		fullLines := append([]string{firstContent}, lines[1:]...)
+		key, arr, consumed, err := d.decodeArrayFromLines(fullLines, itemDepth)
+		if err != nil {
+			return nil, err
+		}
+		result[key] = arr
+		startIdx = consumed
+	} else if match := keyValueRegex.FindStringSubmatch(firstContent); match != nil {
 		key := d.parseKey(strings.TrimSpace(match[1]))
 		valueStr := strings.TrimSpace(match[2])
 
@@ -411,13 +437,16 @@ func (d *decoder) decodeListItemObject(lines []string, itemDepth int) (any, erro
 				}
 				result[key] = nested
 			}
+			// Skip the nested lines so they aren't reprocessed as sibling
+			// fields of the list item below.
+			startIdx = 1 + len(nestedLines)
 		} else {
 			result[key] = d.parseValue(valueStr)
 		}
 	}
 
 	// Parse remaining lines - look for fields at itemDepth (same as hyphen)
-	for i := 1; i < len(lines); i++ {
+	for i := startIdx; i < len(lines); i++ {
 		line := lines[i]
 		depth := d.getIndentDepth(line)
 		trimmed := strings.TrimSpace(line)
@@ -472,12 +501,15 @@ func (d *decoder) isTabularRow(line, delimiter string) bool {
 		return false
 	}
 
-	// A line is a tabular row if it has no colon OR if it has a delimiter before the first colon
+	// A line is a tabular row if it has no colon at all (it cannot be a
+	// key-value line then, even with a single column and thus no
+	// delimiter - e.g. a one-field row like "1") OR if it has a delimiter
+	// before the first colon.
 	colonPos := strings.Index(line, ":")
 	delimPos := strings.Index(line, delimiter)
 
 	if colonPos == -1 {
-		return delimPos != -1 // Only tabular if it has the delimiter
+		return true
 	}
 
 	if delimPos == -1 {

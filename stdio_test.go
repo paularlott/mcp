@@ -52,6 +52,19 @@ func buildStdioTestServer() *mcp.Server {
 		},
 	)
 
+	// "cwd" reports the child process's working directory, used to verify
+	// WithClientDir propagates to the spawned server process.
+	s.RegisterTool(
+		mcp.NewTool("cwd", "Report the current working directory"),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			dir, err := os.Getwd()
+			if err != nil {
+				return nil, mcp.NewToolErrorInternal(err.Error())
+			}
+			return mcp.NewToolResponseText(dir), nil
+		},
+	)
+
 	return s
 }
 
@@ -98,8 +111,8 @@ func TestStdioPipeListTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d: %+v", len(tools), tools)
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d: %+v", len(tools), tools)
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
@@ -203,8 +216,8 @@ func TestStdioSubprocess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
 	}
 
 	resp, err := client.CallTool(ctx, "greet", map[string]any{"name": "Grace"})

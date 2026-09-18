@@ -45,7 +45,7 @@ func DefaultPoolConfig() *PoolConfig {
 // Default pool implementation in mcp package
 var (
 	defaultPool     HTTPPool
-	poolOnce        sync.Once
+	defaultPoolMu   sync.RWMutex // Protects defaultPool for SetPool/GetPool
 	poolConfig      *PoolConfig
 	poolConfigMutex sync.RWMutex // Protects poolConfig for SetPoolConfig/GetPoolConfig
 )
@@ -53,16 +53,28 @@ var (
 // SetPool sets the global pool for mcp clients
 // This allows external pools to be injected
 func SetPool(pool HTTPPool) {
+	defaultPoolMu.Lock()
+	defer defaultPoolMu.Unlock()
 	defaultPool = pool
 }
 
-// GetPool returns the global pool (creates default if nil)
+// GetPool returns the global pool (creates default if nil). Safe for
+// concurrent use, including the first call racing SetPool or another
+// GetPool: the double check under the write lock ensures the default pool
+// is built at most once, and never overwrites a pool injected via SetPool.
 func GetPool() HTTPPool {
+	defaultPoolMu.RLock()
+	p := defaultPool
+	defaultPoolMu.RUnlock()
+	if p != nil {
+		return p
+	}
+
+	defaultPoolMu.Lock()
+	defer defaultPoolMu.Unlock()
 	if defaultPool == nil {
-		poolOnce.Do(func() {
-			// Create mcp's own pool with configured or default settings
-			defaultPool = newDefaultPoolImpl()
-		})
+		// Create mcp's own pool with configured or default settings
+		defaultPool = newDefaultPoolImpl()
 	}
 	return defaultPool
 }
