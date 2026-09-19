@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,6 +114,131 @@ func TestInstructionsInInitialize(t *testing.T) {
 	res := rpc.Result.(map[string]any)
 	if res["instructions"] != "please do x" {
 		t.Fatalf("instructions missing: %+v", res)
+	}
+}
+
+func TestInstructionsAppendDiscoveryHintWhenDiscoverable(t *testing.T) {
+	s := NewServer("s", "1")
+	s.RegisterTool(NewTool("hidden", "A hidden tool").Discoverable("test"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	})
+	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: map[string]any{
+		"capabilities": map[string]any{},
+		"clientInfo":   map[string]any{"name": "n", "version": "v"},
+	}}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+	var rpc MCPResponse
+	_ = json.NewDecoder(rr.Body).Decode(&rpc)
+	res := rpc.Result.(map[string]any)
+	instructions, _ := res["instructions"].(string)
+	if !strings.Contains(instructions, ToolSearchName) || !strings.Contains(instructions, ExecuteToolName) {
+		t.Fatalf("expected discovery hint mentioning %s/%s, got %q", ToolSearchName, ExecuteToolName, instructions)
+	}
+}
+
+func TestInstructionsAppendDiscoveryHintPreservesExisting(t *testing.T) {
+	s := NewServer("s", "1")
+	s.SetInstructions("please do x")
+	s.RegisterTool(NewTool("hidden", "A hidden tool").Discoverable("test"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	})
+	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: map[string]any{
+		"capabilities": map[string]any{},
+		"clientInfo":   map[string]any{"name": "n", "version": "v"},
+	}}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+	var rpc MCPResponse
+	_ = json.NewDecoder(rr.Body).Decode(&rpc)
+	res := rpc.Result.(map[string]any)
+	instructions, _ := res["instructions"].(string)
+	if !strings.Contains(instructions, "please do x") {
+		t.Fatalf("expected original instructions preserved, got %q", instructions)
+	}
+	if !strings.Contains(instructions, ToolSearchName) {
+		t.Fatalf("expected discovery hint appended, got %q", instructions)
+	}
+}
+
+func TestInstructionsNoDiscoveryHintWithoutDiscoverableTools(t *testing.T) {
+	s := NewServer("s", "1")
+	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: map[string]any{
+		"capabilities": map[string]any{},
+		"clientInfo":   map[string]any{"name": "n", "version": "v"},
+	}}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+	var rpc MCPResponse
+	_ = json.NewDecoder(rr.Body).Decode(&rpc)
+	res := rpc.Result.(map[string]any)
+	if instructions, ok := res["instructions"]; ok && instructions != "" {
+		t.Fatalf("expected no discovery hint without discoverable tools, got %q", instructions)
+	}
+}
+
+func TestInstructionsNoDiscoveryHintInShowAllMode(t *testing.T) {
+	s := NewServer("s", "1")
+	s.RegisterTool(NewTool("hidden", "A hidden tool").Discoverable("test"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	})
+	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "initialize", Params: map[string]any{
+		"capabilities": map[string]any{},
+		"clientInfo":   map[string]any{"name": "n", "version": "v"},
+	}}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(ShowAllHeader, "true")
+	rr := httptest.NewRecorder()
+	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+	var rpc MCPResponse
+	_ = json.NewDecoder(rr.Body).Decode(&rpc)
+	res := rpc.Result.(map[string]any)
+	if instructions, ok := res["instructions"]; ok && instructions != "" {
+		t.Fatalf("expected no discovery hint in show-all mode, got %q", instructions)
+	}
+}
+
+func TestUnknownToolDirectCallHintsAtToolSearchWhenDiscoverable(t *testing.T) {
+	s := NewServer("s", "1")
+	s.RegisterTool(NewTool("hidden", "A hidden tool").Discoverable("test"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	})
+	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: ToolCallParams{Name: "does_not_exist", Arguments: map[string]any{}}}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+	var rpc MCPResponse
+	_ = json.NewDecoder(rr.Body).Decode(&rpc)
+	if rpc.Error == nil || !strings.Contains(rpc.Error.Message, ToolSearchName) || !strings.Contains(rpc.Error.Message, ExecuteToolName) {
+		t.Fatalf("expected unknown-tool error to mention both %s and %s, got %+v", ToolSearchName, ExecuteToolName, rpc.Error)
+	}
+}
+
+func TestUnknownToolDirectCallNoHintWithoutDiscoverableTools(t *testing.T) {
+	s := NewServer("s", "1")
+	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: ToolCallParams{Name: "does_not_exist", Arguments: map[string]any{}}}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+	var rpc MCPResponse
+	_ = json.NewDecoder(rr.Body).Decode(&rpc)
+	if rpc.Error == nil || strings.Contains(rpc.Error.Message, ToolSearchName) {
+		t.Fatalf("expected plain unknown-tool error without discoverable tools, got %+v", rpc.Error)
 	}
 }
 

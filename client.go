@@ -675,7 +675,7 @@ func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) (
 		args["max_results"] = maxResults
 	}
 
-	resp, err := c.CallTool(ctx, "tool_search", args)
+	resp, err := c.CallTool(ctx, ToolSearchName, args)
 	if err != nil {
 		return nil, fmt.Errorf("tool_search failed: %w", err)
 	}
@@ -796,7 +796,7 @@ func (c *Client) callToolsBatch(ctx context.Context, bt batchTransport, calls []
 		params := map[string]any{"name": toolName, "arguments": call.Arguments}
 		if discovered {
 			params = map[string]any{
-				"name":      "execute_tool",
+				"name":      ExecuteToolName,
 				"arguments": map[string]any{"name": toolName, "parameters": call.Arguments},
 			}
 		}
@@ -879,7 +879,7 @@ func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, argumen
 		"parameters": arguments,
 	}
 
-	return c.CallTool(ctx, "execute_tool", args)
+	return c.CallTool(ctx, ExecuteToolName, args)
 }
 
 // parseToolSearchResponse parses the response from tool_search MCP tool.

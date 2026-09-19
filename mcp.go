@@ -186,12 +186,12 @@ func (s *Server) SetSessionManager(manager SessionManager) {
 // getDiscoveryTools returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
 // These are generated dynamically, not stored in nativeToolCache.
 func (s *Server) getDiscoveryTools() []MCPTool {
-	toolSearch := NewTool(ToolSearchName, "Search for available tools by name, description, or keywords. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). After finding a tool, use execute_tool to call it. Omit query to list all available tools.",
-		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools."),
+	toolSearch := NewTool(ToolSearchName, "Search the tools available on this MCP server, including ones hidden from the initial tool list, by name, description, or keyword. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Call execute_tool on this MCP server with the exact name to execute a match. Omit query to list all tools available on this server.",
+		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools available on this server."),
 		Number("max_results", "Maximum number of results to return (default: 5)"),
 	)
 
-	executeTool := NewTool(ExecuteToolName, "Execute a tool by name with the given parameters. This is the always-safe way to call tools discovered via tool_search, whether or not they were included in tools/list for the current client.",
+	executeTool := NewTool(ExecuteToolName, "Execute a tool on this MCP server that was found via tool_search but may not appear in this server's tool list.",
 		String("name", "The exact name of the tool to execute (must be a tool found via tool_search)", Required()),
 		Object("parameters", "The parameters to pass to the tool (matching the schema from tool_search results)"),
 	)
@@ -1068,6 +1068,27 @@ func isSupportedProtocolVersion(version string) bool {
 	return false
 }
 
+// hasDiscoverableToolsNow reports whether the server currently has any discoverable
+// tools, either statically registered or exposed by a context-scoped ToolProvider.
+func (s *Server) hasDiscoverableToolsNow(ctx context.Context) bool {
+	s.mu.RLock()
+	hasStatic := s.hasDiscoverableTools
+	s.mu.RUnlock()
+	return hasStatic || hasDiscoverableToolsFromProviders(ctx)
+}
+
+// appendDiscoveryInstructions appends guidance about the discovery tools to whatever
+// instructions the server already has (via SetInstructions), without overwriting them.
+// This is how a model learns about tool_search/execute_tool from the initialize
+// response, which is a stronger, session-wide signal than a tool's own description.
+func appendDiscoveryInstructions(instructions string) string {
+	hint := fmt.Sprintf("This server has additional tools not shown in the initial tool list - call %s to find them, then %s to invoke them.", ToolSearchName, ExecuteToolName)
+	if instructions == "" {
+		return hint
+	}
+	return instructions + "\n\n" + hint
+}
+
 func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	var params initializeParams
 	if err := s.parseParams(req, &params); err != nil {
@@ -1095,6 +1116,11 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 	s.mu.RLock()
 	instructions := s.instructions
 	s.mu.RUnlock()
+
+	// Discovery tools aren't shown in show-all mode, so don't tell the model to use them there.
+	if !showAll && s.hasDiscoverableToolsNow(r.Context()) {
+		instructions = appendDiscoveryInstructions(instructions)
+	}
 
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
@@ -1319,6 +1345,10 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 		// Check if it's a ToolError with specific MCP error code
 		if toolErr, ok := err.(*ToolError); ok {
 			s.sendMCPError(w, req.ID, toolErr.Code, toolErr.Message, toolErr.Data)
+		} else if err == ErrUnknownTool && s.hasDiscoverableToolsNow(r.Context()) {
+			// The caller guessed a tool name directly instead of going through
+			// tool_search first; point it at discovery instead of a dead end.
+			s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: unknown tool %q. Use %s to discover available tools, then %s to invoke them.", params.Name, ToolSearchName, ExecuteToolName), nil)
 		} else {
 			s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: %v", err), nil)
 		}
