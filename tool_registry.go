@@ -11,11 +11,13 @@ import (
 
 // SearchResult represents a tool found via search
 type SearchResult struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Score       float64  `json:"score"`
-	InputSchema any      `json:"inputSchema,omitempty"`
-	Keywords    []string `json:"keywords,omitempty"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Score       float64        `json:"score"`
+	InputSchema any            `json:"inputSchema,omitempty"`
+	Keywords    []string       `json:"keywords,omitempty"`
+	Meta        map[string]any `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui.resourceUri
+	Icons       []Icon         `json:"icons,omitempty"`
 }
 
 // internalRegistry implements ToolRegistry and provides tool search functionality
@@ -50,6 +52,8 @@ func (r *internalRegistry) RegisterTool(tool *ToolBuilder, handler ToolHandler, 
 		Name:        tool.Name(),
 		Description: tool.Description(),
 		InputSchema: schema,
+		Meta:        tool.meta,
+		Icons:       tool.icons,
 		Keywords:    keywords,
 	}
 	if outputSchema != nil {
@@ -134,6 +138,8 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 				Score:       score,
 				InputSchema: dt.tool.InputSchema,
 				Keywords:    dt.keywords,
+				Meta:        dt.tool.Meta,
+				Icons:       dt.tool.Icons,
 			})
 			seen[dt.tool.Name] = true
 		}
@@ -157,6 +163,8 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 				Score:       score,
 				InputSchema: tool.InputSchema,
 				Keywords:    tool.Keywords,
+				Meta:        tool.Meta,
+				Icons:       tool.Icons,
 			})
 			seen[tool.Name] = true
 		}
@@ -180,6 +188,8 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 				Score:       score,
 				InputSchema: tool.InputSchema,
 				Keywords:    tool.Keywords,
+				Meta:        tool.Meta,
+				Icons:       tool.Icons,
 			})
 			seen[tool.Name] = true
 		}

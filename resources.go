@@ -2,12 +2,87 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
+
+// remoteResourceFanoutTimeout bounds each remote server's ReadResource call
+// during the fan-out described below. Without it, a slow, unreachable, or
+// (worst case) mutually-federated remote server — one that itself forwards
+// unresolved reads back through a client pointed at this server — could
+// block this call indefinitely, since a ctx with no deadline of its own
+// gives context.WithTimeout nothing shorter to fall back to.
+// A var, not a const, so tests can shorten it rather than actually waiting
+// out the default.
+var remoteResourceFanoutTimeout = 10 * time.Second
+
+// maxResourceFanoutHops bounds how many times a single resources/read may be
+// forwarded server-to-server by ReadResource's fan-out (step 4). Federation
+// graphs aren't guaranteed acyclic — two servers that register each other as
+// remotes form a loop, and every hop of that loop is a fresh HTTP request
+// re-entering the same fan-out on the far side. The per-attempt timeout alone
+// bounds such a loop only in time (a mutual pair churns doomed requests for
+// the full window before unwinding, and a richer cyclic graph amplifies
+// branchingly); the hop counter bounds it structurally. The count travels on
+// the X-MCP-Resource-Fanout-Hop header (see headerResourceFanoutHop): the
+// server seeds it from the incoming request, the fan-out increments it per
+// forward, and forwarding stops entirely once the limit is reached — a
+// cyclic graph then resolves to ErrUnknownResource after at most this many
+// forwards per branch instead of amplifying.
+const maxResourceFanoutHops = 3
+
+// headerResourceFanoutHop carries maxResourceFanoutHops' counter across the
+// HTTP hop between federating servers. A private X- header rather than a
+// _meta field or an Mcp-* name: it's an implementation detail of this
+// library's client/server pair, not protocol a third party needs to
+// understand — a third-party server between two of ours simply won't
+// increment it, degrading to the timeout-only bound above.
+const headerResourceFanoutHop = "X-MCP-Resource-Fanout-Hop"
+
+type resourceFanoutHopKey struct{}
+
+// withResourceFanoutHop returns ctx annotated with a read's current hop
+// count — consumed by ReadResource's fan-out and by the Client's HTTP paths
+// (sendRequest/sendModernHTTPRequest), which mirror it onto
+// headerResourceFanoutHop so the receiving server can seed its own count.
+func withResourceFanoutHop(ctx context.Context, hop int) context.Context {
+	return context.WithValue(ctx, resourceFanoutHopKey{}, hop)
+}
+
+// resourceFanoutHopFrom reports ctx's hop count, 0 when unset.
+func resourceFanoutHopFrom(ctx context.Context) int {
+	if ctx == nil {
+		return 0
+	}
+	if hop, ok := ctx.Value(resourceFanoutHopKey{}).(int); ok {
+		return hop
+	}
+	return 0
+}
+
+// legacyResourceNotFoundCode is the resource-not-found error code from the
+// Legacy revisions (2025-03-26 through 2025-11-25); the Modern revision and
+// this library's own servers answer the same condition with -32602.
+const legacyResourceNotFoundCode = -32002
+
+// isResourceNotFoundErr reports whether err is a remote's ordinary "I don't
+// have that resource" answer, as opposed to a transport or server failure
+// (auth rejected, 5xx, timeout, unreachable). Only the former may silently
+// continue the fan-out to the next remote; the latter are recorded so the
+// caller can tell a genuine miss from a broken federation.
+func isResourceNotFoundErr(err error) bool {
+	var te *ToolError
+	if errors.As(err, &te) {
+		return te.Code == ErrorCodeInvalidParams || te.Code == legacyResourceNotFoundCode
+	}
+	return false
+}
 
 // registeredResource holds a static resource and its read handler.
 type registeredResource struct {
@@ -141,20 +216,78 @@ func (s *Server) ListResourceTemplates(ctx context.Context) []MCPResourceTemplat
 //  1. Static resources by exact URI match.
 //  2. Static resource templates by pattern match (first match wins).
 //  3. [ResourceProvider]s on ctx, in attachment order (first hit wins).
+//  4. Remote servers registered via [Server.ReplaceRemoteServers] /
+//     [Server.RegisterRemoteServer], tried in registration order (first hit
+//     wins). Unlike tools, remote resources aren't namespaced or cached in a
+//     lookup table — a federated server's resource URIs (e.g. a `ui://`
+//     MCP Apps view) are opaque and forwarded as-is, so this is a best-effort
+//     fan-out rather than an indexed lookup. That fan-out is bounded in two
+//     dimensions: per-attempt by [remoteResourceFanoutTimeout], and in depth
+//     by [maxResourceFanoutHops]' cycle guard, so mutually-federated servers
+//     can't loop or amplify an unresolved read.
 //
-// Returns ErrUnknownResource if nothing handles the uri.
+// Returns ErrUnknownResource if nothing handles the uri. When one or more
+// remotes failed outright (rather than answering not-found), the returned
+// error still wraps ErrUnknownResource — errors.Is holds — but names each
+// failing remote, so a misconfigured or down federation is diagnosable
+// instead of masquerading as a plain miss. See [Server.ReadResourceFrom]
+// for a variant restricted to one specific source rather than fanning out
+// to every registered remote.
 func (s *Server) ReadResource(ctx context.Context, uri string) (*ResourceResponse, error) {
+	resp, err := s.readNativeResource(ctx, uri)
+	if err != ErrUnknownResource {
+		return resp, err
+	}
+
+	// Cycle guard: a read that has already been forwarded the limit of times
+	// is answered here as a miss rather than forwarded again, which unwinds
+	// any loop the federation graph contains.
+	hop := resourceFanoutHopFrom(ctx)
+	if hop >= maxResourceFanoutHops {
+		return nil, ErrUnknownResource
+	}
+
+	s.mu.RLock()
+	remoteClients := make([]*registeredClient, 0, len(s.remoteClients))
+	for _, rc := range s.remoteClients {
+		remoteClients = append(remoteClients, rc)
+	}
+	s.mu.RUnlock()
+
+	var remoteFailures []error
+	for _, rc := range remoteClients {
+		attemptCtx, cancel := context.WithTimeout(withResourceFanoutHop(ctx, hop+1), remoteResourceFanoutTimeout)
+		resp, err := rc.client.ReadResource(attemptCtx, uri)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		if isResourceNotFoundErr(err) {
+			continue
+		}
+		remoteFailures = append(remoteFailures, fmt.Errorf("%s: %w", rc.client.BaseURL(), err))
+	}
+
+	if len(remoteFailures) > 0 {
+		return nil, fmt.Errorf("%w; %d remote server(s) failed: %w",
+			ErrUnknownResource, len(remoteFailures), errors.Join(remoteFailures...))
+	}
+	return nil, ErrUnknownResource
+}
+
+// readNativeResource is ReadResource's steps 1-3 (static resources,
+// templates, providers) with no remote fan-out — shared with
+// ReadResourceFrom's source == "" case, which must never fall through to a
+// federated server the way the public ReadResource does.
+func (s *Server) readNativeResource(ctx context.Context, uri string) (*ResourceResponse, error) {
 	s.mu.RLock()
 
-	// 1. Static exact match.
 	if rr, ok := s.resources[uri]; ok {
 		handler := rr.handler
 		s.mu.RUnlock()
 		return handler(ctx, NewResourceRequest(uri, nil))
 	}
 
-	// 2. Static template match. Copy the slice so we can release the lock before
-	// invoking the handler.
 	templates := make([]*registeredResourceTemplate, len(s.resourceTemplates))
 	copy(templates, s.resourceTemplates)
 	s.mu.RUnlock()
@@ -168,11 +301,55 @@ func (s *Server) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 		}
 	}
 
-	// 3. Providers.
 	if ctx != nil {
-		return readResourceFromProviders(ctx, uri)
+		resp, err := readResourceFromProviders(ctx, uri)
+		if err != ErrUnknownResource {
+			return resp, err
+		}
 	}
+
 	return nil, ErrUnknownResource
+}
+
+// ReadResourceFrom reads uri restricted to a single source, as identified
+// by [Server.ToolSource]: "" for this server's own native resources only
+// (static, templates, providers — no fan-out to any remote), or a remote
+// server's [Client.BaseURL] to read from that one remote exclusively,
+// never falling through to any other registered remote the way
+// [Server.ReadResource]'s fan-out does. Returns ErrUnknownResource if
+// source doesn't match any registered remote, or if uri isn't found there.
+//
+// Pairs with ToolSource for a host enforcing that an MCP Apps view may
+// only read a resource belonging to the same server as the tool that
+// mounted it: ReadResourceFrom(ctx, toolSource, uri) rather than the
+// ambient ReadResource(ctx, uri), which would otherwise happily serve a
+// same-named (or any) resource from a completely different federated
+// server than the one the view is scoped to.
+func (s *Server) ReadResourceFrom(ctx context.Context, source, uri string) (*ResourceResponse, error) {
+	if source == "" {
+		return s.readNativeResource(ctx, uri)
+	}
+
+	s.mu.RLock()
+	var target *registeredClient
+	for _, rc := range s.remoteClients {
+		if rc.client.BaseURL() == source {
+			target = rc
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if target == nil {
+		return nil, ErrUnknownResource
+	}
+
+	attemptCtx, cancel := context.WithTimeout(ctx, remoteResourceFanoutTimeout)
+	defer cancel()
+	resp, err := target.client.ReadResource(attemptCtx, uri)
+	if err != nil {
+		return nil, ErrUnknownResource
+	}
+	return resp, nil
 }
 
 // handleResourcesList handles resources/list over HTTP.
@@ -191,7 +368,7 @@ func (s *Server) handleResourcesTemplatesList(w http.ResponseWriter, r *http.Req
 func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	var params resourceReadParams
 	if err := s.parseParams(req, &params); err != nil {
-		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
+		s.sendProtocolAwareError(w, r, req, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
 		return
 	}
 	if params.URI == "" {
@@ -199,10 +376,28 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 		return
 	}
 
-	resp, err := s.ReadResource(r.Context(), params.URI)
+	// Seed the fan-out hop counter from the incoming forward marker (see
+	// maxResourceFanoutHops): a read arriving from another server's fan-out
+	// already carries hops that this server's own fan-out must count.
+	readCtx := r.Context()
+	if raw := r.Header.Get(headerResourceFanoutHop); raw != "" {
+		if hop, err := strconv.Atoi(raw); err == nil && hop > 0 {
+			readCtx = withResourceFanoutHop(readCtx, hop)
+		}
+	}
+
+	resp, err := s.ReadResource(readCtx, params.URI)
 	if err != nil {
-		if err == ErrUnknownResource {
-			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Resource not found", map[string]any{"uri": params.URI})
+		if errors.Is(err, ErrUnknownResource) {
+			// Same wire shape as before the remote-failure surfacing, but a
+			// wrapped error (remotes failed outright, not just missed) carries
+			// its diagnosis in data.details — the federating client's
+			// ToolError.Data preserves it across the next hop.
+			data := map[string]any{"uri": params.URI}
+			if err != ErrUnknownResource {
+				data["details"] = err.Error()
+			}
+			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Resource not found", data)
 			return
 		}
 		if toolErr, ok := err.(*ToolError); ok {

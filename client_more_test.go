@@ -2,8 +2,11 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -112,5 +115,127 @@ func TestArgs_Arg(t *testing.T) {
 	extended := args.Arg("extra", 1)
 	if len(extended) != 3 {
 		t.Errorf("expected chained Arg to add to the same map, got %+v", extended)
+	}
+}
+
+// TestClient_Instructions covers Client.Instructions, which captures whatever
+// the remote server returned in its initialize response.
+func TestClient_Instructions(t *testing.T) {
+	srv := NewServer("svc", "1")
+	srv.SetInstructions("please read the docs")
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, nil, "")
+	ctx := context.Background()
+
+	if got := c.Instructions(); got != "" {
+		t.Fatalf("expected no instructions before Initialize, got %q", got)
+	}
+
+	if err := c.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got := c.Instructions(); got != "please read the docs" {
+		t.Fatalf("Instructions() = %q, want %q", got, "please read the docs")
+	}
+}
+
+// TestClient_InstructionsEmptyWhenServerSetsNone covers the case where the
+// remote server never called SetInstructions.
+func TestClient_InstructionsEmptyWhenServerSetsNone(t *testing.T) {
+	srv := NewServer("svc", "1")
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, nil, "")
+	if err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got := c.Instructions(); got != "" {
+		t.Fatalf("Instructions() = %q, want empty", got)
+	}
+}
+
+// TestClient_InstructionsIncludesDiscoveryHint covers Instructions capturing
+// the SDK's auto-appended discovery-tool guidance (see appendDiscoveryInstructions),
+// not just instructions set explicitly via SetInstructions.
+func TestClient_InstructionsIncludesDiscoveryHint(t *testing.T) {
+	srv := NewServer("svc", "1")
+	srv.RegisterTool(NewTool("hidden", "A hidden tool").Discoverable("test"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	})
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, nil, "")
+	if err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	got := c.Instructions()
+	if !strings.Contains(got, ToolSearchName) || !strings.Contains(got, ExecuteToolName) {
+		t.Fatalf("Instructions() = %q, want it to mention %s and %s", got, ToolSearchName, ExecuteToolName)
+	}
+}
+
+// TestClient_ProtocolVersion_Legacy covers Client.ProtocolVersion capturing
+// whatever protocol revision a Legacy server actually advertises in its
+// initialize response — which the spec allows to differ from what the
+// client requested (e.g. an older server that only supports an earlier
+// revision). A hand-written fake server (not a real *Server) proves this
+// is read from the response body, not just echoed back from the request.
+func TestClient_ProtocolVersion_Legacy(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req MCPRequest
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		if req.Method == "server/discover" {
+			http.Error(w, "unknown method", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(MCPResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]any{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "old-server", "version": "0.1"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, nil, "")
+	if got := c.ProtocolVersion(); got != "" {
+		t.Fatalf("expected empty ProtocolVersion before Initialize, got %q", got)
+	}
+	if err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got := c.ProtocolVersion(); got != "2024-11-05" {
+		t.Fatalf("ProtocolVersion() = %q, want %q", got, "2024-11-05")
+	}
+}
+
+// TestClient_ProtocolVersion_Modern covers Client.ProtocolVersion reporting
+// MCPProtocolVersionModern once Modern era is confirmed via server/discover.
+func TestClient_ProtocolVersion_Modern(t *testing.T) {
+	srv := NewServer("svc", "1")
+	ts := httptest.NewServer(http.HandlerFunc(srv.HandleRequest))
+	defer ts.Close()
+
+	c := NewClient(ts.URL, nil, "")
+	if err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	c.mu.RLock()
+	era := c.era
+	c.mu.RUnlock()
+	if era != eraModern {
+		t.Fatalf("era = %v, want eraModern (this server supports server/discover)", era)
+	}
+	if got := c.ProtocolVersion(); got != MCPProtocolVersionModern {
+		t.Fatalf("ProtocolVersion() = %q, want %q", got, MCPProtocolVersionModern)
 	}
 }

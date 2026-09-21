@@ -36,6 +36,22 @@ const (
 	// ErrorCodeImplementationErrorEnd is the end of the implementation-defined
 	// server error range.
 	ErrorCodeImplementationErrorEnd = -32099
+
+	// ErrorCodeHeaderMismatch indicates a Modern-era (protocol revision
+	// 2026-07-28+) request's mirrored HTTP headers (MCP-Protocol-Version,
+	// Mcp-Method, Mcp-Name, Mcp-Param-*) don't match the corresponding values
+	// in the JSON-RPC request body, or a required header is missing.
+	ErrorCodeHeaderMismatch = -32020
+
+	// ErrorCodeMissingRequiredClientCapability indicates a Modern-era request
+	// needs a capability the client didn't declare in its per-request
+	// io.modelcontextprotocol/clientCapabilities metadata.
+	ErrorCodeMissingRequiredClientCapability = -32021
+
+	// ErrorCodeUnsupportedProtocolVersion indicates the requested protocol
+	// version (Modern or Legacy) isn't one this server implements. The
+	// error's data.supported field lists the versions it does support.
+	ErrorCodeUnsupportedProtocolVersion = -32022
 )
 
 // ToolError represents an MCP protocol error that can be returned from tool handlers.

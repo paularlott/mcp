@@ -1,8 +1,11 @@
 package toolmetadata
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/paularlott/mcp"
 )
 
 func TestBuildMCPTool_BasicTool(t *testing.T) {
@@ -274,5 +277,192 @@ func TestBuildMCPTool_SchemaOutput(t *testing.T) {
 		if !wantRequired[r] {
 			t.Errorf("required list contains unexpected %q", r)
 		}
+	}
+}
+
+// TestBuildMCPTool_UILinksResource verifies that a UI field is wired through
+// to the tool's _meta.ui.resourceUri, matching the MCP Apps extension shape.
+func TestBuildMCPTool_UILinksResource(t *testing.T) {
+	meta := &ToolMetadata{
+		Description: "Get the sales report",
+		UI: &mcp.UIToolMeta{
+			ResourceURI: "ui://sales-dashboard/dashboard",
+			Visibility:  []string{"model", "app"},
+		},
+	}
+
+	tool, err := BuildMCPTool("sales_report", meta)
+	if err != nil {
+		t.Fatalf("BuildMCPTool returned error: %v", err)
+	}
+
+	b, err := json.Marshal(tool.ToMCPTool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	toolMeta, ok := wire["_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("_meta missing: %s", b)
+	}
+	ui, ok := toolMeta["ui"].(map[string]any)
+	if !ok {
+		t.Fatalf("_meta.ui missing: %s", b)
+	}
+	if ui["resourceUri"] != "ui://sales-dashboard/dashboard" {
+		t.Errorf("resourceUri = %v", ui["resourceUri"])
+	}
+	vis, ok := ui["visibility"].([]any)
+	if !ok || len(vis) != 2 || vis[0] != "model" || vis[1] != "app" {
+		t.Errorf("visibility = %v", ui["visibility"])
+	}
+}
+
+// TestBuildMCPTool_UIVisibilityOnly_OmitsResourceURI covers an app-only
+// action tool (e.g. Scriptling's claim_prize/add_sale): resourceUri is
+// optional per spec, since a tool only ever called by a view that's already
+// open has no rendering purpose of its own.
+func TestBuildMCPTool_UIVisibilityOnly_OmitsResourceURI(t *testing.T) {
+	meta := &ToolMetadata{
+		Description: "Claim a prize",
+		UI:          &mcp.UIToolMeta{Visibility: []string{"app"}},
+	}
+
+	tool, err := BuildMCPTool("claim_prize", meta)
+	if err != nil {
+		t.Fatalf("BuildMCPTool returned error: %v", err)
+	}
+
+	b, err := json.Marshal(tool.ToMCPTool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "resourceUri") {
+		t.Errorf("expected resourceUri to be omitted entirely, got %s", b)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	toolMeta, _ := wire["_meta"].(map[string]any)
+	ui, ok := toolMeta["ui"].(map[string]any)
+	if !ok {
+		t.Fatalf("_meta.ui missing: %s", b)
+	}
+	vis, ok := ui["visibility"].([]any)
+	if !ok || len(vis) != 1 || vis[0] != "app" {
+		t.Errorf("visibility = %v", ui["visibility"])
+	}
+}
+
+// TestBuildMCPTool_UIInvalidVisibility_ReturnsError proves that bad ui
+// metadata — meta.UI came from parsed data (a .toml file, a decorator's
+// keyword arguments, ...), not a Go call site — is reported as an ordinary
+// returned error, not a crashing panic. ToolBuilder.Visibility itself
+// panics on this (see apps.go), which is correct for a direct Go caller's
+// own typo; BuildMCPTool recovers that specific panic into its own existing
+// error-return contract, since from its callers' side this is exactly the
+// same kind of "the metadata I was given is invalid" case an unknown
+// parameter type already is.
+func TestBuildMCPTool_UIInvalidVisibility_ReturnsError(t *testing.T) {
+	meta := &ToolMetadata{
+		Description: "Claim a prize",
+		UI:          &mcp.UIToolMeta{Visibility: []string{"appp"}}, // typo
+	}
+
+	tool, err := BuildMCPTool("claim_prize", meta)
+	if err == nil {
+		t.Fatalf("expected an error for invalid visibility, got tool: %+v", tool)
+	}
+	if tool != nil {
+		t.Errorf("expected a nil tool alongside the error, got %+v", tool)
+	}
+}
+
+// TestBuildMCPTool_UIInvalidResourceURI_ReturnsError is the UIResource-path
+// counterpart: a resourceURI with no scheme is equally invalid metadata,
+// not a Go call-site typo, so it must come back as an error too.
+func TestBuildMCPTool_UIInvalidResourceURI_ReturnsError(t *testing.T) {
+	meta := &ToolMetadata{
+		Description: "Get the weather",
+		UI:          &mcp.UIToolMeta{ResourceURI: "not-a-uri"},
+	}
+
+	tool, err := BuildMCPTool("get_weather", meta)
+	if err == nil {
+		t.Fatalf("expected an error for invalid resourceURI, got tool: %+v", tool)
+	}
+	if tool != nil {
+		t.Errorf("expected a nil tool alongside the error, got %+v", tool)
+	}
+}
+
+func TestBuildMCPTool_Icons(t *testing.T) {
+	meta := &ToolMetadata{
+		Description: "Get the weather",
+		Icons: []mcp.Icon{
+			{Src: "https://example.com/weather.png", MimeType: "image/png", Sizes: []string{"48x48"}},
+		},
+	}
+
+	tool, err := BuildMCPTool("weather", meta)
+	if err != nil {
+		t.Fatalf("BuildMCPTool returned error: %v", err)
+	}
+
+	b, err := json.Marshal(tool.ToMCPTool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(b, &wire); err != nil {
+		t.Fatal(err)
+	}
+	icons, ok := wire["icons"].([]any)
+	if !ok || len(icons) != 1 {
+		t.Fatalf("icons missing or wrong shape: %s", b)
+	}
+	icon, ok := icons[0].(map[string]any)
+	if !ok || icon["src"] != "https://example.com/weather.png" || icon["mimeType"] != "image/png" {
+		t.Errorf("icon = %#v", icon)
+	}
+}
+
+func TestBuildMCPTool_NoIcons_OmitsField(t *testing.T) {
+	meta := &ToolMetadata{Description: "Plain tool, no visual identifiers"}
+
+	tool, err := BuildMCPTool("plain", meta)
+	if err != nil {
+		t.Fatalf("BuildMCPTool returned error: %v", err)
+	}
+
+	b, err := json.Marshal(tool.ToMCPTool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "icons") {
+		t.Errorf("expected icons to be omitted entirely, got %s", b)
+	}
+}
+
+// TestBuildMCPTool_NoUI_OmitsMeta is the unhappy/default-path counterpart:
+// a tool with no UI field must carry no _meta at all.
+func TestBuildMCPTool_NoUI_OmitsMeta(t *testing.T) {
+	meta := &ToolMetadata{Description: "Plain tool, no UI"}
+
+	tool, err := BuildMCPTool("plain_tool", meta)
+	if err != nil {
+		t.Fatalf("BuildMCPTool returned error: %v", err)
+	}
+
+	b, err := json.Marshal(tool.ToMCPTool())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "_meta") {
+		t.Errorf("expected no _meta field for a tool without UI, got %s", b)
 	}
 }

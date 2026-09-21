@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // doMCP sends method/params to s over HTTP and returns the decoded result map.
@@ -481,4 +483,120 @@ func TestMatchResourceTemplate(t *testing.T) {
 // hasPlaceholders reports whether template contains any {var} placeholder.
 func hasPlaceholders(template string) bool {
 	return strings.Contains(template, "{") && strings.Contains(template, "}")
+}
+
+// TestReadResourceFederatesToRemoteServer proves ReadResource falls through
+// to a registered remote server when the URI isn't served locally — needed
+// for MCP Apps: a federated tool's _meta.ui.resourceUri points at a resource
+// that lives on the remote, not the aggregating server, and the aggregator
+// must proxy resources/read there rather than 404ing on its own resource
+// table (which never learns about remote resources otherwise).
+func TestReadResourceFederatesToRemoteServer(t *testing.T) {
+	remote := NewServer("remote", "0.0.1")
+	remote.RegisterResource(
+		NewResource("ui://dashboard/dashboard.html", "Dashboard", "the ui", UIAppMimeType).
+			UIMeta(UIResourceMeta{CSP: &UICSP{ResourceDomains: []string{"https://cdn.example.com"}}}),
+		func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+			return NewUIResourceResponseText("ui://dashboard/dashboard.html", "<html></html>", &UIResourceMeta{
+				CSP: &UICSP{ResourceDomains: []string{"https://cdn.example.com"}},
+			}), nil
+		},
+	)
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, nil, "")
+	if err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("client.Initialize: %v", err)
+	}
+
+	aggregator := NewServer("aggregator", "0.0.1")
+	if err := aggregator.ReplaceRemoteServers([]RemoteServerEntry{
+		{Client: client, Visibility: ToolVisibilityNative},
+	}); err != nil {
+		t.Fatalf("ReplaceRemoteServers: %v", err)
+	}
+
+	resp, err := aggregator.ReadResource(context.Background(), "ui://dashboard/dashboard.html")
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if len(resp.Contents) != 1 || resp.Contents[0].Text != "<html></html>" {
+		t.Fatalf("unexpected contents: %+v", resp.Contents)
+	}
+	uiMeta, ok := resp.Contents[0].Meta["ui"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected _meta.ui to survive federation, got: %+v", resp.Contents[0].Meta)
+	}
+	csp, ok := uiMeta["csp"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected ui.csp to survive federation, got: %+v", uiMeta)
+	}
+	if domains, _ := csp["resourceDomains"].([]any); len(domains) != 1 || domains[0] != "https://cdn.example.com" {
+		t.Fatalf("unexpected resourceDomains: %+v", csp["resourceDomains"])
+	}
+
+	if _, err := aggregator.ReadResource(context.Background(), "ui://nobody-serves-this"); err != ErrUnknownResource {
+		t.Fatalf("expected ErrUnknownResource for a URI no server handles, got: %v", err)
+	}
+}
+
+// TestReadResourceRemoteFanoutBounded proves a remote server that never
+// answers resources/read can't block ReadResource's fan-out (step 4) forever
+// when the caller's own ctx carries no deadline — the realistic worst case
+// being two servers each registered as the other's remote client, where an
+// unresolved read would otherwise bounce back and forth indefinitely.
+// remoteResourceFanoutTimeout is shortened for the test so it doesn't have
+// to wait out the real default.
+//
+// The remote is a real, otherwise-healthy *Server (registration itself must
+// succeed quickly — that's Client.Initialize/ListTools, a separate code path
+// from the one under test here) whose HTTP handler is wrapped to block
+// forever on resources/read specifically, and delegate everything else
+// (server/discover, initialize, tools/list) unchanged.
+func TestReadResourceRemoteFanoutBounded(t *testing.T) {
+	old := remoteResourceFanoutTimeout
+	remoteResourceFanoutTimeout = 50 * time.Millisecond
+	defer func() { remoteResourceFanoutTimeout = old }()
+
+	blockForever := make(chan struct{})
+	remote := NewServer("remote", "0.0.1")
+	hungRemote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if bytes.Contains(body, []byte(`"resources/read"`)) {
+			<-blockForever // never responds within the test's lifetime
+			return
+		}
+		remote.HandleRequest(w, r)
+	}))
+	defer hungRemote.Close()
+	// Deferred after hungRemote.Close() above, so it runs first (defers are
+	// LIFO): the blocked handler must be released before Close's
+	// WaitGroup.Wait can return, or the test itself would hang on cleanup.
+	defer close(blockForever)
+
+	client := NewClient(hungRemote.URL, nil, "")
+	aggregator := NewServer("aggregator", "0.0.1")
+	if err := aggregator.ReplaceRemoteServers([]RemoteServerEntry{
+		{Client: client, Visibility: ToolVisibilityNative},
+	}); err != nil {
+		t.Fatalf("ReplaceRemoteServers: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		// context.Background(): the exact case with no caller-supplied
+		// deadline to fall back on if remoteResourceFanoutTimeout didn't
+		// exist.
+		_, _ = aggregator.ReadResource(context.Background(), "ui://never-resolves")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Bounded by remoteResourceFanoutTimeout, as intended.
+	case <-time.After(2 * time.Second):
+		t.Fatal("ReadResource did not return within a bounded time against a hung remote")
+	}
 }

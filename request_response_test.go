@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -107,8 +108,11 @@ func TestToolResponseHelpers(t *testing.T) {
 	}
 
 	st := NewToolResponseStructured(map[string]any{"k": "v"})
-	if st.StructuredContent == nil || st.Content != nil {
-		t.Fatal("structured")
+	if st.StructuredContent == nil {
+		t.Fatal("structured: StructuredContent not set")
+	}
+	if len(st.Content) != 1 || st.Content[0].Type != "text" || st.Content[0].Text != `{"k":"v"}` {
+		t.Fatalf("structured: expected a text fallback block with the same JSON, got %+v", st.Content)
 	}
 
 	combined := NewToolResponseMulti(r, img)
@@ -130,6 +134,70 @@ func TestToolRequestErrors(t *testing.T) {
 	}
 	if _, err := req.Object("x"); err == nil {
 		t.Fatal("expected not object error")
+	}
+}
+
+// TestNewToolResponseStructured_MarshalError covers the unhappy path: a value
+// that can't be JSON-marshaled (a channel) must produce a clear error text
+// block rather than a StructuredContent the client could never decode either.
+func TestNewToolResponseStructured_MarshalError(t *testing.T) {
+	resp := NewToolResponseStructured(map[string]any{"ch": make(chan int)})
+	if resp.StructuredContent != nil {
+		t.Errorf("StructuredContent = %v, want nil on marshal error", resp.StructuredContent)
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Type != "text" {
+		t.Fatalf("expected a single text error block, got %+v", resp.Content)
+	}
+	if !strings.Contains(resp.Content[0].Text, "Error marshaling data") {
+		t.Errorf("Text = %q, want it to mention the marshal error", resp.Content[0].Text)
+	}
+}
+
+// TestNewToolResponseStructured_NonObjectRejected covers the MCP spec's
+// requirement that structuredContent be a JSON object: arrays, strings, and
+// other scalar values must be rejected rather than silently sent on the wire
+// as a non-compliant structuredContent.
+func TestNewToolResponseStructured_NonObjectRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		data any
+		want string
+	}{
+		{"slice", []int{1, 2, 3}, "an array"},
+		{"string", "hello", "a string"},
+		{"number", 42, "a number"},
+		{"bool", true, "a boolean"},
+		{"nil", nil, "null"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := NewToolResponseStructured(tc.data)
+			if resp.StructuredContent != nil {
+				t.Errorf("StructuredContent = %v, want nil for non-object input", resp.StructuredContent)
+			}
+			if len(resp.Content) != 1 || resp.Content[0].Type != "text" {
+				t.Fatalf("expected a single text error block, got %+v", resp.Content)
+			}
+			if !strings.Contains(resp.Content[0].Text, tc.want) {
+				t.Errorf("Text = %q, want it to mention %q", resp.Content[0].Text, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewToolResponseStructured_StructAccepted covers that a Go struct
+// (which marshals to a JSON object even though its Kind is not Map) is
+// accepted, not just map[string]any.
+func TestNewToolResponseStructured_StructAccepted(t *testing.T) {
+	type payload struct {
+		Records []int `json:"records"`
+	}
+	resp := NewToolResponseStructured(payload{Records: []int{1, 2}})
+	if resp.StructuredContent == nil {
+		t.Fatal("expected StructuredContent to be set for a struct value")
+	}
+	if len(resp.Content) != 1 || resp.Content[0].Text != `{"records":[1,2]}` {
+		t.Fatalf("unexpected text fallback: %+v", resp.Content)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,17 +31,32 @@ type ToolFilterFunc func(toolName string) bool
 
 // Client represents an MCP client for connecting to remote servers
 type Client struct {
-	baseURL     string
-	httpClient  *http.Client
-	auth        AuthProvider
-	namespace   string         // Optional namespace for tool names (e.g., "scriptling.")
-	separator   string         // Separator for namespace
-	cachedTools []MCPTool      // Cached tools with namespace already applied
-	toolFilter  ToolFilterFunc // Optional filter for tools (applied to original name without namespace)
-	mu          sync.RWMutex
-	initialized bool
-	sessionID   string
-	transport   clientTransport // non-nil for non-HTTP transports (e.g. stdio)
+	baseURL      string
+	httpClient   *http.Client
+	auth         AuthProvider
+	namespace    string         // Optional namespace for tool names (e.g., "scriptling.")
+	separator    string         // Separator for namespace
+	cachedTools  []MCPTool      // Cached tools with namespace already applied
+	toolFilter   ToolFilterFunc // Optional filter for tools (applied to original name without namespace)
+	mu           sync.RWMutex
+	initialized  bool
+	era          clientEra // detected during Initialize; see tryModernInitialize
+	sessionID    string
+	instructions string // Captured from the remote server's initialize response, if any
+	// protocolVersion is the protocol revision actually in effect with this
+	// server: the Legacy server's own advertised "protocolVersion" from its
+	// initialize response (which may differ from what was requested, if the
+	// server prefers an older revision it supports), or [MCPProtocolVersionModern]
+	// once Modern era is confirmed via tryModernInitialize. Empty until
+	// Initialize has completed. See [Client.ProtocolVersion].
+	protocolVersion string
+	transport       clientTransport // non-nil for non-HTTP transports (e.g. stdio)
+
+	// extensionCapabilities holds this client's own declared extensions.<id>
+	// settings (see DeclareExtension), sent as capabilities.extensions on
+	// Legacy's initialize and _meta.clientCapabilities.extensions on every
+	// Modern request.
+	extensionCapabilities map[string]any
 
 	// Notification reader lifecycle. Kept on its own mutex so notification
 	// handling can't deadlock with c.mu (the request/cache lock).
@@ -147,7 +163,60 @@ func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, http
 	}
 }
 
-// Initialize performs the MCP handshake with the remote server
+// DeclareExtension advertises this client's support for an MCP extension (per
+// SEP-1724) to every server it talks to, under capabilities.extensions[id]
+// on Legacy's initialize and _meta.clientCapabilities.extensions[id] on
+// every Modern request. Call it during setup, before Initialize — a remote
+// server that conditionally attaches extension-specific data (e.g. only
+// linking a tool to its MCP Apps UI resource for clients that declared
+// support) otherwise has no way to know this client can use it, and quietly
+// falls back to a plain response instead. For example, a client rendering
+// MCP Apps views declares:
+//
+//	client.DeclareExtension(mcp.UIAppsExtensionID, map[string]any{
+//		"mimeTypes": []string{mcp.UIAppMimeType},
+//	})
+//
+// This is the client-side counterpart of [Server.DeclareExtension].
+func (c *Client) DeclareExtension(id string, settings map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.extensionCapabilities == nil {
+		c.extensionCapabilities = map[string]any{}
+	}
+	c.extensionCapabilities[id] = settings
+}
+
+// capabilitiesMap builds the capabilities object sent on Legacy's initialize
+// (capabilities) and Modern's every request (_meta.clientCapabilities):
+// empty unless DeclareExtension was called, in which case it carries
+// extensions.<id> for each declared extension.
+//
+// Deliberately unlocked: it's called from initializeLegacy and
+// withModernMeta, both reachable from Initialize while it already holds
+// c.mu — taking c.mu here too would deadlock (sync.RWMutex isn't
+// reentrant). Safe under DeclareExtension's own documented contract (call
+// it during setup, before Initialize/concurrent use): nothing mutates
+// extensionCapabilities after that point, the same convention this Client
+// already relies on for namespace/separator.
+func (c *Client) capabilitiesMap() map[string]any {
+	if len(c.extensionCapabilities) == 0 {
+		return map[string]any{}
+	}
+	extensions := make(map[string]any, len(c.extensionCapabilities))
+	for id, settings := range c.extensionCapabilities {
+		extensions[id] = settings
+	}
+	return map[string]any{"extensions": extensions}
+}
+
+// Initialize connects to the remote server, transparently detecting whether
+// it speaks the Modern (protocol revision 2026-07-28+, stateless per-request)
+// or Legacy (initialize handshake) era, per the spec's backward-compatibility
+// algorithm: attempt a Modern server/discover call first, and fall back to
+// the Legacy initialize handshake below if that doesn't succeed. Every other
+// Client method is unaffected by which era was detected — they all still
+// just call sendRequest, which applies the right wire shape internally.
 func (c *Client) Initialize(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,13 +225,36 @@ func (c *Client) Initialize(ctx context.Context) error {
 		return nil
 	}
 
+	if !c.tryModernInitialize(ctx) {
+		if err := c.initializeLegacy(ctx); err != nil {
+			return err
+		}
+	}
+
+	// Start the notification reader — for Legacy, the GET SSE stream; for
+	// Modern, subscriptions/listen (see startNotifications) — only if the
+	// caller opted in via EnableNotifications. No-op for stream transports,
+	// which receive notifications via their own peer handlers regardless of
+	// era. Safe here under c.mu: startNotifications only touches readerMu.
+	c.readerMu.Lock()
+	want := c.wantNotifications
+	c.readerMu.Unlock()
+	if want {
+		c.startNotifications(c.era)
+	}
+	return nil
+}
+
+// initializeLegacy performs the Legacy-era (2024-11-05..2025-11-25)
+// initialize handshake. Called under c.mu, held by Initialize.
+func (c *Client) initializeLegacy(ctx context.Context) error {
 	req := MCPRequest{
 		JSONRPC: "2.0",
 		ID:      "init",
 		Method:  "initialize",
 		Params: map[string]any{
 			"protocolVersion": MCPProtocolVersionLatest,
-			"capabilities":    map[string]any{},
+			"capabilities":    c.capabilitiesMap(),
 			"clientInfo": map[string]any{
 				"name":    mcpClientName,
 				"version": mcpClientVersion,
@@ -180,10 +272,12 @@ func (c *Client) Initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize error: %s", resp.Error.Message)
 	}
 
+	result, resultOK := resp.Result.(map[string]any)
+
 	// Check for session ID in response headers first
 	if sessionID := respHeaders.Get(headerSessionID); sessionID != "" {
 		c.sessionID = sessionID
-	} else if result, ok := resp.Result.(map[string]any); ok {
+	} else if resultOK {
 		// Check if the server provided a session ID in the response body
 		if sessionID, exists := result["sessionId"]; exists {
 			if sessionStr, ok := sessionID.(string); ok {
@@ -192,24 +286,67 @@ func (c *Client) Initialize(ctx context.Context) error {
 		}
 	}
 
-	c.initialized = true
-
-	// Start the notification reader (HTTP SSE) only if the caller opted in via
-	// EnableNotifications. No-op for stream transports, which receive
-	// notifications through their own peer handlers. Safe to call under c.mu: it
-	// only touches readerMu.
-	c.readerMu.Lock()
-	want := c.wantNotifications
-	c.readerMu.Unlock()
-	if want {
-		c.startNotifications()
+	// Capture the server's instructions, if any, so callers can inspect what a
+	// remote server says about itself (e.g. for logging, admin UIs, or curating
+	// content to fold into this server's own SetInstructions).
+	if resultOK {
+		if instructions, exists := result["instructions"]; exists {
+			if instrStr, ok := instructions.(string); ok {
+				c.instructions = instrStr
+			}
+		}
 	}
+
+	// Capture the protocol version actually in effect. Per spec the server
+	// echoes back the version it will use, which may be older than what was
+	// requested if that's the newest it supports — so this can legitimately
+	// differ from MCPProtocolVersionLatest.
+	c.protocolVersion = MCPProtocolVersionLatest
+	if resultOK {
+		if pv, exists := result["protocolVersion"]; exists {
+			if pvStr, ok := pv.(string); ok && pvStr != "" {
+				c.protocolVersion = pvStr
+			}
+		}
+	}
+
+	c.initialized = true
+	c.era = eraLegacy
 	return nil
 }
 
 // Namespace returns the namespace for this client's tools.
 func (c *Client) Namespace() string {
 	return c.namespace
+}
+
+// BaseURL returns the remote server's endpoint URL this client connects to.
+// Unlike Namespace (which callers may leave empty, and which two different
+// remote servers may share no such uniqueness guarantee exists for), this
+// is a stable, unique-per-remote-server identifier — used by
+// [Server.ToolSource] and [Server.ReadResourceFrom] to tell which
+// federated server a tool or resource actually came from.
+func (c *Client) BaseURL() string {
+	return c.baseURL
+}
+
+// Instructions returns the instructions the remote server returned during
+// initialize, or "" if the server set none or the client hasn't been
+// initialized yet (Initialize is called automatically by most Client methods).
+func (c *Client) Instructions() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.instructions
+}
+
+// ProtocolVersion returns the protocol revision actually in effect with this
+// server (e.g. "2025-06-18" for a Legacy server, or [MCPProtocolVersionModern]
+// once Modern era is confirmed), or "" if the client hasn't been initialized
+// yet (Initialize is called automatically by most Client methods).
+func (c *Client) ProtocolVersion() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocolVersion
 }
 
 // WithToolFilter sets a filter function for this client.
@@ -284,9 +421,12 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 			continue
 		}
 		namespacedTools = append(namespacedTools, MCPTool{
-			Name:        c.namespace + tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
+			Name:         c.namespace + tool.Name,
+			Description:  tool.Description,
+			InputSchema:  tool.InputSchema,
+			OutputSchema: tool.OutputSchema,
+			Meta:         tool.Meta,
+			Icons:        tool.Icons,
 		})
 	}
 
@@ -569,6 +709,19 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 // sendRequest sends a request to the MCP server. When a non-HTTP transport is
 // configured (e.g. stdio) it is used; otherwise the request is sent over HTTP.
 func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResponse, respHeaders *http.Header) error {
+	// Modern era (detected by Initialize via tryModernInitialize): every
+	// request — not just Initialize's own probe — needs the same per-request
+	// _meta and, on HTTP, the Mcp-Method/Mcp-Name routing headers. This is the
+	// one place that applies transparently to every Client method; a request
+	// on a Legacy or not-yet-initialized Client takes the unchanged path below.
+	if c.era == eraModern {
+		modernReq := c.withModernMeta(req)
+		if c.transport != nil {
+			return c.transport.roundTrip(ctx, modernReq, resp, respHeaders)
+		}
+		return c.sendModernHTTPRequest(ctx, modernReq, resp, respHeaders)
+	}
+
 	if c.transport != nil {
 		return c.transport.roundTrip(ctx, req, resp, respHeaders)
 	}
@@ -586,6 +739,14 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("%s/%s", mcpClientName, mcpClientVersion))
+
+	// Mirror the resource fan-out hop counter (see resources.go) when the
+	// caller's ctx carries one — i.e. when this request is itself a
+	// federated server's fan-out forward, so the receiving server can count
+	// it toward maxResourceFanoutHops.
+	if hop := resourceFanoutHopFrom(ctx); hop > 0 {
+		httpReq.Header.Set(headerResourceFanoutHop, strconv.Itoa(hop))
+	}
 
 	if c.sessionID != "" && req.Method != "initialize" {
 		httpReq.Header.Set(headerSessionID, c.sessionID)
@@ -810,10 +971,20 @@ func (c *Client) callToolsBatch(ctx context.Context, bt batchTransport, calls []
 
 	// Only the calls that passed the filter check need a request on the wire;
 	// build the subset while remembering which result index each belongs to.
+	// Batch calls go straight to the transport's batchRoundTrip, bypassing
+	// sendRequest's own era handling, so a Modern-era client must apply the
+	// same per-request _meta here itself.
+	c.mu.RLock()
+	era := c.era
+	c.mu.RUnlock()
+
 	var wireReqs []*MCPRequest
 	var wireIdx []int
 	for i, req := range reqs {
 		if req != nil {
+			if era == eraModern {
+				req = c.withModernMeta(req)
+			}
 			wireReqs = append(wireReqs, req)
 			wireIdx = append(wireIdx, i)
 		}
@@ -949,6 +1120,14 @@ func parseToolsResult(result any) ([]MCPTool, error) {
 						}
 						if outputSchema, ok := toolMap["outputSchema"]; ok {
 							tool.OutputSchema = outputSchema
+						}
+						if meta, ok := toolMap["_meta"].(map[string]any); ok {
+							tool.Meta = meta
+						}
+						if iconsRaw, ok := toolMap["icons"]; ok {
+							if b, err := json.Marshal(iconsRaw); err == nil {
+								_ = json.Unmarshal(b, &tool.Icons)
+							}
 						}
 						tools = append(tools, tool)
 					}

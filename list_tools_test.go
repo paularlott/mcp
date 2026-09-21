@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -29,6 +31,50 @@ func TestListTools_OutputSchemaAndOrdering(t *testing.T) {
 	// Output schema included for alpha
 	if tools[0].OutputSchema == nil {
 		t.Fatalf("expected output schema for alpha")
+	}
+}
+
+// TestClientListTools_PreservesMetaAndIcons guards against a regression
+// where Client.ListTools rebuilt each MCPTool from scratch (both in its
+// direct-type-assertion fast path and its namespacing pass), silently
+// dropping _meta and icons for every federated tool — which would break MCP
+// Apps passthrough entirely, since a federating server's tools/list is the
+// only place a remote client observes a tool's UI/icon metadata.
+func TestClientListTools_PreservesMetaAndIcons(t *testing.T) {
+	remote := NewServer("remote", "0.0.1")
+	remote.RegisterTool(
+		NewTool("sales_report", "Get the sales report").
+			UIResource("ui://dashboard/dashboard.html", "model", "app").
+			Icons(Icon{Src: "https://example.com/icon.png", MimeType: "image/png"}),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("ok"), nil
+		},
+	)
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+
+	client := NewClient(ts.URL, nil, "")
+	if err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("client.Initialize: %v", err)
+	}
+
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
+	}
+	tool := tools[0]
+	if len(tool.Icons) != 1 || tool.Icons[0].Src != "https://example.com/icon.png" {
+		t.Fatalf("expected icons to survive federation, got: %+v", tool.Icons)
+	}
+	uiMeta, ok := tool.Meta["ui"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected _meta.ui to survive federation, got: %+v", tool.Meta)
+	}
+	if uiMeta["resourceUri"] != "ui://dashboard/dashboard.html" {
+		t.Fatalf("unexpected resourceUri: %+v", uiMeta["resourceUri"])
 	}
 }
 

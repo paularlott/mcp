@@ -311,6 +311,89 @@ func TestRegisterTools_BatchRegistration(t *testing.T) {
 	}
 }
 
+// TestRegisterTools_BatchRegistration_PreservesIcons pins down that Icons
+// survive the batch path the same way they do for a single RegisterTool
+// call, for both the native and discoverable branches — a prior version of
+// this code built the registeredTool literal in each branch without copying
+// Icons, so tools/list silently lost them for every tool registered via
+// RegisterTools.
+func TestRegisterTools_BatchRegistration_PreservesIcons(t *testing.T) {
+	icon := Icon{Src: "https://example.com/icon.png", MimeType: "image/png"}
+	s := NewServer("test", "1.0")
+
+	s.RegisterTools(
+		NewToolRegistration(
+			NewTool("native_tool", "native").Icons(icon),
+			func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+				return NewToolResponseText("ok"), nil
+			},
+		),
+		NewToolRegistration(
+			NewTool("discoverable_tool", "discoverable").Icons(icon).Discoverable(),
+			func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+				return NewToolResponseText("ok"), nil
+			},
+		),
+	)
+
+	tools := s.ListToolsWithContext(context.Background())
+	byName := map[string][]Icon{}
+	for _, tl := range tools {
+		byName[tl.Name] = tl.Icons
+	}
+
+	if got := byName["native_tool"]; len(got) != 1 || got[0].Src != icon.Src {
+		t.Errorf("native_tool icons = %#v, want [%#v]", got, icon)
+	}
+
+	// Discoverable tools aren't in tools/list's native cache; look them up
+	// through the internal registry the way execute_tool does.
+	found, err := s.internalRegistry.GetTool(context.Background(), "discoverable_tool")
+	if err != nil {
+		t.Fatalf("GetTool(discoverable_tool): %v", err)
+	}
+	if got := found.Icons; len(got) != 1 || got[0].Src != icon.Src {
+		t.Errorf("discoverable_tool icons = %#v, want [%#v]", got, icon)
+	}
+}
+
+// TestSearch_SurfacesMetaAndIcons pins down that tool_search — a
+// discoverable tool's only way to be found before it's called by name — no
+// longer strips _meta (in particular MCP Apps' _meta.ui) and icons from its
+// results. A discoverable tool linked to a UI resource previously had no
+// way for a host to ever learn that before calling it: SearchResult carried
+// name/description/score/schema/keywords only.
+func TestSearch_SurfacesMetaAndIcons(t *testing.T) {
+	icon := Icon{Src: "https://example.com/icon.png", MimeType: "image/png"}
+	s := NewServer("test", "1.0")
+	s.RegisterTool(
+		NewTool("dashboard", "Sales dashboard").
+			UIResource("ui://dashboard/sales").
+			Icons(icon).
+			Discoverable(),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("ok"), nil
+		},
+	)
+
+	results := s.internalRegistry.Search(context.Background(), "dashboard", 0)
+	if len(results) != 1 {
+		t.Fatalf("Search results = %#v, want 1", results)
+	}
+	r := results[0]
+
+	if len(r.Icons) != 1 || r.Icons[0].Src != icon.Src {
+		t.Errorf("Icons = %#v, want [%#v]", r.Icons, icon)
+	}
+	ui, ok := r.Meta["ui"].(UIToolMeta)
+	if !ok {
+		t.Fatalf("Meta[ui] type = %T, want UIToolMeta", r.Meta["ui"])
+	}
+	if ui.ResourceURI != "ui://dashboard/sales" {
+		t.Errorf("Meta[ui].ResourceURI = %q", ui.ResourceURI)
+	}
+}
+
 func TestRegisterTool_MaintainsSortedOrder(t *testing.T) {
 	s := NewServer("test", "1.0")
 

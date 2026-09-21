@@ -382,3 +382,70 @@ func TestRemoteToolSearchHTTP(t *testing.T) {
 		}
 	})
 }
+
+// TestRemoteToolSearch_PreservesUIMetaAndIcons is the regression test for a
+// tool discovered via tool_search through a connecting server losing its
+// MCP Apps linkage (_meta.ui.resourceUri) and icons — searchRemoteServers
+// used to hand-build each SearchResult from only name/description/score/
+// inputSchema, silently dropping _meta and icons even though the remote's
+// raw search response carried them (the same data a plain tools/list
+// federation already preserves via RegisterTools/ListToolsWithContext).
+// Without them, a host has no way to know the discovered tool has a linked
+// UI resource, so it never renders one.
+func TestRemoteToolSearch_PreservesUIMetaAndIcons(t *testing.T) {
+	remoteServer := NewServer("remote", "1.0.0")
+	remoteServer.RegisterTool(
+		NewTool("spin_wheel", "Spin the prize wheel").
+			Discoverable("prize", "wheel", "spin").
+			UIResource("ui://prize-wheel/wheel.html", "model", "app").
+			Icons(Icon{Src: "https://example.com/wheel.png", MimeType: "image/png", Sizes: []string{"48x48"}}),
+		func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return NewToolResponseText("spun"), nil
+		},
+	)
+	remoteTS := httptest.NewServer(http.HandlerFunc(remoteServer.HandleRequest))
+	defer remoteTS.Close()
+
+	mainServer := NewServer("main", "1.0.0")
+	client := NewClient(remoteTS.URL, nil, "remote")
+	if err := mainServer.ReplaceRemoteServers([]RemoteServerEntry{
+		{Client: client, Visibility: ToolVisibilityDiscoverable, RemoteSearch: true},
+	}); err != nil {
+		t.Fatalf("Failed to register remote server: %v", err)
+	}
+
+	response, err := mainServer.CallTool(context.Background(), "tool_search", map[string]any{
+		"query":       "wheel",
+		"max_results": 10,
+	})
+	if err != nil {
+		t.Fatalf("tool_search failed: %v", err)
+	}
+
+	var results []SearchResult
+	if err := json.Unmarshal([]byte(response.Content[0].Text), &results); err != nil {
+		t.Fatalf("Failed to parse results: %v", err)
+	}
+
+	var found *SearchResult
+	for i := range results {
+		if results[i].Name == "remote__spin_wheel" {
+			found = &results[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected to find remote__spin_wheel, got %+v", results)
+	}
+
+	uiMeta, ok := found.Meta["ui"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected _meta.ui to survive tool_search federation, got Meta=%#v", found.Meta)
+	}
+	if uiMeta["resourceUri"] != "ui://prize-wheel/wheel.html" {
+		t.Errorf("_meta.ui.resourceUri = %v, want ui://prize-wheel/wheel.html", uiMeta["resourceUri"])
+	}
+
+	if len(found.Icons) != 1 || found.Icons[0].Src != "https://example.com/wheel.png" {
+		t.Errorf("expected the icon to survive tool_search federation, got %+v", found.Icons)
+	}
+}

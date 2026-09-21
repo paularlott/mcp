@@ -102,7 +102,7 @@ func (s *Server) handlePromptsList(w http.ResponseWriter, r *http.Request, req *
 func (s *Server) handlePromptsGet(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	var params promptGetParams
 	if err := s.parseParams(req, &params); err != nil {
-		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
+		s.sendProtocolAwareError(w, r, req, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
 		return
 	}
 	if params.Name == "" {

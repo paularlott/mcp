@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MCP Apps Host Simulator</title>
+<style>
+  :root {
+    --bg: #0f172a; --panel: #1e293b; --fg: #e2e8f0; --muted: #94a3b8;
+    --border: #334155; --accent: #38bdf8; --error: #f87171; --ok: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column;
+  }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; white-space: nowrap; }
+  input, select, button {
+    font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--fg);
+  }
+  input[type=text] { min-width: 260px; }
+  button { background: var(--accent); color: #04222f; border: none; cursor: pointer; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.secondary { background: var(--panel); color: var(--fg); border: 1px solid var(--border); }
+  main { flex: 1; display: flex; min-height: 0; }
+  .col { flex: 1; min-width: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); }
+  .col:last-child { border-right: none; }
+  .col h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .col-body { flex: 1; overflow: auto; padding: 10px 12px; }
+  #view-col { flex: 2; }
+  .tool { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .tool .name { font-weight: 600; }
+  .tool .meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); margin-left: 6px; }
+  .badge.ui { color: var(--accent); border-color: var(--accent); }
+  iframe { width: 100%; height: 100%; border: none; background: #fff; }
+  #view-wrap { flex: 1; min-height: 0; position: relative; }
+  #view-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; text-align: center; padding: 20px; }
+  #log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; }
+  .log-line { padding: 4px 0; border-bottom: 1px dashed var(--border); }
+  .log-line.host-to-view { color: var(--accent); }
+  .log-line.view-to-host { color: var(--ok); }
+  .log-line.server { color: var(--muted); }
+  .status { font-size: 12px; color: var(--muted); padding: 0 16px 8px; }
+  .status.error { color: var(--error); }
+</style>
+</head>
+<body>
+<header>
+  <h1>MCP Apps Host Simulator</h1>
+  <input id="url" type="text" value="http://localhost:8091/mcp" placeholder="Streamable HTTP MCP server URL">
+  <button id="connect">Connect</button>
+  <span id="conn-status" class="status"></span>
+</header>
+
+<main>
+  <div class="col" id="tools-col" style="flex: 0 0 260px">
+    <h2>Tools</h2>
+    <div class="col-body" id="tools-list"></div>
+  </div>
+
+  <div class="col" id="view-col">
+    <h2>Rendered View</h2>
+    <div id="view-wrap">
+      <div id="view-empty">Connect to a server, then call a tool linked to a UI resource.</div>
+    </div>
+  </div>
+
+  <div class="col" style="flex: 0 0 360px">
+    <h2>Protocol Log <span style="float:right"><button class="secondary" id="clear-log" style="padding:2px 8px;font-size:11px">clear</button></span></h2>
+    <div class="col-body" id="log"></div>
+  </div>
+</main>
+
+<script>
+// This page plays the HOST side of the MCP Apps extension
+// (https://github.com/modelcontextprotocol/ext-apps): it talks to a real MCP
+// server over Streamable HTTP, and to the rendered View over postMessage,
+// bridging tools/call and resources/read between them. It's a test harness,
+// not a production host: no OAuth, one view at a time, CSP is approximated
+// via an injected <meta> tag (a real host would set the response header on
+// the resource it serves the iframe from).
+
+const els = {
+  url: document.getElementById('url'),
+  connect: document.getElementById('connect'),
+  connStatus: document.getElementById('conn-status'),
+  toolsList: document.getElementById('tools-list'),
+  viewWrap: document.getElementById('view-wrap'),
+  log: document.getElementById('log'),
+  clearLog: document.getElementById('clear-log'),
+};
+
+let serverUrl = '';
+let rpcId = 1;
+let tools = [];
+let activeIframe = null;
+let activeListener = null;
+
+function logLine(direction, label, payload) {
+  const div = document.createElement('div');
+  div.className = 'log-line ' + direction;
+  div.textContent = `[${label}] ` + JSON.stringify(payload);
+  els.log.prepend(div);
+}
+
+els.clearLog.addEventListener('click', () => { els.log.innerHTML = ''; });
+
+async function callServer(method, params) {
+  const id = rpcId++;
+  const req = { jsonrpc: '2.0', id, method, params };
+  logLine('server', 'host -> server', req);
+  const res = await fetch(serverUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const json = await res.json();
+  logLine('server', 'server -> host', json);
+  if (json.error) throw new Error(json.error.message || 'server error');
+  return json.result;
+}
+
+els.connect.addEventListener('click', async () => {
+  serverUrl = els.url.value.trim();
+  els.connStatus.textContent = 'Connecting…';
+  els.connStatus.className = 'status';
+  try {
+    await callServer('initialize', {
+      protocolVersion: '2025-06-18',
+      capabilities: { extensions: { 'io.modelcontextprotocol/ui': { mimeTypes: ['text/html;profile=mcp-app'] } } },
+      clientInfo: { name: 'mcp-app-host-harness', version: '1.0.0' },
+    });
+    const listResult = await callServer('tools/list', {});
+    tools = listResult.tools || [];
+    renderToolsList();
+    els.connStatus.textContent = `Connected. ${tools.length} tool(s).`;
+  } catch (err) {
+    els.connStatus.textContent = 'Error: ' + err.message;
+    els.connStatus.className = 'status error';
+  }
+});
+
+// tool.name/tool.description/ui come from whatever server the user pointed
+// this harness at — untrusted input to this page, exactly like a resource's
+// HTML is untrusted input to the sandboxed iframe. Built with textContent/
+// createElement rather than innerHTML template strings, so a malicious
+// server can't inject markup or script into this (unsandboxed, "trusted
+// host") page via a crafted tool name or description.
+function renderToolsList() {
+  els.toolsList.innerHTML = '';
+  for (const tool of tools) {
+    const ui = tool._meta && tool._meta.ui;
+    const visibility = (ui && ui.visibility) || ['model', 'app'];
+
+    const div = document.createElement('div');
+    div.className = 'tool';
+
+    const nameLine = document.createElement('div');
+    nameLine.className = 'name';
+    nameLine.appendChild(document.createTextNode(tool.name));
+    if (ui) {
+      const badge = document.createElement('span');
+      badge.className = 'badge ui';
+      badge.textContent = 'UI';
+      nameLine.appendChild(badge);
+    }
+    if (!visibility.includes('model')) {
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = 'app-only';
+      nameLine.appendChild(badge);
+    }
+    div.appendChild(nameLine);
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = tool.description || '';
+    div.appendChild(meta);
+
+    const actions = document.createElement('div');
+    actions.style.marginTop = '6px';
+    const button = document.createElement('button');
+    button.textContent = 'Call';
+    button.addEventListener('click', () => callTool(tool));
+    actions.appendChild(button);
+    div.appendChild(actions);
+
+    els.toolsList.appendChild(div);
+  }
+}
+
+async function callTool(tool) {
+  // This example's model-visible tools all take no arguments; a fuller
+  // harness would render a form from tool.inputSchema here.
+  const args = {};
+  let result;
+  try {
+    result = await callServer('tools/call', { name: tool.name, arguments: args });
+  } catch (err) {
+    alert('Tool call failed: ' + err.message);
+    return;
+  }
+
+  const ui = tool._meta && tool._meta.ui;
+  if (!ui || !ui.resourceUri) {
+    alert('Tool has no linked UI resource; text result:\n' + JSON.stringify(result, null, 2));
+    return;
+  }
+
+  const resource = await callServer('resources/read', { uri: ui.resourceUri });
+  mountView(resource.contents[0], tool, args, result);
+}
+
+function buildCSPMeta(uiMeta) {
+  const csp = (uiMeta && uiMeta.csp) || {};
+  // 'self' here would resolve against the srcdoc iframe's own opaque origin
+  // (no allow-same-origin), which no real request can ever match — so as a
+  // default it's inert today, but a silent landmine if allow-same-origin is
+  // ever added to the sandbox attribute (it would then quietly mean "back
+  // to the host page's own origin"). 'none' says what's actually intended:
+  // no undeclared network access.
+  const connect = (csp.connectDomains && csp.connectDomains.length) ? ["'self'"].concat(csp.connectDomains) : ["'none'"];
+  const resource = ["'self'", "'unsafe-inline'", 'data:'].concat(csp.resourceDomains || []);
+  const frame = (csp.frameDomains && csp.frameDomains.length) ? csp.frameDomains : ["'none'"];
+  const base = (csp.baseUriDomains && csp.baseUriDomains.length) ? ["'self'"].concat(csp.baseUriDomains) : ["'self'"];
+  const policy = [
+    `default-src 'none'`,
+    `script-src ${resource.join(' ')}`,
+    `style-src ${resource.join(' ')}`,
+    `img-src ${resource.join(' ')}`,
+    `font-src ${resource.join(' ')}`,
+    `media-src ${resource.join(' ')}`,
+    `connect-src ${connect.join(' ')}`,
+    `frame-src ${frame.join(' ')}`,
+    `base-uri ${base.join(' ')}`,
+    `object-src 'none'`,
+    // form-action does NOT fall back to default-src — omitting it left form
+    // submissions (the sandbox grants allow-forms) free to target any
+    // origin at all, a live exfiltration channel regardless of the CSP
+    // above. No legitimate MCP Apps view submits a real HTML form (tool
+    // calls go through postMessage, not form POSTs).
+    `form-action 'none'`,
+  ].join('; ');
+  return `<meta http-equiv="Content-Security-Policy" content="${policy}">`;
+}
+
+function mountView(content, tool, args, callResult) {
+  // Host MUST send ui/resource-teardown before tearing down a UI resource
+  // (per the extension spec). This harness mounts one view at a time and
+  // replaces it synchronously below, so — unlike a real host that can wait
+  // for the response — this is fire-and-forget: it demonstrates sending
+  // the notification, not the "wait before destroying" half, which would
+  // need mountView itself to become async.
+  if (activeIframe && activeIframe.contentWindow) {
+    try {
+      activeIframe.contentWindow.postMessage({ jsonrpc: '2.0', id: 'teardown-' + Date.now(), method: 'ui/resource-teardown', params: { reason: 'view_replaced' } }, '*');
+    } catch {}
+  }
+  els.viewWrap.innerHTML = '';
+  if (activeListener) window.removeEventListener('message', activeListener);
+
+  const uiMeta = content._meta && content._meta.ui;
+  let html = content.text || (content.blob ? atob(content.blob) : '');
+  const meta = buildCSPMeta(uiMeta);
+  html = /<head[^>]*>/i.test(html)
+    ? html.replace(/<head[^>]*>/i, (m) => m + meta)
+    : meta + html;
+
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
+  iframe.srcdoc = html;
+  els.viewWrap.appendChild(iframe);
+  activeIframe = iframe;
+
+  let initialized = false;
+
+  activeListener = async (event) => {
+    if (event.source !== iframe.contentWindow) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== '2.0') return;
+    logLine('view-to-host', 'view -> host', msg);
+
+    const reply = (payload) => {
+      logLine('host-to-view', 'host -> view', payload);
+      iframe.contentWindow.postMessage(payload, '*');
+    };
+
+    if (msg.method === 'ui/initialize') {
+      reply({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: {
+          protocolVersion: '2026-01-26',
+          hostCapabilities: { serverTools: {}, serverResources: {}, logging: {} },
+          hostInfo: { name: 'mcp-app-host-harness', version: '1.0.0' },
+          hostContext: {
+            toolInfo: { tool },
+            theme: 'light',
+            displayMode: 'inline',
+            availableDisplayModes: ['inline'],
+          },
+        },
+      });
+      return;
+    }
+
+    if (msg.method === 'ui/notifications/initialized') {
+      if (initialized) return;
+      initialized = true;
+      reply({ jsonrpc: '2.0', method: 'ui/notifications/tool-input', params: { arguments: args } });
+      reply({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: callResult });
+      return;
+    }
+
+    if (msg.method === 'notifications/message') {
+      return; // logged above; nothing else to do
+    }
+
+    if (msg.method === 'ui/notifications/size-changed') {
+      // Compliant views report their own content size (see the spec's
+      // "Container Dimensions" section) — apply it as an inline style,
+      // which overrides this page's own `iframe { height: 100% }` rule, so
+      // the harness shows the view at its true natural size rather than
+      // always stretching to fill the panel.
+      const height = msg.params && msg.params.height;
+      if (typeof height === 'number' && height > 0) {
+        iframe.style.height = Math.ceil(height) + 'px';
+      }
+      return;
+    }
+
+    // Everything else (tools/call, resources/read, ...) is proxied to the
+    // real MCP server per the extension's "Sandbox proxy" behavior.
+    if (msg.id !== undefined) {
+      try {
+        const result = await callServer(msg.method, msg.params);
+        reply({ jsonrpc: '2.0', id: msg.id, result });
+      } catch (err) {
+        reply({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: err.message } });
+      }
+    }
+  };
+  window.addEventListener('message', activeListener);
+}
+</script>
+</body>
+</html>

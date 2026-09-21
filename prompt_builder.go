@@ -14,6 +14,7 @@ type PromptBuilder struct {
 	name        string
 	description string
 	arguments   []MCPPromptArgument
+	icons       []Icon
 }
 
 // NewPrompt creates a prompt descriptor. Chain Argument calls to declare the
@@ -44,12 +45,20 @@ func (p *PromptBuilder) Description() string { return p.description }
 // Arguments returns the prompt's declared arguments.
 func (p *PromptBuilder) Arguments() []MCPPromptArgument { return p.arguments }
 
+// Icons attaches visual identifiers to the prompt's prompts/list descriptor.
+// See [Icon] for the shape and the security precautions consumers must apply.
+func (p *PromptBuilder) Icons(icons ...Icon) *PromptBuilder {
+	p.icons = icons
+	return p
+}
+
 // ToMCPPrompt converts the builder to an MCPPrompt descriptor.
 func (p *PromptBuilder) ToMCPPrompt() MCPPrompt {
 	return MCPPrompt{
 		Name:        p.name,
 		Description: p.description,
 		Arguments:   p.arguments,
+		Icons:       p.icons,
 	}
 }
 

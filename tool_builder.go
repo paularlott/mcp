@@ -8,8 +8,10 @@ type ToolBuilder struct {
 	description  string
 	params       []paramDef
 	outputParams []paramDef
-	discoverable bool     // If true, tool is discoverable via tool_search but not in tools/list
-	keywords     []string // Keywords for discovery search
+	discoverable bool           // If true, tool is discoverable via tool_search but not in tools/list
+	keywords     []string       // Keywords for discovery search
+	meta         map[string]any // Extension metadata (_meta on the tools/list descriptor)
+	icons        []Icon         // Visual identifiers shown on the tools/list descriptor
 }
 
 type paramDef struct {
@@ -165,9 +167,74 @@ func (t *ToolBuilder) IsDiscoverable() bool {
 	return t.discoverable
 }
 
+// Meta attaches an arbitrary field to the tool's _meta object, serialized on
+// its tools/list descriptor. Used by MCP extensions; see [ToolBuilder.UIResource]
+// for the MCP Apps case.
+func (t *ToolBuilder) Meta(key string, value any) *ToolBuilder {
+	if t.meta == nil {
+		t.meta = map[string]any{}
+	}
+	t.meta[key] = value
+	return t
+}
+
+// UIResource links this tool to a companion UI resource per the MCP Apps
+// extension (SEP-1865): a compliant host fetches resourceURI (a ui:// resource
+// registered with [Server.RegisterResource]) and renders it in a sandboxed
+// iframe to display this tool's results. visibility restricts who may call
+// the tool ("model", "app", or both); omit it to accept the spec default of
+// both.
+//
+// Hosts that don't support MCP Apps ignore this metadata and treat the tool
+// as a normal text-only tool, so it's safe to attach unconditionally. To
+// register different tool variants per host, check [Server.ClientCapabilities]
+// with [SupportsUIApps] before calling this.
+// UIResource and Visibility both target the same "ui" meta entry; each reads
+// back whatever the other already set there so calling both (in either
+// order) composes instead of one silently discarding the other's fields —
+// see UIResource's own doc comment for why a caller might reasonably do
+// that (its own visibility parameter covers the common case, but Visibility
+// remains available to set/change it independently).
+func (t *ToolBuilder) UIResource(resourceURI string, visibility ...string) *ToolBuilder {
+	validateUIResourceURI(resourceURI)
+	validateUIVisibility(visibility)
+	existing, _ := t.meta["ui"].(UIToolMeta)
+	existing.ResourceURI = resourceURI
+	if len(visibility) > 0 {
+		existing.Visibility = visibility
+	}
+	return t.Meta("ui", existing)
+}
+
+// Visibility restricts who may call this tool per the MCP Apps extension
+// (SEP-1865), without linking it to a UI resource of its own: "model" (the
+// agent), "app" (the UI itself, via the same server connection), or both.
+// Use this for an app-only "action" tool whose calls always originate from a
+// view that's already open — e.g. a form submission — which therefore has no
+// rendering purpose of its own. Use [ToolBuilder.UIResource] instead when the
+// tool SHOULD open or refresh a view when called.
+func (t *ToolBuilder) Visibility(visibility ...string) *ToolBuilder {
+	validateUIVisibility(visibility)
+	existing, _ := t.meta["ui"].(UIToolMeta)
+	existing.Visibility = visibility
+	return t.Meta("ui", existing)
+}
+
+// MetaMap returns the tool's extension metadata map (may be nil).
+func (t *ToolBuilder) MetaMap() map[string]any {
+	return t.meta
+}
+
 // Keywords returns the keywords set for this tool.
 func (t *ToolBuilder) Keywords() []string {
 	return t.keywords
+}
+
+// Icons attaches visual identifiers to the tool's tools/list descriptor. See
+// [Icon] for the shape and the security precautions consumers must apply.
+func (t *ToolBuilder) Icons(icons ...Icon) *ToolBuilder {
+	t.icons = icons
+	return t
 }
 
 // ToMCPTool converts the ToolBuilder to an MCPTool struct.
@@ -185,6 +252,8 @@ func (t *ToolBuilder) ToMCPTool() MCPTool {
 		Name:        t.name,
 		Description: t.Description(),
 		InputSchema: t.buildSchema(),
+		Meta:        t.meta,
+		Icons:       t.icons,
 		Keywords:    t.keywords,
 		Visibility:  visibility,
 	}

@@ -3,9 +3,11 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +167,27 @@ func TestHandleRequest_ProtocolVersionAndSession(t *testing.T) {
 		s.HandleRequest(rr, req)
 		if rr.Code != http.StatusBadRequest {
 			t.Errorf("status = %d, want 400", rr.Code)
+		}
+		// Regression test: this used to be a plain-text, no-body response —
+		// a client had no way to learn which versions this server actually
+		// supports. It must now be a proper JSON-RPC error naming them,
+		// matching every other protocol-version rejection in this codebase.
+		var out struct {
+			Error struct {
+				Data struct {
+					Requested string   `json:"requested"`
+					Supported []string `json:"supported"`
+				} `json:"data"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+			t.Fatalf("response body is not valid JSON-RPC: %v (%s)", err, rr.Body.String())
+		}
+		if out.Error.Data.Requested != "1999-01-01" {
+			t.Errorf("data.requested = %q, want %q", out.Error.Data.Requested, "1999-01-01")
+		}
+		if !slices.Equal(out.Error.Data.Supported, supportedProtocolVersions) {
+			t.Errorf("data.supported = %v, want the Legacy version list %v", out.Error.Data.Supported, supportedProtocolVersions)
 		}
 	})
 

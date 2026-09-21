@@ -20,6 +20,15 @@ type ToolMetadata struct {
 	Keywords     []string
 	Parameters   []ToolParameter
 	Discoverable bool
+
+	// UI links the tool to a companion UI resource per the MCP Apps extension
+	// (SEP-1865). When set, BuildMCPTool calls ToolBuilder.UIResource so the
+	// tool's _meta.ui.resourceUri is populated. See mcp.UIToolMeta.
+	UI *mcp.UIToolMeta
+
+	// Icons attaches visual identifiers to the tool's tools/list descriptor.
+	// See mcp.Icon.
+	Icons []mcp.Icon
 }
 
 // validTypeList is a human-readable list of accepted parameter type strings,
@@ -29,13 +38,20 @@ const validTypeList = "string, int, integer, float, number, bool, boolean, " +
 	"array:bool, array:boolean"
 
 // BuildMCPTool creates an mcp.ToolBuilder from ToolMetadata.
-// Returns an error if any parameter declares an unknown type.
-func BuildMCPTool(toolName string, meta *ToolMetadata) (*mcp.ToolBuilder, error) {
+// Returns an error if any parameter declares an unknown type, or if
+// meta.UI carries an invalid resourceURI or visibility value — ToolBuilder.
+// UIResource/Visibility validate those by panicking (they're meant to catch
+// a Go caller's own typo, e.g. a literal "ui://..." string), which would be
+// the wrong failure mode here: meta.UI came from parsed data (a .toml file,
+// a decorator's keyword arguments, ...), not a Go call site, so an invalid
+// value is reported the same way any other bad metadata in this function
+// is — as a returned error — by recovering that specific panic.
+func BuildMCPTool(toolName string, meta *ToolMetadata) (_ *mcp.ToolBuilder, err error) {
 	params := make([]mcp.Parameter, 0, len(meta.Parameters))
 	for _, param := range meta.Parameters {
-		p, err := convertParameter(param)
-		if err != nil {
-			return nil, fmt.Errorf("tool %q: %w", toolName, err)
+		p, convErr := convertParameter(param)
+		if convErr != nil {
+			return nil, fmt.Errorf("tool %q: %w", toolName, convErr)
 		}
 		params = append(params, p)
 	}
@@ -44,6 +60,26 @@ func BuildMCPTool(toolName string, meta *ToolMetadata) (*mcp.ToolBuilder, error)
 
 	if meta.Discoverable {
 		tool.Discoverable(meta.Keywords...)
+	}
+
+	if meta.UI != nil {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("tool %q: invalid ui: %v", toolName, r)
+			}
+		}()
+		// UIResource requires a non-empty resourceURI (an app-only action
+		// tool with none — the visibility-only case, e.g. [ui] visibility =
+		// ["app"] and no resourceUri — must go through Visibility instead).
+		if meta.UI.ResourceURI != "" {
+			tool.UIResource(meta.UI.ResourceURI, meta.UI.Visibility...)
+		} else {
+			tool.Visibility(meta.UI.Visibility...)
+		}
+	}
+
+	if len(meta.Icons) > 0 {
+		tool.Icons(meta.Icons...)
 	}
 
 	return tool, nil

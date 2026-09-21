@@ -10,6 +10,7 @@
 - **[Error Handling](./guides/error-handling.md)** — Error types, codes, and best practices
 - **[Thread Safety & Concurrency](./guides/concurrency.md)** — Safe concurrent usage and parallel client calls
 - **[Protocol Support](./guides/protocol-support.md)** — Supported MCP protocol versions and negotiation
+- **[MCP Apps](./guides/mcp-apps.md)** — Interactive UI resources linked to tools (SEP-1865), CSP metadata, and extension capability negotiation
 
 ## Examples
 
@@ -21,3 +22,5 @@ See [../examples](../examples/) for complete, runnable examples:
 - [Remote Servers](../examples/remote-server/)
 - [Session Management](../examples/session-server/)
 - [OpenAI Integration](../examples/openai/)
+- [MCP Apps Dashboard](../examples/mcp-app-dashboard/) — a tool linked to an interactive HTML UI (SEP-1865)
+- [MCP Apps Host Harness](../examples/mcp-app-host-harness/) — a minimal host to render and test one

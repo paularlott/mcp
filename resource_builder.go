@@ -69,6 +69,8 @@ type ResourceBuilder struct {
 	name        string
 	description string
 	mimeType    string
+	meta        map[string]any
+	icons       []Icon
 }
 
 // NewResource creates a static resource descriptor.
@@ -98,6 +100,33 @@ func (r *ResourceBuilder) Description() string { return r.description }
 // MimeType returns the resource's MIME type (may be empty).
 func (r *ResourceBuilder) MimeType() string { return r.mimeType }
 
+// Meta attaches an arbitrary field to the resource's _meta object, serialized
+// on its resources/list descriptor. See [ResourceBuilder.UIMeta] for the MCP
+// Apps case.
+func (r *ResourceBuilder) Meta(key string, value any) *ResourceBuilder {
+	if r.meta == nil {
+		r.meta = map[string]any{}
+	}
+	r.meta[key] = value
+	return r
+}
+
+// UIMeta attaches MCP Apps security/rendering hints (_meta.ui) to this
+// resource's resources/list descriptor. These are usually only needed on the
+// resources/read response (see [NewUIResourceResponseText]); set them here too
+// if a host should see them before fetching the content.
+func (r *ResourceBuilder) UIMeta(meta UIResourceMeta) *ResourceBuilder {
+	return r.Meta("ui", meta)
+}
+
+// Icons attaches visual identifiers to the resource's resources/list
+// descriptor. See [Icon] for the shape and the security precautions
+// consumers must apply.
+func (r *ResourceBuilder) Icons(icons ...Icon) *ResourceBuilder {
+	r.icons = icons
+	return r
+}
+
 // ToMCPResource converts the builder to an MCPResource descriptor.
 func (r *ResourceBuilder) ToMCPResource() MCPResource {
 	return MCPResource{
@@ -105,6 +134,8 @@ func (r *ResourceBuilder) ToMCPResource() MCPResource {
 		Name:        r.name,
 		Description: r.description,
 		MimeType:    r.mimeType,
+		Meta:        r.meta,
+		Icons:       r.icons,
 	}
 }
 
@@ -118,6 +149,8 @@ type ResourceTemplateBuilder struct {
 	name        string
 	description string
 	mimeType    string
+	meta        map[string]any
+	icons       []Icon
 }
 
 // NewResourceTemplate creates a parameterized resource template descriptor.
@@ -146,6 +179,30 @@ func (t *ResourceTemplateBuilder) Description() string { return t.description }
 // MimeType returns the template's MIME type (may be empty).
 func (t *ResourceTemplateBuilder) MimeType() string { return t.mimeType }
 
+// Meta attaches an arbitrary field to the template's _meta object, serialized
+// on its resources/templates/list descriptor.
+func (t *ResourceTemplateBuilder) Meta(key string, value any) *ResourceTemplateBuilder {
+	if t.meta == nil {
+		t.meta = map[string]any{}
+	}
+	t.meta[key] = value
+	return t
+}
+
+// UIMeta attaches MCP Apps security/rendering hints (_meta.ui) to this
+// template's resources/templates/list descriptor.
+func (t *ResourceTemplateBuilder) UIMeta(meta UIResourceMeta) *ResourceTemplateBuilder {
+	return t.Meta("ui", meta)
+}
+
+// Icons attaches visual identifiers to the template's
+// resources/templates/list descriptor. See [Icon] for the shape and the
+// security precautions consumers must apply.
+func (t *ResourceTemplateBuilder) Icons(icons ...Icon) *ResourceTemplateBuilder {
+	t.icons = icons
+	return t
+}
+
 // ToMCPResourceTemplate converts the builder to an MCPResourceTemplate descriptor.
 func (t *ResourceTemplateBuilder) ToMCPResourceTemplate() MCPResourceTemplate {
 	return MCPResourceTemplate{
@@ -153,5 +210,7 @@ func (t *ResourceTemplateBuilder) ToMCPResourceTemplate() MCPResourceTemplate {
 		Name:        t.name,
 		Description: t.description,
 		MimeType:    t.mimeType,
+		Meta:        t.meta,
+		Icons:       t.icons,
 	}
 }

@@ -57,17 +57,24 @@ func (c *Client) EnableNotifications() *Client {
 	// will start it when it completes.
 	c.mu.RLock()
 	ready := c.initialized && c.transport == nil
+	era := c.era
 	c.mu.RUnlock()
 	if ready {
-		c.startNotifications()
+		c.startNotifications(era)
 	}
 	return c
 }
 
-// startNotifications launches the background SSE reader for an HTTP client,
-// once. It is a no-op for stream transports (stdio), which receive
-// notifications via their peer handlers and call handleNotification directly.
-func (c *Client) startNotifications() {
+// startNotifications launches the background notification reader for an HTTP
+// client, once — the Legacy GET SSE stream, or, for a Modern-era server,
+// subscriptions/listen (see client_modern.go). era is passed in rather than
+// read from c.era here because Initialize calls this while already holding
+// c.mu (a write lock), and EnableNotifications calls it without holding c.mu
+// at all; either caller reads era itself under whatever lock is valid for it.
+// It is a no-op for stream transports (stdio), which receive notifications
+// via their peer handlers and call handleNotification directly regardless of
+// era.
+func (c *Client) startNotifications(era clientEra) {
 	if c.transport != nil {
 		return
 	}
@@ -82,7 +89,11 @@ func (c *Client) startNotifications() {
 	c.readerWG.Add(1)
 	go func() {
 		defer c.readerWG.Done()
-		c.runSSEReader(ctx)
+		if era == eraModern {
+			c.runModernSubscriptionReader(ctx)
+		} else {
+			c.runSSEReader(ctx)
+		}
 	}()
 }
 

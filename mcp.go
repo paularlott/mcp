@@ -66,6 +66,8 @@ type registeredTool struct {
 	Description  string
 	Schema       map[string]any
 	OutputSchema map[string]any
+	Meta         map[string]any
+	Icons        []Icon
 	Handler      ToolHandler
 	Visibility   ToolVisibility
 }
@@ -106,21 +108,27 @@ type registeredTool struct {
 // per-request or per-user tools, prefer ToolProvider with WithToolProviders
 // rather than mutating the shared server.
 type Server struct {
-	name                 string
-	version              string
-	instructions         string
-	tools                map[string]*registeredTool   // All registered tools (native + discoverable)
-	remoteClients        map[string]*registeredClient // Remote MCP servers
-	toolToServer         map[string]*registeredClient // Tool name -> remote client mapping
-	nativeToolCache      []MCPTool                    // Native tools (visible in tools/list)
-	mu                   sync.RWMutex
-	sessionManager       SessionManager                 // Pluggable session management
-	internalRegistry     *internalRegistry              // Registry for discoverable tools (searchable)
-	hasDiscoverableTools bool                           // Track if any discoverable tools exist (local or remote)
-	resources            map[string]*registeredResource // Static resources keyed by URI
-	resourceTemplates    []*registeredResourceTemplate  // Parameterized resource templates
-	prompts              map[string]*registeredPrompt   // Static prompts keyed by name
-	notifications        *notificationHub               // Fan-out for listChanged notifications
+	name                   string
+	version                string
+	instructions           string
+	icons                  []Icon                       // Visual identifiers for this server's own identity (serverInfo)
+	tools                  map[string]*registeredTool   // All registered tools (native + discoverable)
+	remoteClients          map[string]*registeredClient // Remote MCP servers
+	toolToServer           map[string]*registeredClient // Tool name -> remote client mapping
+	nativeToolCache        []MCPTool                    // Native tools (visible in tools/list)
+	mu                     sync.RWMutex
+	sessionManager         SessionManager                 // Pluggable session management
+	internalRegistry       *internalRegistry              // Registry for discoverable tools (searchable)
+	hasDiscoverableTools   bool                           // Track if any discoverable tools exist (local or remote)
+	resources              map[string]*registeredResource // Static resources keyed by URI
+	resourceTemplates      []*registeredResourceTemplate  // Parameterized resource templates
+	prompts                map[string]*registeredPrompt   // Static prompts keyed by name
+	notifications          *notificationHub               // Fan-out for listChanged notifications
+	extensionCapabilities  map[string]any                 // This server's declared extensions.<id> settings
+	lastClientCapabilities map[string]any                 // Most recently negotiated client capabilities (see ClientCapabilities)
+	shutdownCh             chan struct{}                  // Closed by Shutdown; see modern.go's subscriptions/listen graceful closure
+	shutdownOnce           sync.Once
+	originValidator        OriginValidator // nil = defaultOriginValidator; see origin.go
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
@@ -162,6 +170,7 @@ func NewServer(name, version string) *Server {
 		resourceTemplates: make([]*registeredResourceTemplate, 0),
 		prompts:           make(map[string]*registeredPrompt),
 		notifications:     newNotificationHub(),
+		shutdownCh:        make(chan struct{}),
 	}
 }
 
@@ -294,7 +303,6 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 			result := SearchResult{
 				Score:       0,
 				InputSchema: firstPresent(raw, "inputSchema", "input_schema"),
-				Keywords:    nil,
 			}
 			if name, ok := raw["name"].(string); ok {
 				if rc.namespace != "" {
@@ -308,6 +316,30 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 			}
 			if score, ok := raw["score"].(float64); ok {
 				result.Score = score
+			}
+			// The remote's raw result already carries these — this loop
+			// just never read them, so a tool discovered via tool_search
+			// through a connecting server silently lost its MCP Apps
+			// linkage (_meta.ui.resourceUri) and icons, even though the
+			// exact same tool federated via plain tools/list keeps both
+			// (see RegisterTools/ListToolsWithContext, which copy Meta and
+			// Icons straight through). Same decode as parseToolsResult's
+			// Icons handling below in this file, since Icons needs a
+			// round-trip out of []any.
+			if keywordsRaw, ok := raw["keywords"].([]any); ok {
+				for _, k := range keywordsRaw {
+					if ks, ok := k.(string); ok {
+						result.Keywords = append(result.Keywords, ks)
+					}
+				}
+			}
+			if meta, ok := raw["_meta"].(map[string]any); ok {
+				result.Meta = meta
+			}
+			if iconsRaw, ok := raw["icons"]; ok {
+				if b, err := json.Marshal(iconsRaw); err == nil {
+					_ = json.Unmarshal(b, &result.Icons)
+				}
 			}
 			allResults = append(allResults, result)
 		}
@@ -368,6 +400,17 @@ func (s *Server) SetInstructions(instructions string) {
 	s.instructions = instructions
 }
 
+// SetIcons attaches visual identifiers to this server's own identity,
+// included as serverInfo.icons in initialize (Legacy) and as
+// _meta["io.modelcontextprotocol/serverInfo"].icons on every Modern-era
+// result and in server/discover. See [Icon] for the shape and the security
+// precautions consumers must apply.
+func (s *Server) SetIcons(icons ...Icon) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.icons = icons
+}
+
 // RegisterTool registers a tool with the server.
 // The tool's visibility is determined by whether Discoverable() was called on the ToolBuilder:
 //   - Native tools (default): appear in tools/list and are directly callable
@@ -398,6 +441,8 @@ func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler
 		Description:  tool.Description(),
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
+		Meta:         tool.meta,
+		Icons:        tool.icons,
 		Handler:      handler,
 		Visibility:   ToolVisibilityNative,
 	}
@@ -413,6 +458,8 @@ func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler
 		Name:        tool.name,
 		Description: tool.Description(),
 		InputSchema: regTool.Schema,
+		Meta:        regTool.Meta,
+		Icons:       regTool.Icons,
 		Keywords:    keywords,
 	}
 	if regTool.OutputSchema != nil {
@@ -443,6 +490,8 @@ func (s *Server) registerDiscoverableToolLocked(tool *ToolBuilder, handler ToolH
 		Description:  tool.Description(),
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
+		Meta:         tool.meta,
+		Icons:        tool.icons,
 		Handler:      handler,
 		Visibility:   ToolVisibilityDiscoverable,
 	}
@@ -482,6 +531,8 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 				Description:  tr.Tool.Description(),
 				Schema:       tr.Tool.buildSchema(),
 				OutputSchema: tr.Tool.buildOutputSchema(),
+				Meta:         tr.Tool.meta,
+				Icons:        tr.Tool.icons,
 				Handler:      tr.Handler,
 				Visibility:   ToolVisibilityDiscoverable,
 			}
@@ -496,6 +547,8 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 				Description:  tr.Tool.Description(),
 				Schema:       tr.Tool.buildSchema(),
 				OutputSchema: tr.Tool.buildOutputSchema(),
+				Meta:         tr.Tool.meta,
+				Icons:        tr.Tool.icons,
 				Handler:      tr.Handler,
 				Visibility:   ToolVisibilityNative,
 			}
@@ -550,6 +603,8 @@ func (s *Server) rebuildNativeToolCacheLocked() {
 				Name:        tool.Name,
 				Description: tool.Description,
 				InputSchema: tool.Schema,
+				Meta:        tool.Meta,
+				Icons:       tool.Icons,
 			}
 			if tool.OutputSchema != nil {
 				toolItem.OutputSchema = tool.OutputSchema
@@ -821,6 +876,8 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 			Name:        tool.Name,
 			Description: tool.Description,
 			InputSchema: tool.Schema,
+			Meta:        tool.Meta,
+			Icons:       tool.Icons,
 		}
 		if tool.OutputSchema != nil {
 			toolItem.OutputSchema = tool.OutputSchema
@@ -898,18 +955,45 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 
 // HandleRequest handles MCP protocol requests
 func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
+	// Validate Origin before anything else — the Streamable HTTP transport's
+	// MUST, protecting against DNS rebinding (a malicious page's JS in a
+	// victim's browser reaching this server, which would otherwise trust
+	// anything arriving over localhost). This runs ahead of the OPTIONS
+	// preflight branch too: CORS response headers only stop a browser from
+	// reading a disallowed response, they don't stop the server from having
+	// already acted on the request, which is exactly what this check is
+	// for. See origin.go's defaultOriginValidator for the policy and how to
+	// widen it.
+	origin := r.Header.Get("Origin")
+	if !s.originAllowed(origin) {
+		http.Error(w, "Origin not allowed", http.StatusForbidden)
+		return
+	}
+
 	// Handle CORS preflight
 	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", corsOriginHeader(origin))
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id")
+		// The Modern era's Mcp-Method/Mcp-Name headers (required on every
+		// request — see modern.go) aren't in the static list below, so a
+		// cross-origin Modern browser client's preflight would otherwise
+		// fail; reflecting the browser's own Access-Control-Request-Headers
+		// back, when present, additionally covers Mcp-Param-{Name} (a
+		// server-declared, per-tool-parameter header set — see the
+		// x-mcp-header spec section — whose names can't be enumerated
+		// ahead of time in a static list at all).
+		allowHeaders := "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, Mcp-Method, Mcp-Name"
+		if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
+			allowHeaders = requested
+		}
+		w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
 		w.Header().Set("Access-Control-Max-Age", "86400")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	// Set CORS headers for actual requests
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Origin", corsOriginHeader(origin))
 
 	// Handle DELETE requests (session termination)
 	if r.Method == http.MethodDelete {
@@ -962,7 +1046,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	var req MCPRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendMCPError(w, nil, ErrorCodeParseError, "Parse error", map[string]any{
+		s.sendProtocolAwareError(w, r, &req, nil, ErrorCodeParseError, "Parse error", map[string]any{
 			"details": err.Error(),
 		})
 		return
@@ -970,7 +1054,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Validate JSONRPC version
 	if req.JSONRPC != "2.0" {
-		s.sendMCPError(w, req.ID, ErrorCodeInvalidRequest, "Invalid Request", map[string]any{
+		s.sendProtocolAwareError(w, r, &req, req.ID, ErrorCodeInvalidRequest, "Invalid Request", map[string]any{
 			"details": "JSONRPC field must be '2.0'",
 		})
 		return
@@ -979,6 +1063,16 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// Ensure ID is never nil - use empty string as default
 	if req.ID == nil {
 		req.ID = ""
+	}
+
+	// Modern-era (protocol revision 2026-07-28+) requests are detected by a
+	// signal only a Modern client sends (the Mcp-Method header, or
+	// io.modelcontextprotocol/protocolVersion in _meta) and are handled by a
+	// dedicated stateless path in modern.go. A request with neither signal
+	// falls through to every line below completely unchanged.
+	if isModernRequest(r, &req) {
+		s.handleModernRequest(w, r, &req)
+		return
 	}
 
 	// For non-initialize requests, validate MCP-Protocol-Version header
@@ -990,9 +1084,22 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			protocolVersion = "2025-03-26"
 		}
 
-		// Validate protocol version
+		// Validate protocol version. Still a 400 (this rejects a header, not
+		// a JSON-RPC method call, so it stays outside the "Legacy JSON-RPC
+		// errors are always 200" convention — same as it always has been),
+		// but now with a proper JSON-RPC error body naming what this Legacy
+		// server actually supports (mirroring handleInitialize's identical
+		// check on the initialize request itself, mcp.go below), rather
+		// than the plain-text, no-body response this used to send, which
+		// left a client with no way to learn a version it could retry with.
+		// writeModernProtocolError just means "JSON-RPC error at this HTTP
+		// status" despite the name — nothing about it is Modern-specific.
 		if !isSupportedProtocolVersion(protocolVersion) {
-			http.Error(w, fmt.Sprintf("Unsupported MCP-Protocol-Version: %s", protocolVersion), http.StatusBadRequest)
+			s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeInvalidParams,
+				fmt.Sprintf("Unsupported MCP-Protocol-Version: %s", protocolVersion), map[string]any{
+					"requested": protocolVersion,
+					"supported": supportedProtocolVersions,
+				})
 			return
 		}
 
@@ -1029,25 +1136,58 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	s.dispatchMethod(w, r, &req)
+}
+
+// dispatchMethod routes a parsed request to its handler. Both the Legacy path
+// above and the Modern path (handleModernRequest, in modern.go — via a
+// response-capturing writer so it can reshape the result afterward) call this
+// same table, so a method's behavior is defined exactly once regardless of
+// which era's request reached it.
+// dispatchableMethods lists the methods handleModernRequest (modern.go) may
+// dispatch through dispatchMethod's shared switch below, so it can
+// distinguish an unknown RPC method (which the 2026-07-28 revision requires
+// HTTP 404 for) from an ordinary method-level JSON-RPC error like an unknown
+// tool name (which stays 200, per the Streamable HTTP spec's requirement
+// that only routing failures — unknown method, unsupported version, header
+// mismatch — get a non-200 status).
+//
+// Deliberately narrower than dispatchMethod's own case list: "initialize"
+// and "ping" are both dispatchable there for Legacy clients, but the
+// 2026-07-28 revision removes both (stateless per-request replaces the
+// initialize handshake; ping is gone outright) — a Modern request naming
+// either is exactly as unknown as a method this server never supported at
+// all, and must 404 the same way.
+var dispatchableMethods = map[string]bool{
+	"tools/list":               true,
+	"tools/call":               true,
+	"resources/list":           true,
+	"resources/read":           true,
+	"resources/templates/list": true,
+	"prompts/list":             true,
+	"prompts/get":              true,
+}
+
+func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	switch req.Method {
 	case "initialize":
-		s.handleInitialize(w, r, &req)
+		s.handleInitialize(w, r, req)
 	case "ping":
-		s.handlePing(w, r, &req)
+		s.handlePing(w, r, req)
 	case "tools/list":
-		s.handleToolsList(w, r, &req)
+		s.handleToolsList(w, r, req)
 	case "tools/call":
-		s.handleToolsCall(w, r, &req)
+		s.handleToolsCall(w, r, req)
 	case "resources/list":
-		s.handleResourcesList(w, r, &req)
+		s.handleResourcesList(w, r, req)
 	case "resources/read":
-		s.handleResourcesRead(w, r, &req)
+		s.handleResourcesRead(w, r, req)
 	case "resources/templates/list":
-		s.handleResourcesTemplatesList(w, r, &req)
+		s.handleResourcesTemplatesList(w, r, req)
 	case "prompts/list":
-		s.handlePromptsList(w, r, &req)
+		s.handlePromptsList(w, r, req)
 	case "prompts/get":
-		s.handlePromptsGet(w, r, &req)
+		s.handlePromptsGet(w, r, req)
 	default:
 		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]any{
 			"method": req.Method,
@@ -1112,9 +1252,10 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 	// Check for show-all flag from header or query param
 	showAll := GetShowAllFromRequest(r)
 
-	// Read instructions under lock
+	// Read instructions and icons under lock
 	s.mu.RLock()
 	instructions := s.instructions
+	icons := s.icons
 	s.mu.RUnlock()
 
 	// Discovery tools aren't shown in show-all mode, so don't tell the model to use them there.
@@ -1122,12 +1263,20 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 		instructions = appendDiscoveryInstructions(instructions)
 	}
 
+	// Remember the client's declared capabilities (e.g. capabilities.extensions)
+	// so handlers can later check them via ClientCapabilities. See that method's
+	// doc comment for the multi-client-HTTP caveat.
+	s.mu.Lock()
+	s.lastClientCapabilities = params.Capabilities
+	s.mu.Unlock()
+
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
 		Capabilities:    s.buildCapabilities(protocolVersion),
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,
+			Icons:   icons,
 		},
 		Instructions: instructions,
 	}
@@ -1178,7 +1327,96 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 		}
 	}
 
+	s.mu.RLock()
+	if len(s.extensionCapabilities) > 0 {
+		caps.Extensions = make(map[string]any, len(s.extensionCapabilities))
+		for id, settings := range s.extensionCapabilities {
+			caps.Extensions[id] = settings
+		}
+	}
+	s.mu.RUnlock()
+
 	return caps
+}
+
+// DeclareExtension advertises this server's support for an MCP extension (per
+// SEP-1724) in its initialize response, under capabilities.extensions[id].
+// Call it during setup, before serving. For example, a server offering MCP
+// Apps (SEP-1865) tools would declare:
+//
+//	server.DeclareExtension(mcp.UIAppsExtensionID, map[string]any{
+//		"mimeTypes": []string{mcp.UIAppMimeType},
+//	})
+func (s *Server) DeclareExtension(id string, settings map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.extensionCapabilities == nil {
+		s.extensionCapabilities = map[string]any{}
+	}
+	s.extensionCapabilities[id] = settings
+}
+
+// ClientCapabilities returns the capabilities object (capabilities.extensions,
+// roots, sampling, etc., as sent in initialize) declared by the most recently
+// initialized client.
+//
+// For a stdio server — one process per client connection, the common case for
+// locally-spawned MCP servers — this reliably reflects the single connected
+// client. An HTTP server handling multiple concurrent client sessions should
+// not rely on this for per-request decisions: it is a single process-wide
+// value reflecting only the most recent initialize seen across all sessions,
+// not any particular request's caller. This is deliberately not upgraded to
+// per-session tracking here: doing so with an in-memory map would silently
+// misbehave in exactly the deployment this library optimizes an HTTP server
+// for — horizontal scaling behind a load balancer with [JWTSessionManager],
+// where a later request from the same client can land on a different,
+// stateless instance that never saw that client's initialize. If you need
+// per-request extension awareness on HTTP, the robust option is to register
+// UI-linked tools unconditionally (the [UIAppsExtensionID] cost to a
+// non-supporting host is nil — it just ignores unknown `_meta`) rather than
+// branching on this method. Use [SupportsUIApps] to interpret the MCP Apps
+// extension's settings from the returned map.
+func (s *Server) ClientCapabilities() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastClientCapabilities
+}
+
+// ToolSource reports which server a tool name actually resolves to, using
+// the same resolution order as [Server.CallTool] (native tools first, then
+// the fast toolToServer lookup, then the namespace-prefix fallback for a
+// federated tool discovered via remote tool_search): "" for a tool
+// registered directly on this server, or a federated tool's remote
+// server's own [Client.BaseURL] — a stable identifier two tool names share
+// if and only if they came from the same server, unlike Namespace, which
+// callers may leave empty (or, in principle, reuse) with no uniqueness
+// guarantee. ok is false if name doesn't resolve via any of these (an
+// unknown name, or one that only a per-request [ToolProvider] would
+// resolve, which has no persistent "source" the way a registered remote
+// server does).
+//
+// Intended for a host enforcing that an MCP Apps view may only reach a
+// tool belonging to the same server as the tool that mounted it — see the
+// extension's spec on visibility; the spec's "app" visibility says a view
+// may call a tool, not that it may call one on a *different* server than
+// its own, which visibility alone can't distinguish once two federated
+// servers are aggregated under one endpoint with no namespace prefix.
+func (s *Server) ToolSource(name string) (source string, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if _, exists := s.tools[name]; exists {
+		return "", true
+	}
+	if regClient, exists := s.toolToServer[name]; exists {
+		return regClient.client.BaseURL(), true
+	}
+	for _, rc := range s.remoteClients {
+		if rc.namespace != "" && strings.HasPrefix(name, rc.namespace+rc.client.separator) {
+			return rc.client.BaseURL(), true
+		}
+	}
+	return "", false
 }
 
 // ListTools returns the server's native tools plus discovery tools when
@@ -1235,6 +1473,8 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 					Name:        tool.Name,
 					Description: tool.Description,
 					InputSchema: tool.Schema,
+					Meta:        tool.Meta,
+					Icons:       tool.Icons,
 					Visibility:  ToolVisibilityDiscoverable,
 				}
 				if tool.OutputSchema != nil {
@@ -1336,7 +1576,7 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
 	var params ToolCallParams
 	if err := s.parseParams(req, &params); err != nil {
-		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
+		s.sendProtocolAwareError(w, r, req, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
 		return
 	}
 
@@ -1384,6 +1624,28 @@ func (s *Server) parseParams(req *MCPRequest, target any) error {
 		return err
 	}
 	return json.Unmarshal(paramsBytes, target)
+}
+
+// sendProtocolAwareError reports a garbled/malformed request — one that
+// failed to decode, didn't carry a valid JSON-RPC envelope, or whose params
+// couldn't be unmarshaled into the shape a method expects — as opposed to a
+// well-formed request whose particular method/params turned out to be
+// semantically invalid (an unknown tool, a missing-but-parseable required
+// field, and the like), which correctly stays a 200 JSON-RPC error in both
+// eras per the spec's ordinary-method-error convention (see
+// finalizeModernResponse's doc comment).
+//
+// A Modern-era request gets the spec-required HTTP 400 for this class of
+// error; Legacy keeps its always-200 JSON-RPC convention, unchanged. Era is
+// detected the same way isModernRequest does (req may be a zero-value or
+// partially-decoded MCPRequest here — that detection's header check doesn't
+// depend on req having decoded successfully).
+func (s *Server) sendProtocolAwareError(w http.ResponseWriter, r *http.Request, req *MCPRequest, id any, code int, message string, data any) {
+	if isModernRequest(r, req) {
+		s.writeModernProtocolError(w, id, http.StatusBadRequest, code, message, data)
+		return
+	}
+	s.sendMCPError(w, id, code, message, data)
 }
 
 func (s *Server) sendMCPError(w http.ResponseWriter, id any, code int, message string, data any) {

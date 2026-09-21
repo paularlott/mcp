@@ -51,14 +51,16 @@ type initializeResult struct {
 }
 
 type capabilities struct {
-	Tools     map[string]any `json:"tools"`
-	Resources map[string]any `json:"resources,omitempty"`
-	Prompts   map[string]any `json:"prompts,omitempty"`
+	Tools      map[string]any `json:"tools"`
+	Resources  map[string]any `json:"resources,omitempty"`
+	Prompts    map[string]any `json:"prompts,omitempty"`
+	Extensions map[string]any `json:"extensions,omitempty"`
 }
 
 type serverInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	Icons   []Icon `json:"icons,omitempty"`
 }
 
 type MCPTool struct {
@@ -66,6 +68,8 @@ type MCPTool struct {
 	Description  string         `json:"description"`
 	InputSchema  any            `json:"inputSchema"`
 	OutputSchema any            `json:"outputSchema,omitempty"`
+	Meta         map[string]any `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui.resourceUri
+	Icons        []Icon         `json:"icons,omitempty"`
 	Keywords     []string       `json:"-"` // For discovery search, not serialized to clients
 	Visibility   ToolVisibility `json:"-"` // Native or Discoverable
 }
@@ -94,30 +98,35 @@ type ResourceResponse struct {
 }
 
 type ResourceContent struct {
-	URI      string `json:"uri"`
-	MimeType string `json:"mimeType,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Blob     string `json:"blob,omitempty"` // base64 encoded
+	URI      string         `json:"uri"`
+	MimeType string         `json:"mimeType,omitempty"`
+	Text     string         `json:"text,omitempty"`
+	Blob     string         `json:"blob,omitempty"`  // base64 encoded
+	Meta     map[string]any `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui.csp
 }
 
 // MCPResource describes a static resource exposed via resources/list.
 // A resource is data the server can serve to clients by URI, such as a file,
 // a configuration document, or a database record.
 type MCPResource struct {
-	URI         string `json:"uri"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
+	URI         string         `json:"uri"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	MimeType    string         `json:"mimeType,omitempty"`
+	Meta        map[string]any `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui hints
+	Icons       []Icon         `json:"icons,omitempty"`
 }
 
 // MCPResourceTemplate describes a parameterized resource exposed via
 // resources/templates/list. The URITemplate may contain {var} placeholders
 // (RFC 6570 level 1) that clients expand to concrete URIs and then read.
 type MCPResourceTemplate struct {
-	URITemplate string `json:"uriTemplate"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mimeType,omitempty"`
+	URITemplate string         `json:"uriTemplate"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	MimeType    string         `json:"mimeType,omitempty"`
+	Meta        map[string]any `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui hints
+	Icons       []Icon         `json:"icons,omitempty"`
 }
 
 // resourceReadParams is the params object for resources/read.
@@ -131,6 +140,7 @@ type MCPPrompt struct {
 	Name        string              `json:"name"`
 	Description string              `json:"description,omitempty"`
 	Arguments   []MCPPromptArgument `json:"arguments,omitempty"`
+	Icons       []Icon              `json:"icons,omitempty"`
 }
 
 // MCPPromptArgument describes one argument a prompt accepts.

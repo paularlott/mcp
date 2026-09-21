@@ -88,10 +88,61 @@ func NewToolResponseResourceLink(uri, text string) *ToolResponse {
 	return &ToolResponse{Content: []ToolContent{{Type: "resource_link", Resource: &ResourceContent{URI: uri, Text: text}}}}
 }
 
+// NewToolResponseStructured builds a structured tool result: data (which
+// must marshal to a JSON object, per the MCP spec's structuredContent
+// requirement — a non-object value produces an error-text result instead)
+// is set as StructuredContent, and — per that spec's backwards compatibility
+// guidance ("a tool that returns structured content SHOULD also return the
+// serialized JSON in a TextContent block") — the same JSON is also included
+// as a text content block, for clients that don't read structuredContent.
 func NewToolResponseStructured(data any) *ToolResponse {
-	response := &ToolResponse{
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return &ToolResponse{Content: []ToolContent{{Type: "text", Text: fmt.Sprintf("Error marshaling data: %v", err)}}}
+	}
+	if !isJSONObject(jsonData) {
+		return &ToolResponse{Content: []ToolContent{{Type: "text", Text: "Error: structuredContent must marshal to a JSON object, not " + jsonValueKind(jsonData)}}}
+	}
+	return &ToolResponse{
+		Content:           []ToolContent{{Type: "text", Text: string(jsonData)}},
 		StructuredContent: data,
 	}
+}
 
-	return response
+// isJSONObject reports whether marshaled JSON is an object ("{...}"), per the
+// MCP spec's requirement that structuredContent be a JSON object.
+func isJSONObject(jsonData []byte) bool {
+	for _, b := range jsonData {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// jsonValueKind gives a short human-readable description of a non-object
+// JSON value's shape, for the NewToolResponseStructured error message.
+func jsonValueKind(jsonData []byte) string {
+	for _, b := range jsonData {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '[':
+			return "an array"
+		case '"':
+			return "a string"
+		case 'n':
+			return "null"
+		case 't', 'f':
+			return "a boolean"
+		default:
+			return "a number"
+		}
+	}
+	return "an empty value"
 }

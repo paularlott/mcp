@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -163,41 +164,55 @@ func (sn *streamNotifySink) stop() { close(sn.done) }
 func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 	srv := jsonrpc.NewServer()
 
-	srv.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("initialize", rejectStdioModern("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return s.stdioInitialize(params)
-	})
+	}))
 
-	srv.Handle("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("ping", rejectStdioModern("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{}, nil
-	})
+	}))
 
-	srv.Handle("tools/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("tools/list", s.wrapStdioModern("tools/list", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{"tools": s.ListToolsWithContext(ctx)}, nil
-	})
+	}))
 
-	srv.Handle("tools/call", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("tools/call", s.wrapStdioModern("tools/call", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return s.stdioToolsCall(ctx, params)
-	})
+	}))
 
-	srv.Handle("resources/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("resources/list", s.wrapStdioModern("resources/list", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{"resources": s.ListResources(ctx)}, nil
-	})
+	}))
 
-	srv.Handle("resources/templates/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("resources/templates/list", s.wrapStdioModern("resources/templates/list", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{"resourceTemplates": s.ListResourceTemplates(ctx)}, nil
-	})
+	}))
 
-	srv.Handle("resources/read", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("resources/read", s.wrapStdioModern("resources/read", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return s.stdioResourcesRead(ctx, params)
-	})
+	}))
 
-	srv.Handle("prompts/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("prompts/list", s.wrapStdioModern("prompts/list", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{"prompts": s.ListPrompts(ctx)}, nil
-	})
+	}))
 
-	srv.Handle("prompts/get", func(ctx context.Context, params json.RawMessage) (any, error) {
+	srv.Handle("prompts/get", s.wrapStdioModern("prompts/get", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return s.stdioPromptsGet(ctx, params)
-	})
+	}))
+
+	// server/discover is the Modern-era (protocol revision 2026-07-28+)
+	// discovery RPC — see modern.go. Routed through wrapStdioModern like
+	// every other Modern method, for the same reason HTTP's
+	// handleModernRequest validates it identically to any other request:
+	// the spec's _meta rules (protocolVersion/clientCapabilities required)
+	// apply to every client request, discover included — a real Modern
+	// client always sends full _meta even for its own discovery probe (see
+	// client_modern.go's withModernMeta). buildDiscoverResult already sets
+	// resultType/ttlMs/cacheScope/_meta.serverInfo itself, so
+	// wrapStdioModern's post-success reshaping is a harmless no-op on top.
+	srv.Handle("server/discover", s.wrapStdioModern("server/discover", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return s.buildDiscoverResult(ctx, GetShowAllTools(ctx)), nil
+	}))
 
 	return srv
 }
@@ -221,9 +236,11 @@ func (s *Server) stdioInitialize(raw json.RawMessage) (any, error) {
 		protocolVersion = params.ProtocolVersion
 	}
 
-	s.mu.RLock()
+	s.mu.Lock()
 	instructions := s.instructions
-	s.mu.RUnlock()
+	icons := s.icons
+	s.lastClientCapabilities = params.Capabilities
+	s.mu.Unlock()
 
 	return initializeResult{
 		ProtocolVersion: protocolVersion,
@@ -231,6 +248,7 @@ func (s *Server) stdioInitialize(raw json.RawMessage) (any, error) {
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,
+			Icons:   icons,
 		},
 		Instructions: instructions,
 	}, nil
@@ -272,7 +290,9 @@ func (s *Server) stdioResourcesRead(ctx context.Context, raw json.RawMessage) (a
 
 	resp, err := s.ReadResource(ctx, params.URI)
 	if err != nil {
-		if err == ErrUnknownResource {
+		// errors.Is, not ==: the fan-out wraps ErrUnknownResource when remotes
+		// failed outright (see ReadResource), and that case is still a miss.
+		if errors.Is(err, ErrUnknownResource) {
 			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Resource not found", nil)
 		}
 		if toolErr, ok := err.(*ToolError); ok {

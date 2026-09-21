@@ -9,6 +9,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Type Safety**: Strongly typed parameter access with automatic conversion
 - **Rich Responses**: Support for text, image, audio, resource, and structured content
 - **Resources**: Serve addressable data by URI (`resources/list`, `resources/read`, resource templates), including per-user/session resources via `ResourceProvider`
+- **MCP Apps**: Link a tool to an interactive HTML UI resource (SEP-1865), with CSP/permission metadata, extension capability negotiation, and host/view auto-resize via `containerDimensions`
 - **Prompts**: Reusable message templates with arguments (`prompts/list`, `prompts/get`), including per-user/session prompts via `PromptProvider`
 - **ListChanged Notifications**: Push-based tool/resource/prompt refresh over HTTP (SSE) and stdio, with automatic propagation through federated servers
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts
@@ -141,6 +142,7 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
 - **[Error Handling](docs/guides/error-handling.md)** - Structured error patterns and best practices
 - **[Thread Safety & Concurrency](docs/guides/concurrency.md)** - Safe concurrent usage patterns
+- **[MCP Apps](docs/guides/mcp-apps.md)** - Interactive UI resources linked to tools (SEP-1865), CSP metadata, and extension capability negotiation
 
 ## Tool Discovery Mode
 
@@ -189,6 +191,8 @@ See the [examples/](examples/) directory for complete, runnable examples:
 - [Remote Servers](examples/remote-server/)
 - [Session Management](examples/session-server/)
 - [OpenAI Integration](examples/openai/)
+- [MCP Apps Dashboard](examples/mcp-app-dashboard/) — a tool linked to an interactive HTML UI (SEP-1865)
+- [MCP Apps Host Harness](examples/mcp-app-host-harness/) — a minimal host to render and test one
 
 ## Testing
 
