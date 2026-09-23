@@ -216,6 +216,7 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
+	c.applyRequestHeaders(httpReq.Header)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("%s/%s", mcpClientName, mcpClientVersion))
@@ -336,6 +337,7 @@ func (c *Client) connectAndReadModernSubscription(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.applyRequestHeaders(httpReq.Header)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set(headerMcpMethod, "subscriptions/listen")

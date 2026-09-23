@@ -132,6 +132,7 @@ func (c *Client) connectAndReadSSE(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.applyRequestHeaders(req.Header)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set(headerProtocolVersion, MCPProtocolVersionLatest)
 

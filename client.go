@@ -52,6 +52,11 @@ type Client struct {
 	protocolVersion string
 	transport       clientTransport // non-nil for non-HTTP transports (e.g. stdio)
 
+	// requestHeaders carries extra headers set at construction via
+	// WithClientRequestHeaders. Immutable once the constructor returns, so
+	// concurrent request paths read it without a lock.
+	requestHeaders map[string]string
+
 	// extensionCapabilities holds this client's own declared extensions.<id>
 	// settings (see DeclareExtension), sent as capabilities.extensions on
 	// Legacy's initialize and _meta.clientCapabilities.extensions on every
@@ -115,14 +120,48 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// ClientOption customises a Client at construction time. Applied inside
+// NewClient/NewClientWithPool before the client is returned, so anything an
+// option sets is safe to read lock-free afterwards.
+type ClientOption func(*Client)
+
+// WithClientRequestHeaders returns a ClientOption that adds the given headers
+// to every HTTP request the client makes — the JSON-RPC POSTs and the
+// notification event-stream GET alike. Headers the transport manages itself
+// (Content-Type, Accept, Authorization, Mcp-Session-Id, ...) are set after
+// these, so they win any collision. Useful for gateways keyed on request
+// headers, e.g. a proxy forwarding an "X-MCP-Show-All: true" mode header.
+func WithClientRequestHeaders(headers map[string]string) ClientOption {
+	return func(c *Client) {
+		if len(headers) == 0 {
+			return
+		}
+		if c.requestHeaders == nil {
+			c.requestHeaders = make(map[string]string, len(headers))
+		}
+		for k, v := range headers {
+			c.requestHeaders[k] = v
+		}
+	}
+}
+
+// applyRequestHeaders sets the construction-time extra headers (see
+// WithClientRequestHeaders) on an outgoing request. Call it before the
+// transport-managed headers so those override on collision.
+func (c *Client) applyRequestHeaders(h http.Header) {
+	for k, v := range c.requestHeaders {
+		h.Set(k, v)
+	}
+}
+
 // NewClient creates a new MCP client using the shared HTTP pool.
 // The namespace will be added to all tool names (e.g., namespace "scriptling" makes tool "search" available as "scriptling.search").
 // Use an empty namespace for no namespacing.
 //
 // The namespace should be a simple identifier (letters, numbers, hyphens, underscores).
 // Whitespace is trimmed automatically.
-func NewClient(baseURL string, auth AuthProvider, namespace string) *Client {
-	return NewClientWithPool(baseURL, auth, namespace, nil)
+func NewClient(baseURL string, auth AuthProvider, namespace string, opts ...ClientOption) *Client {
+	return NewClientWithPool(baseURL, auth, namespace, nil, opts...)
 }
 
 // NewClientWithPool creates a new MCP client with a custom HTTP pool.
@@ -134,7 +173,7 @@ func NewClient(baseURL string, auth AuthProvider, namespace string) *Client {
 //	// Create an insecure pool for internal services with self-signed certs
 //	insecurePool := pool.NewPool(&pool.PoolConfig{InsecureSkipVerify: true})
 //	client := mcp.NewClientWithPool("https://internal.service", auth, "ns", insecurePool)
-func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, httpPool pool.HTTPPool) *Client {
+func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, httpPool pool.HTTPPool, opts ...ClientOption) *Client {
 	// Use the global default separator
 	separator := DefaultNamespaceSeparator
 
@@ -154,13 +193,19 @@ func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, http
 		httpClient = pool.GetPool().GetHTTPClient()
 	}
 
-	return &Client{
+	c := &Client{
 		baseURL:    baseURL,
 		httpClient: httpClient,
 		auth:       auth,
 		namespace:  namespace,
 		separator:  separator,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(c)
+		}
+	}
+	return c
 }
 
 // DeclareExtension advertises this client's support for an MCP extension (per
@@ -736,6 +781,7 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
+	c.applyRequestHeaders(httpReq.Header)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set("User-Agent", fmt.Sprintf("%s/%s", mcpClientName, mcpClientVersion))
