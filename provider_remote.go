@@ -132,8 +132,9 @@ type RemoteProvider struct {
 	onServerError func(cfg RemoteProviderConfig, err error)
 }
 
-// Ensure RemoteProvider implements ToolProvider.
+// Ensure RemoteProvider implements ToolProvider and ResourceProvider.
 var _ ToolProvider = (*RemoteProvider)(nil)
+var _ ResourceProvider = (*RemoteProvider)(nil)
 
 // RemoteProviderOption configures a RemoteProvider.
 type RemoteProviderOption func(*remoteProviderOptions)
@@ -409,6 +410,116 @@ func (p *RemoteProvider) ExecuteTool(ctx context.Context, name string, params ma
 	}
 
 	return nil, ErrUnknownTool
+}
+
+// GetResources returns the resources and resource templates exposed by all
+// of the current request's remote servers, so a federated tool's linked MCP
+// Apps ui:// resource (or any other resource a remote exposes) is reachable
+// via resources/list and resources/read the same way a native tool's would
+// be — without this, RemoteProvider's caller can dispatch a federated tool
+// call but has no way to serve the ui:// view it renders, since a
+// request-scoped remote server has no other route into Server.ReadResource's
+// fan-out (that fan-out only covers servers registered process-lifetime via
+// Server.RegisterRemoteServer/ReplaceRemoteServers, not ones resolved per
+// request here).
+//
+// Like GetTools, servers are queried concurrently and a server that fails is
+// skipped (and reported via WithOnServerError) rather than failing the whole
+// call. Unlike tools, remote resources are not namespaced: a federated
+// server's resource URIs (e.g. a ui:// MCP Apps view) are opaque and
+// surfaced as-is, matching Server.ReadResource's own remote fan-out.
+func (p *RemoteProvider) GetResources(ctx context.Context) (*ProvidedResources, error) {
+	servers, err := p.resolveServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(servers) == 0 {
+		return &ProvidedResources{}, nil
+	}
+
+	type serverResources struct {
+		resources []MCPResource
+		templates []MCPResourceTemplate
+	}
+	results := make([]serverResources, len(servers))
+	var wg sync.WaitGroup
+	for i, cfg := range servers {
+		wg.Add(1)
+		go func(i int, cfg RemoteProviderConfig) {
+			defer wg.Done()
+
+			auth, err := cfg.resolveAuth(ctx)
+			if err != nil {
+				p.reportError(cfg, fmt.Errorf("resolve auth for %q: %w", cfg.Name, err))
+				return
+			}
+			client := cfg.newClient(auth)
+
+			listCtx, cancel := context.WithTimeout(ctx, remoteResourceFanoutTimeout)
+			defer cancel()
+
+			resources, err := client.ListResources(listCtx)
+			if err != nil {
+				p.reportError(cfg, fmt.Errorf("list resources for %q: %w", cfg.Name, err))
+				return
+			}
+			// Not every server implements resource templates; a failure here
+			// means "none", not "abort the resources this server did return".
+			templates, _ := client.ListResourceTemplates(listCtx)
+			results[i] = serverResources{resources: resources, templates: templates}
+		}(i, cfg)
+	}
+	wg.Wait()
+
+	out := &ProvidedResources{}
+	for _, r := range results {
+		out.Resources = append(out.Resources, r.resources...)
+		out.Templates = append(out.Templates, r.templates...)
+	}
+	return out, nil
+}
+
+// ReadResource fans a resources/read out to all of the current request's
+// remote servers, in resolver order, and returns the first hit — mirroring
+// Server.ReadResource's own remote fan-out (see resources.go), since a
+// federated server's resource URIs are opaque and not namespaced by server
+// the way tool names are. Returns ErrUnknownResource if no server has the
+// resource; when one or more servers failed outright (rather than answering
+// not-found), the returned error still wraps ErrUnknownResource but names
+// each failing server, per the ResourceProvider miss contract.
+func (p *RemoteProvider) ReadResource(ctx context.Context, uri string) (*ResourceResponse, error) {
+	servers, err := p.resolveServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var failures []error
+	for _, cfg := range servers {
+		auth, err := cfg.resolveAuth(ctx)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("resolve auth for %q: %w", cfg.Name, err))
+			continue
+		}
+		client := cfg.newClient(auth)
+
+		attemptCtx, cancel := context.WithTimeout(ctx, remoteResourceFanoutTimeout)
+		resp, err := client.ReadResource(attemptCtx, uri)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		if isResourceNotFoundErr(err) {
+			continue
+		}
+		p.reportError(cfg, err)
+		failures = append(failures, fmt.Errorf("%s: %w", cfg.Name, err))
+	}
+
+	if len(failures) > 0 {
+		return nil, fmt.Errorf("%w; %d remote server(s) failed: %w",
+			ErrUnknownResource, len(failures), errors.Join(failures...))
+	}
+	return nil, ErrUnknownResource
 }
 
 // InvalidateCache removes the cached tool list for a single server. The key must

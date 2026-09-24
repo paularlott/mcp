@@ -258,6 +258,71 @@ func TestRemoteProvider_ExecuteUnknown(t *testing.T) {
 	}
 }
 
+func TestRemoteProvider_GetResourcesAggregatesServers(t *testing.T) {
+	ts := newRemoteWithTools(func(s *Server) {
+		s.RegisterResource(NewResource("ui://wheel/wheel.html", "wheel", "a wheel", UIAppMimeType),
+			func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+				return NewUIResourceResponseText(req.URI(), "<html></html>", nil), nil
+			})
+	})
+	defer ts.Close()
+
+	p := NewRemoteProvider(resolverFor(RemoteProviderConfig{
+		Name: "svc", URL: ts.URL, Auth: NewBearerTokenAuth("t"),
+	}))
+
+	provided, err := p.GetResources(context.Background())
+	if err != nil {
+		t.Fatalf("GetResources: %v", err)
+	}
+	if len(provided.Resources) != 1 || provided.Resources[0].URI != "ui://wheel/wheel.html" {
+		t.Fatalf("expected the remote's one resource surfaced as-is, got %+v", provided.Resources)
+	}
+}
+
+// TestRemoteProvider_ReadResourceFansOutToOwningServer is the regression case
+// for the bug this method fixes: a tool federated via RemoteProvider (e.g. a
+// remote MCP Apps tool like scriptling's spin_wheel) links to a ui:// resource
+// that only the remote server can serve. Before RemoteProvider implemented
+// ResourceProvider, a host attaching only this provider via
+// WithResourceProviders had no way to answer resources/read for that uri at
+// all — the view's tools/call would succeed but its resources/read would
+// always miss.
+func TestRemoteProvider_ReadResourceFansOutToOwningServer(t *testing.T) {
+	ts := newRemoteWithTools(func(s *Server) {
+		s.RegisterResource(NewResource("ui://wheel/wheel.html", "wheel", "a wheel", UIAppMimeType),
+			func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
+				return NewUIResourceResponseText(req.URI(), "<html>spin</html>", nil), nil
+			})
+	})
+	defer ts.Close()
+
+	p := NewRemoteProvider(resolverFor(RemoteProviderConfig{
+		Name: "svc", URL: ts.URL, Auth: NewBearerTokenAuth("t"),
+	}))
+
+	resp, err := p.ReadResource(context.Background(), "ui://wheel/wheel.html")
+	if err != nil {
+		t.Fatalf("ReadResource: %v", err)
+	}
+	if len(resp.Contents) != 1 || resp.Contents[0].Text != "<html>spin</html>" {
+		t.Fatalf("unexpected resource content: %+v", resp.Contents)
+	}
+}
+
+func TestRemoteProvider_ReadResourceUnknownReturnsErrUnknownResource(t *testing.T) {
+	ts := newRemoteWithTools(func(s *Server) {})
+	defer ts.Close()
+
+	p := NewRemoteProvider(resolverFor(RemoteProviderConfig{
+		Name: "svc", URL: ts.URL, Auth: NewBearerTokenAuth("t"),
+	}))
+
+	if _, err := p.ReadResource(context.Background(), "ui://nope/nope.html"); !errors.Is(err, ErrUnknownResource) {
+		t.Fatalf("expected ErrUnknownResource, got %v", err)
+	}
+}
+
 func TestRemoteProvider_CachingAndInvalidate(t *testing.T) {
 	remote := NewServer("remote", "1")
 	remote.RegisterTool(NewTool("one", "1"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
