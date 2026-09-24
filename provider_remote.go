@@ -207,10 +207,30 @@ func (cfg RemoteProviderConfig) resolveAuth(ctx context.Context) (AuthProvider, 
 }
 
 func (cfg RemoteProviderConfig) newClient(auth AuthProvider) *Client {
+	var client *Client
 	if cfg.HTTPPool != nil {
-		return NewClientWithPool(cfg.URL, auth, cfg.Name, cfg.HTTPPool)
+		client = NewClientWithPool(cfg.URL, auth, cfg.Name, cfg.HTTPPool)
+	} else {
+		client = NewClient(cfg.URL, auth, cfg.Name)
 	}
-	return NewClient(cfg.URL, auth, cfg.Name)
+
+	// Advertise this client's own support for the MCP Apps extension
+	// (SEP-1865) to the remote server. A federated tool's whole point is to
+	// behave like a native one from the caller's perspective, and that
+	// includes MCP Apps: without this, a spec-conformant remote server that
+	// only attaches _meta.ui for clients that declared
+	// capabilities.extensions[io.modelcontextprotocol/ui] has no way to know
+	// this provider can render one, and silently serves a plain-text-only
+	// tool instead — MCP Apps then quietly never works for that server, with
+	// no error anywhere to explain why. Unconditional, matching this
+	// package's own guidance elsewhere (see Server.ClientCapabilities) that
+	// attaching _meta.ui unconditionally is the robust choice: the cost to a
+	// non-supporting host is nil, it just ignores unknown _meta.
+	client.DeclareExtension(UIAppsExtensionID, map[string]any{
+		"mimeTypes": []string{UIAppMimeType},
+	})
+
+	return client
 }
 
 // withListTimeout returns a context bounded by cfg.ListTimeout (or

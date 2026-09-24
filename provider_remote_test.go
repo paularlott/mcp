@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+
+	"github.com/paularlott/mcp/pool"
 )
 
 // testUserKey is a context key used to vary the per-user cache key in tests.
@@ -401,5 +403,42 @@ func TestRemoteProvider_AuthFuncError(t *testing.T) {
 	// But surfaces as an error on execute.
 	if _, err := p.ExecuteTool(context.Background(), "svc__alpha", nil); err == nil {
 		t.Fatal("expected error when auth resolution fails on execute")
+	}
+}
+
+// TestRemoteProviderConfig_NewClientDeclaresUIAppsSupport is the regression
+// test for a real gap: a federated tool's whole point is to behave like a
+// native one from the caller's perspective, and that includes MCP Apps —
+// but the client RemoteProviderConfig.newClient builds never declared the
+// extension, so a spec-conformant remote server that only attaches
+// _meta.ui for clients that declared
+// capabilities.extensions[io.modelcontextprotocol/ui] would silently serve
+// a plain-text-only tool to every consumer of this package's RemoteProvider
+// (fortix-mcp, knot, llmrouter, ...), with no error anywhere to explain why.
+func TestRemoteProviderConfig_NewClientDeclaresUIAppsSupport(t *testing.T) {
+	cfg := RemoteProviderConfig{Name: "svc", URL: "http://example.invalid"}
+	client := cfg.newClient(nil)
+
+	extensions, _ := client.capabilitiesMap()["extensions"].(map[string]any)
+	ui, ok := extensions[UIAppsExtensionID].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities.extensions[%s] missing: %#v", UIAppsExtensionID, extensions)
+	}
+	mimeTypes, ok := ui["mimeTypes"].([]string)
+	if !ok || len(mimeTypes) != 1 || mimeTypes[0] != UIAppMimeType {
+		t.Errorf("mimeTypes = %#v, want [%s]", ui["mimeTypes"], UIAppMimeType)
+	}
+}
+
+// TestRemoteProviderConfig_NewClientWithPoolDeclaresUIAppsSupport covers the
+// other branch of newClient (an HTTPPool configured) — both must declare
+// the extension, not just the default-pool path.
+func TestRemoteProviderConfig_NewClientWithPoolDeclaresUIAppsSupport(t *testing.T) {
+	cfg := RemoteProviderConfig{Name: "svc", URL: "http://example.invalid", HTTPPool: pool.NewPool(&pool.PoolConfig{})}
+	client := cfg.newClient(nil)
+
+	extensions, _ := client.capabilitiesMap()["extensions"].(map[string]any)
+	if _, ok := extensions[UIAppsExtensionID]; !ok {
+		t.Fatalf("capabilities.extensions[%s] missing for pooled client: %#v", UIAppsExtensionID, extensions)
 	}
 }
