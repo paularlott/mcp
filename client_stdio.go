@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/paularlott/jsonrpc"
 )
@@ -201,10 +200,7 @@ func NewStreamClient(in io.Reader, out io.Writer, namespace string) *Client {
 // NewStreamClient and the stdio tests).
 func newStreamClient(rpc *jsonrpc.Client, namespace string) *Client {
 	separator := DefaultNamespaceSeparator
-	namespace = strings.TrimSpace(namespace)
-	if namespace != "" && !strings.HasSuffix(namespace, separator) {
-		namespace = namespace + separator
-	}
+	namespace = normalizeNamespace(namespace)
 	return &Client{
 		namespace: namespace,
 		separator: separator,
@@ -214,10 +210,7 @@ func newStreamClient(rpc *jsonrpc.Client, namespace string) *Client {
 
 func newPeerClient(peer *jsonrpc.Peer, namespace string) *Client {
 	separator := DefaultNamespaceSeparator
-	namespace = strings.TrimSpace(namespace)
-	if namespace != "" && !strings.HasSuffix(namespace, separator) {
-		namespace = namespace + separator
-	}
+	namespace = normalizeNamespace(namespace)
 	c := &Client{
 		namespace: namespace,
 		separator: separator,

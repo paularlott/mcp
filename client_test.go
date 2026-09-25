@@ -405,7 +405,6 @@ func TestClient_NamespaceNormalization(t *testing.T) {
 	}{
 		{name: "empty", namespace: "", want: ""},
 		{name: "simple", namespace: "myns", want: "myns__"},
-		{name: "with-trailing-sep", namespace: "myns__", want: "myns__"},
 		{name: "whitespace-only", namespace: "   ", want: ""},
 		{name: "whitespace-padded", namespace: "  myns  ", want: "myns__"},
 		{name: "with-hyphen", namespace: "my-namespace", want: "my-namespace__"},

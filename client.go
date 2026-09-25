@@ -177,17 +177,38 @@ func NewClient(baseURL string, auth AuthProvider, namespace string, opts ...Clie
 //	// Create an insecure pool for internal services with self-signed certs
 //	insecurePool := pool.NewPool(&pool.PoolConfig{InsecureSkipVerify: true})
 //	client := mcp.NewClientWithPool("https://internal.service", auth, "ns", insecurePool)
-func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, httpPool pool.HTTPPool, opts ...ClientOption) *Client {
-	// Use the global default separator
-	separator := DefaultNamespaceSeparator
-
-	// Normalize namespace: trim whitespace
-	namespace = strings.TrimSpace(namespace)
-
-	// Ensure namespace ends with separator if provided and not empty
-	if namespace != "" && !strings.HasSuffix(namespace, separator) {
-		namespace = namespace + separator
+//
+// ValidateNamespace reports whether a federation namespace is usable. A
+// namespace containing the namespace separator itself is rejected: it makes
+// every namespaced tool name ambiguous ("a__b__tool" could belong to server
+// "a" or server "a__b"), and no dispatcher can resolve that. Hosts taking
+// namespaces from user input should call this and reject at the boundary;
+// the client constructors enforce the same rule as a panic (a bad namespace
+// is a programmer error the same way an invalid UI visibility is).
+func ValidateNamespace(namespace string) error {
+	if strings.Contains(namespace, DefaultNamespaceSeparator) {
+		return fmt.Errorf("namespace %q must not contain %q: it would make namespaced tool names ambiguous", namespace, DefaultNamespaceSeparator)
 	}
+	return nil
+}
+
+// normalizeNamespace validates a namespace and returns it in canonical
+// form: trimmed, empty, or ending with the separator. Panics on a namespace
+// containing the separator (see ValidateNamespace).
+func normalizeNamespace(namespace string) string {
+	if err := ValidateNamespace(namespace); err != nil {
+		panic(err)
+	}
+	namespace = strings.TrimSpace(namespace)
+	if namespace != "" && !strings.HasSuffix(namespace, DefaultNamespaceSeparator) {
+		namespace = namespace + DefaultNamespaceSeparator
+	}
+	return namespace
+}
+
+func NewClientWithPool(baseURL string, auth AuthProvider, namespace string, httpPool pool.HTTPPool, opts ...ClientOption) *Client {
+	separator := DefaultNamespaceSeparator
+	namespace = normalizeNamespace(namespace)
 
 	// Use provided pool or default
 	var httpClient *http.Client
