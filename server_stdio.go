@@ -196,7 +196,7 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 	}))
 
 	srv.Handle("skills/list", s.wrapStdioModern("skills/list", func(ctx context.Context, params json.RawMessage) (any, error) {
-		return map[string]any{"skills": s.ListSkills()}, nil
+		return map[string]any{"skills": s.ListSkillsWithContext(ctx)}, nil
 	}))
 	srv.Handle("skills/get", s.wrapStdioModern("skills/get", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p struct {
@@ -207,7 +207,7 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 				return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "uri parameter is required", nil)
 			}
 		}
-		skill, ok := s.GetSkill(p.URI)
+		skill, ok := s.GetSkillWithContext(ctx, p.URI)
 		if !ok {
 			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, fmt.Sprintf("Skill not found: %s", p.URI), map[string]any{"uri": p.URI})
 		}

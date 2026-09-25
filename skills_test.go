@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,5 +171,70 @@ func TestSkillsFrontmatterMatchesServedFile(t *testing.T) {
 	}
 	if _, nested := fm["metadata"]; nested {
 		t.Errorf("builder Metadata must not leak into a verbatim listing: %+v", fm)
+	}
+}
+
+type fakeSkillProvider struct {
+	skills []Skill
+	err    error
+}
+
+func (p *fakeSkillProvider) ListSkills(ctx context.Context) ([]Skill, error) {
+	return p.skills, p.err
+}
+
+// SkillProviders on the request context join skills/list and skills/get
+// alongside the static registry, which wins URI collisions; a failing
+// provider is skipped, not fatal.
+func TestSkillProvidersOnContext(t *testing.T) {
+	s := NewServer("s", "1")
+	s.RegisterSkill(NewSkill("static-skill").
+		Description("From the registry").
+		File("SKILL.md", []byte("static body")))
+
+	dbSkill := Skill{
+		URI:         "skill://db-skill/SKILL.md",
+		Frontmatter: map[string]any{"name": "db-skill", "description": "From the database"},
+		Resources:   []SkillResource{{URI: "skill://db-skill/SKILL.md", Digest: "sha256:x", Size: 3}},
+	}
+	colliding := Skill{
+		URI:         "skill://static-skill/SKILL.md", // static registry serves this URI already
+		Frontmatter: map[string]any{"name": "static-skill", "description": "provider loses"},
+	}
+	ctx := WithSkillProviders(context.Background(),
+		&fakeSkillProvider{skills: []Skill{dbSkill, colliding}},
+		&fakeSkillProvider{err: errors.New("backend down")})
+
+	skills := s.ListSkillsWithContext(ctx)
+	if len(skills) != 2 {
+		t.Fatalf("skills = %d (%+v), want static + provider entry", len(skills), skills)
+	}
+	if skills[0].URI != "skill://db-skill/SKILL.md" || skills[1].URI != "skill://static-skill/SKILL.md" {
+		t.Fatalf("listing = %+v", skills)
+	}
+	if skills[1].Frontmatter["description"] != "From the registry" {
+		t.Fatalf("static registry must win the collision: %+v", skills[1].Frontmatter)
+	}
+
+	// skills/get resolves provider entries by SKILL.md URI and root URI.
+	if e, ok := s.GetSkillWithContext(ctx, "skill://db-skill/SKILL.md"); !ok || e.URI != dbSkill.URI {
+		t.Fatalf("get by entry URI = (%+v, %v)", e, ok)
+	}
+	if _, ok := s.GetSkillWithContext(ctx, "skill://db-skill"); !ok {
+		t.Fatal("get by root URI must work for provider skills")
+	}
+	if _, ok := s.GetSkillWithContext(ctx, "skill://nope/SKILL.md"); ok {
+		t.Fatal("unknown URI must not resolve")
+	}
+
+	// The HTTP dispatch carries the request context through: skills/list and
+	// skills/get both see the provider.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"skills/list"}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	s.HandleRequest(rec, req)
+	if out := rec.Body.String(); !strings.Contains(out, `"uri":"skill://db-skill/SKILL.md"`) {
+		t.Fatalf("wire skills/list must include provider skills: %s", out)
 	}
 }

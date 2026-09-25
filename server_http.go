@@ -570,9 +570,10 @@ func (s *Server) writeMCPError(w http.ResponseWriter, status int, id any, code i
 	json.NewEncoder(w).Encode(response)
 }
 
-// handleSkillsList answers skills/list with the registered skills.
+// handleSkillsList answers skills/list with the registered skills plus any
+// from SkillProviders on the request context.
 func (s *Server) handleSkillsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
-	s.sendMCPResponse(w, req.ID, map[string]any{"skills": s.ListSkills()})
+	s.sendMCPResponse(w, req.ID, map[string]any{"skills": s.ListSkillsWithContext(r.Context())})
 }
 
 // handleSkillsGet answers skills/get with one skill's entry by URI: the
@@ -590,7 +591,7 @@ func (s *Server) handleSkillsGet(w http.ResponseWriter, r *http.Request, req *MC
 		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "uri parameter is required", nil)
 		return
 	}
-	skill, ok := s.GetSkill(params.URI)
+	skill, ok := s.GetSkillWithContext(r.Context(), params.URI)
 	if !ok {
 		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, fmt.Sprintf("Skill not found: %s", params.URI), map[string]any{"uri": params.URI})
 		return

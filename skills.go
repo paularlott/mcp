@@ -311,6 +311,59 @@ func (s *Server) GetSkill(uri string) (*Skill, bool) {
 	return nil, false
 }
 
+// ListSkillsWithContext returns the statically-registered skills plus those
+// from any [SkillProvider]s on ctx, sorted by URI — the listing behind
+// skills/list. Static registrations win URI collisions; provider errors are
+// skipped, matching the resources-from-providers convention (one failing
+// provider must not blank the whole listing).
+func (s *Server) ListSkillsWithContext(ctx context.Context) []Skill {
+	entries := s.ListSkills()
+	providers := GetSkillProviders(ctx)
+	if len(providers) == 0 {
+		return entries
+	}
+	seen := make(map[string]bool, len(entries))
+	for i := range entries {
+		seen[entries[i].URI] = true
+	}
+	for _, provider := range providers {
+		skills, err := provider.ListSkills(ctx)
+		if err != nil || skills == nil {
+			continue
+		}
+		for _, skill := range skills {
+			if !seen[skill.URI] {
+				entries = append(entries, skill)
+				seen[skill.URI] = true
+			}
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].URI < entries[j].URI })
+	return entries
+}
+
+// GetSkillWithContext resolves one skill's entry by URI — the resolver
+// behind skills/get: the static registry first, then any [SkillProvider]s on
+// ctx. Both the SKILL.md URI and the root directory URI are accepted,
+// per GetSkill.
+func (s *Server) GetSkillWithContext(ctx context.Context, uri string) (*Skill, bool) {
+	if skill, ok := s.GetSkill(uri); ok {
+		return skill, true
+	}
+	for _, provider := range GetSkillProviders(ctx) {
+		skills, err := provider.ListSkills(ctx)
+		if err != nil || skills == nil {
+			continue
+		}
+		for i := range skills {
+			if skills[i].URI == uri || strings.TrimSuffix(skills[i].URI, "/SKILL.md") == uri {
+				return &skills[i], true
+			}
+		}
+	}
+	return nil, false
+}
+
 // Client-side skills API.
 
 // ListSkills fetches the server's skills/list.

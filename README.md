@@ -11,7 +11,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Resources**: Serve addressable data by URI (`resources/list`, `resources/read`, resource templates), including per-user/session resources via `ResourceProvider`
 - **MCP Apps**: Link a tool to an interactive HTML UI resource (SEP-1865), with CSP/permission metadata, extension capability negotiation, and host/view auto-resize via `containerDimensions`
 - **Prompts**: Reusable message templates with arguments (`prompts/list`, `prompts/get`), including per-user/session prompts via `PromptProvider`
-- **Skills**: Agent Skills directories served per SEP-2640 (`skills/list`, `skills/get`): every skill file is an ordinary `skill://` resource with digests, frontmatter served verbatim from the SKILL.md
+- **Skills**: Agent Skills directories served per SEP-2640 (`skills/list`, `skills/get`): every skill file is an ordinary `skill://` resource with digests, frontmatter served verbatim from the SKILL.md; per-user/session skills via a `SkillProvider` on the request context
 - **ListChanged Notifications**: Push-based tool/resource/prompt refresh over HTTP (SSE) and stdio, with automatic propagation through federated servers
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts
 - **Thread Safe**: Concurrent request handling with mutex protection
@@ -138,7 +138,7 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Remote Servers](docs/guides/remote-servers.md)** - Connecting and proxying remote MCP servers, parallel tool calls
 - **[Resources](docs/guides/resources.md)** - Serving addressable data by URI, resource templates, and per-user/session resources
 - **[Prompts](docs/guides/prompts.md)** - Reusable message templates with arguments, and per-user/session prompts
-- **Skills** - Serving Agent Skills directories (`skills/list`, `skills/get`, `skill://` resources) per SEP-2640
+- **Skills** - Serving Agent Skills directories (`skills/list`, `skills/get`, `skill://` resources) per SEP-2640, statically or per-request via `SkillProvider`
 - **[Notifications](docs/guides/notifications.md)** - Push-based list refresh (listChanged) over HTTP and stdio, with federation propagation
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
