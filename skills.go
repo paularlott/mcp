@@ -189,6 +189,9 @@ func (s *Server) registerSkillLocked(b *SkillBuilder) {
 	} else {
 		frontmatter = b.frontmatter
 	}
+	// The spec requires the skill's name to equal the final path segment of
+	// its URI (skill://…/<name>/SKILL.md); RegisterSkill validates that
+	// before any state changes, so the name reaching here always agrees.
 	entry := &Skill{
 		URI:         b.EntryURI(),
 		Frontmatter: frontmatter,
@@ -208,13 +211,22 @@ func (s *Server) registerSkillLocked(b *SkillBuilder) {
 			Size:   int64(len(content)),
 		})
 		fileURI, fileContent, fileRel := uri, content, rel
+		descriptor := MCPResource{
+			URI:         fileURI,
+			Name:        fileRel,
+			Description: "Skill " + b.name + " file " + fileRel,
+			MimeType:    skillFileMIME(fileRel),
+		}
+		if fileRel == "SKILL.md" {
+			// The spec's SHOULD: the SKILL.md resource's name and
+			// description come from the frontmatter, not the filename.
+			descriptor.Name, _ = frontmatter["name"].(string)
+			if description, _ := frontmatter["description"].(string); description != "" {
+				descriptor.Description = description
+			}
+		}
 		s.resources[fileURI] = &registeredResource{
-			descriptor: MCPResource{
-				URI:         fileURI,
-				Name:        fileRel,
-				Description: "Skill " + b.name + " file " + fileRel,
-				MimeType:    skillFileMIME(fileRel),
-			},
+			descriptor: descriptor,
 			handler: func(ctx context.Context, req *ResourceRequest) (*ResourceResponse, error) {
 				return NewResourceResponseText(fileURI, string(fileContent), skillFileMIME(fileRel)), nil
 			},
@@ -233,14 +245,26 @@ type skillRegistration struct {
 
 // RegisterSkill adds a skill to the server: its files become readable
 // resources and it appears in skills/list. Registering the first skill also
-// declares the skills extension capability. Panics when the skill has no
-// SKILL.md (required by the Agent Skills specification).
-func (s *Server) RegisterSkill(skill *SkillBuilder) {
+// declares the skills extension capability.
+//
+// Returns an error — before any state changes — for a skill with no SKILL.md
+// at its root, or whose frontmatter name does not equal the final path
+// segment of its URI (skill://…/<name>/SKILL.md); both are required by the
+// Agent Skills specification. Callers reading skills from files or
+// databases should skip such entries with a warning rather than abort.
+func (s *Server) RegisterSkill(skill *SkillBuilder) error {
 	if skill == nil {
-		return
+		return nil
 	}
 	if _, ok := skill.files["SKILL.md"]; !ok {
-		panic(fmt.Sprintf("mcp: skill %q must contain SKILL.md at its root (Agent Skills specification)", skill.name))
+		return fmt.Errorf("mcp: skill %q must contain SKILL.md at its root (Agent Skills specification)", skill.name)
+	}
+	frontmatter := parseSKILLMDFrontmatter(skill.files["SKILL.md"])
+	if frontmatter == nil {
+		frontmatter = skill.frontmatter
+	}
+	if name, _ := frontmatter["name"].(string); name != "" && name != skill.name {
+		return fmt.Errorf("mcp: skill %q: frontmatter name %q must equal the final path segment of %q (Agent Skills specification)", skill.name, name, skill.EntryURI())
 	}
 
 	s.mu.Lock()
@@ -257,6 +281,7 @@ func (s *Server) RegisterSkill(skill *SkillBuilder) {
 	}
 	s.mu.Unlock()
 	s.NotifyResourcesChanged()
+	return nil
 }
 
 // UnregisterSkill removes a skill by name, including its resources.

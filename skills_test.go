@@ -88,11 +88,52 @@ func TestSkillsSpecCompliance(t *testing.T) {
 		t.Fatalf("resources/read of a skill file = (%+v, %v)", resp, err)
 	}
 
-	// Missing SKILL.md is a programmer error.
-	defer func() { recover() }()
+	// Missing SKILL.md is rejected with an error (callers reading skills
+	// from files skip such entries with a warning).
 	NewSkill("broken").File("OTHER.md", []byte("x"))
-	s.RegisterSkill(NewSkill("broken"))
-	t.Fatal("registering a skill without SKILL.md must panic")
+	if err := s.RegisterSkill(NewSkill("broken")); err == nil {
+		t.Fatal("registering a skill without SKILL.md must error")
+	}
+}
+
+// Spec conformance details: the frontmatter name must equal the final path
+// segment of the skill URI; the SKILL.md resource descriptor carries the
+// frontmatter name and description; Modern-era skills/get carries caching
+// hints.
+func TestSkillsSpecDetails(t *testing.T) {
+	s := NewServer("s", "1")
+	if err := s.RegisterSkill(NewSkill("code-review").
+		File("SKILL.md", []byte("---\nname: code-review\ndescription: Review changesets\n---\nBody."))); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Frontmatter name != directory name is rejected, before any state
+	// changes: a failed registration must not disturb the existing one.
+	if err := s.RegisterSkill(NewSkill("mismatch").
+		File("SKILL.md", []byte("---\nname: other-name\n---\nBody."))); err == nil {
+		t.Fatal("name/path mismatch must error at registration")
+	}
+	if skills := s.ListSkills(); len(skills) != 1 {
+		t.Fatalf("failed registration must not change state: %+v", skills)
+	}
+
+	// The SKILL.md resource descriptor carries the frontmatter identity.
+	resource, ok := s.resources["skill://code-review/SKILL.md"]
+	if !ok {
+		t.Fatal("SKILL.md must be registered as a resource")
+	}
+	if resource.descriptor.Name != "code-review" || resource.descriptor.Description != "Review changesets" {
+		t.Fatalf("descriptor = %+v, want frontmatter name and description", resource.descriptor)
+	}
+
+	// Modern-era caching hints cover skills/get too (ttlMs/cacheScope are
+	// REQUIRED on it, not just on skills/list).
+	if _, _, ok := cacheHintsFor("skills/get"); !ok {
+		t.Fatal("cacheHintsFor(skills/get) must apply")
+	}
+	if _, _, ok := cacheHintsFor("skills/list"); !ok {
+		t.Fatal("cacheHintsFor(skills/list) must apply")
+	}
 }
 
 // Wire round trip: HTTP skills/list + skills/get, and the client API.

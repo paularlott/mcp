@@ -304,19 +304,20 @@ func (s *Server) handleModernRequest(w http.ResponseWriter, r *http.Request, req
 // cacheHintsFor returns the ttlMs/cacheScope values a Modern result for
 // method must carry, per the spec's caching model: servers MUST include
 // caching hints on tools/list, prompts/list, resources/list,
-// resources/templates/list, and resources/read (also server/discover,
-// handled separately in buildDiscoverResult). ttlMs 0 ("immediately stale")
-// is always spec-valid; this library has no result-caching infrastructure to
-// compute a longer, meaningful TTL, so 0 is the honest value rather than an
-// invented one. cacheScope "public" fits tool/prompt/resource-template lists
-// (identical for every caller here — no per-user filtering); "private" is
-// the conservative choice for resources/read, whose content could vary by
-// context even though this library doesn't vary it today.
+// resources/templates/list, skills/list, skills/get and resources/read
+// (also server/discover, handled separately in buildDiscoverResult).
+// ttlMs 0 ("immediately stale") is always spec-valid; this library has no
+// result-caching infrastructure to compute a longer, meaningful TTL, so 0 is
+// the honest value rather than an invented one. cacheScope "public" fits the
+// list methods (the library's own lists are caller-independent; per-user
+// listings arrive through providers, same as tools); "private" is the
+// conservative choice for reads and skills/get, whose result is one
+// caller-addressed document.
 func cacheHintsFor(method string) (ttlMs int, cacheScope string, applicable bool) {
 	switch method {
 	case "tools/list", "prompts/list", "resources/list", "resources/templates/list", "skills/list":
 		return 0, "public", true
-	case "resources/read":
+	case "resources/read", "skills/get":
 		return 0, "private", true
 	default:
 		return 0, "", false
