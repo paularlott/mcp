@@ -394,23 +394,8 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 
 	resp, err := s.ReadResource(readCtx, params.URI)
 	if err != nil {
-		if errors.Is(err, ErrUnknownResource) {
-			// Same wire shape as before the remote-failure surfacing, but a
-			// wrapped error (remotes failed outright, not just missed) carries
-			// its diagnosis in data.details — the federating client's
-			// ToolError.Data preserves it across the next hop.
-			data := map[string]any{"uri": params.URI}
-			if err != ErrUnknownResource {
-				data["details"] = err.Error()
-			}
-			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Resource not found", data)
-			return
-		}
-		if toolErr, ok := err.(*ToolError); ok {
-			s.sendMCPError(w, req.ID, toolErr.Code, toolErr.Message, toolErr.Data)
-			return
-		}
-		s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Resource read failed: %v", err), nil)
+		e := resourcesReadWireError(params.URI, err)
+		s.sendMCPError(w, req.ID, e.Code, e.Message, e.Data)
 		return
 	}
 

@@ -1,0 +1,565 @@
+package mcp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+// The Legacy-era HTTP transport: request handling, dispatch, initialization, capabilities, sessions, and wire writers.
+
+// HandleRequest handles MCP protocol requests
+func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
+	// Validate Origin before anything else — the Streamable HTTP transport's
+	// MUST, protecting against DNS rebinding (a malicious page's JS in a
+	// victim's browser reaching this server, which would otherwise trust
+	// anything arriving over localhost). This runs ahead of the OPTIONS
+	// preflight branch too: CORS response headers only stop a browser from
+	// reading a disallowed response, they don't stop the server from having
+	// already acted on the request, which is exactly what this check is
+	// for. See origin.go's defaultOriginValidator for the policy and how to
+	// widen it.
+	origin := r.Header.Get("Origin")
+	if !s.originAllowed(origin) {
+		http.Error(w, "Origin not allowed", http.StatusForbidden)
+		return
+	}
+
+	// Handle CORS preflight
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", corsOriginHeader(origin))
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, DELETE")
+		// The Modern era's Mcp-Method/Mcp-Name headers (required on every
+		// request — see modern.go) aren't in the static list below, so a
+		// cross-origin Modern browser client's preflight would otherwise
+		// fail; reflecting the browser's own Access-Control-Request-Headers
+		// back, when present, additionally covers Mcp-Param-{Name} (a
+		// server-declared, per-tool-parameter header set — see the
+		// x-mcp-header spec section — whose names can't be enumerated
+		// ahead of time in a static list at all).
+		allowHeaders := "Content-Type, Authorization, MCP-Protocol-Version, MCP-Session-Id, Mcp-Method, Mcp-Name"
+		if requested := r.Header.Get("Access-Control-Request-Headers"); requested != "" {
+			allowHeaders = requested
+		}
+		w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Set CORS headers for actual requests
+	w.Header().Set("Access-Control-Allow-Origin", corsOriginHeader(origin))
+
+	// Handle DELETE requests (session termination)
+	if r.Method == http.MethodDelete {
+		sm := s.getSessionManager()
+		if sm == nil {
+			http.Error(w, "Session management not enabled", http.StatusMethodNotAllowed)
+			return
+		}
+
+		sessionID := r.Header.Get(headerSessionID)
+		if sessionID == "" {
+			http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
+			return
+		}
+
+		if err := sm.DeleteSession(r.Context(), sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to delete session: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Handle GET requests: open a long-lived SSE stream for server->client
+	// notifications, but only when the client asks for an event stream (the
+	// Streamable HTTP push channel). A plain GET stays a 405.
+	if r.Method == http.MethodGet {
+		if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			s.handleSSEStream(w, r)
+			return
+		}
+		w.Header().Set("Allow", "POST, OPTIONS")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST, GET, DELETE, OPTIONS")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Validate Content-Type
+	contentType := r.Header.Get("Content-Type")
+	if contentType != "application/json" && !strings.HasPrefix(contentType, "application/json;") {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	var req MCPRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendProtocolAwareError(w, r, &req, nil, ErrorCodeParseError, "Parse error", map[string]any{
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Validate JSONRPC version
+	if req.JSONRPC != "2.0" {
+		s.sendProtocolAwareError(w, r, &req, req.ID, ErrorCodeInvalidRequest, "Invalid Request", map[string]any{
+			"details": "JSONRPC field must be '2.0'",
+		})
+		return
+	}
+
+	// Ensure ID is never nil - use empty string as default
+	if req.ID == nil {
+		req.ID = ""
+	}
+
+	// Modern-era (protocol revision 2026-07-28+) requests are detected by a
+	// signal only a Modern client sends (the Mcp-Method header, or
+	// io.modelcontextprotocol/protocolVersion in _meta) and are handled by a
+	// dedicated stateless path in modern.go. A request with neither signal
+	// falls through to every line below completely unchanged.
+	if isModernRequest(r, &req) {
+		s.handleModernRequest(w, r, &req)
+		return
+	}
+
+	// For non-initialize requests, validate MCP-Protocol-Version header
+	if req.Method != "initialize" {
+		// Per spec: assume 2025-03-26 if missing for backwards compatibility
+		protocolVersion, versionOK := negotiateProtocolVersion(r.Header.Get(headerProtocolVersion), "2025-03-26")
+
+		// Validate protocol version. Still a 400 (this rejects a header, not
+		// a JSON-RPC method call, so it stays outside the "Legacy JSON-RPC
+		// errors are always 200" convention — same as it always has been),
+		// but now with a proper JSON-RPC error body naming what this Legacy
+		// server actually supports (mirroring handleInitialize's identical
+		// check on the initialize request itself, mcp.go below), rather
+		// than the plain-text, no-body response this used to send, which
+		// left a client with no way to learn a version it could retry with.
+		// writeModernProtocolError just means "JSON-RPC error at this HTTP
+		// status" despite the name — nothing about it is Modern-specific.
+		if !versionOK {
+			s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeInvalidParams,
+				fmt.Sprintf("Unsupported MCP-Protocol-Version: %s", protocolVersion), map[string]any{
+					"requested": protocolVersion,
+					"supported": supportedProtocolVersions,
+				})
+			return
+		}
+
+		// Validate session ID if session management is enabled
+		if showAll, ok, status, message := s.checkSession(r.Context(), r); !ok {
+			http.Error(w, message, status)
+			return
+		} else if showAll {
+			r = r.WithContext(WithShowAllTools(r.Context()))
+		} else if sm := s.getSessionManager(); sm == nil {
+			// No session management - check header/query on each request
+			if GetShowAllFromRequest(r) {
+				r = r.WithContext(WithShowAllTools(r.Context()))
+			}
+		}
+	}
+
+	s.dispatchMethod(w, r, &req)
+}
+
+// dispatchMethod routes a parsed request to its handler. Both the Legacy path
+// above and the Modern path (handleModernRequest, in modern.go — via a
+// response-capturing writer so it can reshape the result afterward) call this
+// same table, so a method's behavior is defined exactly once regardless of
+// which era's request reached it.
+// dispatchableMethods lists the methods handleModernRequest (modern.go) may
+// dispatch through dispatchMethod's shared switch below, so it can
+// distinguish an unknown RPC method (which the 2026-07-28 revision requires
+// HTTP 404 for) from an ordinary method-level JSON-RPC error like an unknown
+// tool name (which stays 200, per the Streamable HTTP spec's requirement
+// that only routing failures — unknown method, unsupported version, header
+// mismatch — get a non-200 status).
+//
+// Deliberately narrower than dispatchMethod's own case list: "initialize"
+// and "ping" are both dispatchable there for Legacy clients, but the
+// 2026-07-28 revision removes both (stateless per-request replaces the
+// initialize handshake; ping is gone outright) — a Modern request naming
+// either is exactly as unknown as a method this server never supported at
+// all, and must 404 the same way.
+var dispatchableMethods = map[string]bool{
+	"tools/list":               true,
+	"tools/call":               true,
+	"resources/list":           true,
+	"resources/read":           true,
+	"resources/templates/list": true,
+	"prompts/list":             true,
+	"prompts/get":              true,
+}
+
+func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	switch req.Method {
+	case "initialize":
+		s.handleInitialize(w, r, req)
+	case "ping":
+		s.handlePing(w, r, req)
+	case "tools/list":
+		s.handleToolsList(w, r, req)
+	case "tools/call":
+		s.handleToolsCall(w, r, req)
+	case "resources/list":
+		s.handleResourcesList(w, r, req)
+	case "resources/read":
+		s.handleResourcesRead(w, r, req)
+	case "resources/templates/list":
+		s.handleResourcesTemplatesList(w, r, req)
+	case "prompts/list":
+		s.handlePromptsList(w, r, req)
+	case "prompts/get":
+		s.handlePromptsGet(w, r, req)
+	default:
+		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]any{
+			"method": req.Method,
+		})
+	}
+}
+
+// negotiateProtocolVersion resolves the protocol version for one request:
+// requested when non-empty, fallback when empty. ok is false when the
+// requested version is not supported; callers render their own era- and
+// transport-appropriate error.
+func negotiateProtocolVersion(requested, fallback string) (version string, ok bool) {
+	if requested == "" {
+		return fallback, true
+	}
+	return requested, isSupportedProtocolVersion(requested)
+}
+
+// isSupportedProtocolVersion checks if the given version string matches one of the
+// supported MCP protocol versions. Protocol versions follow ISO date format (YYYY-MM-DD).
+// Leading/trailing whitespace is trimmed before comparison.
+func isSupportedProtocolVersion(version string) bool {
+	version = strings.TrimSpace(version)
+	for _, supported := range supportedProtocolVersions {
+		if supported == version {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDiscoverableToolsNow reports whether the server currently has any discoverable
+// tools, either statically registered or exposed by a context-scoped ToolProvider.
+func (s *Server) hasDiscoverableToolsNow(ctx context.Context) bool {
+	s.mu.RLock()
+	hasStatic := s.hasDiscoverableTools
+	s.mu.RUnlock()
+	return hasStatic || hasDiscoverableToolsFromProviders(ctx)
+}
+
+// appendDiscoveryInstructions appends guidance about the discovery tools to whatever
+// instructions the server already has (via SetInstructions), without overwriting them.
+// This is how a model learns about tool_search/execute_tool from the initialize
+// response, which is a stronger, session-wide signal than a tool's own description.
+func appendDiscoveryInstructions(instructions string) string {
+	hint := fmt.Sprintf("This server has additional tools not shown in the initial tool list - call %s to find them, then %s to invoke them.", ToolSearchName, ExecuteToolName)
+	if instructions == "" {
+		return hint
+	}
+	return instructions + "\n\n" + hint
+}
+
+func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	var params initializeParams
+	if err := s.parseParams(req, &params); err != nil {
+		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
+		return
+	}
+
+	// Determine which protocol version to use
+	protocolVersion, ok := negotiateProtocolVersion(params.ProtocolVersion, MCPProtocolVersionLatest)
+	if !ok {
+		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
+			"requested": params.ProtocolVersion,
+			"supported": supportedProtocolVersions,
+		})
+		return
+	}
+
+	// Check for show-all flag from header or query param
+	showAll := GetShowAllFromRequest(r)
+
+	// Read instructions and icons under lock
+	s.mu.RLock()
+	instructions := s.instructions
+	icons := s.icons
+	s.mu.RUnlock()
+
+	// Discovery tools aren't shown in show-all mode, so don't tell the model to use them there.
+	if !showAll && s.hasDiscoverableToolsNow(r.Context()) {
+		instructions = appendDiscoveryInstructions(instructions)
+	}
+
+	// Remember the client's declared capabilities (e.g. capabilities.extensions)
+	// so handlers can later check them via ClientCapabilities. See that method's
+	// doc comment for the multi-client-HTTP caveat.
+	s.mu.Lock()
+	s.lastClientCapabilities = params.Capabilities
+	s.mu.Unlock()
+
+	result := initializeResult{
+		ProtocolVersion: protocolVersion,
+		Capabilities:    s.buildCapabilities(protocolVersion),
+		ServerInfo: serverInfo{
+			Name:    s.name,
+			Version: s.version,
+			Icons:   icons,
+		},
+		Instructions: instructions,
+	}
+
+	// Generate and store session if session management is enabled
+	sm := s.getSessionManager()
+	if sm != nil {
+		sessionID, err := sm.CreateSession(r.Context(), protocolVersion, showAll)
+		if err != nil {
+			s.sendMCPError(w, req.ID, ErrorCodeInternalError, "Failed to create session", nil)
+			return
+		}
+
+		// Set session ID header
+		w.Header().Set(headerSessionID, sessionID)
+	}
+
+	s.sendMCPResponse(w, req.ID, result)
+}
+
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	s.sendMCPResponse(w, req.ID, map[string]any{})
+}
+
+func (s *Server) buildCapabilities(protocolVersion string) capabilities {
+	caps := capabilities{
+		Tools: map[string]any{},
+	}
+
+	// Add version-specific capabilities
+	switch protocolVersion {
+	case "2024-11-05":
+		// Basic capabilities for 2024-11-05
+		caps.Tools = map[string]any{}
+		caps.Resources = map[string]any{}
+		caps.Prompts = map[string]any{}
+	default: // 2025-03-26, 2025-06-18 and use latest if unknown
+		// Default to latest
+		caps.Tools = map[string]any{
+			"listChanged": true,
+		}
+		caps.Resources = map[string]any{
+			"subscribe":   false,
+			"listChanged": true,
+		}
+		caps.Prompts = map[string]any{
+			"listChanged": true,
+		}
+	}
+
+	s.mu.RLock()
+	if len(s.extensionCapabilities) > 0 {
+		caps.Extensions = make(map[string]any, len(s.extensionCapabilities))
+		for id, settings := range s.extensionCapabilities {
+			caps.Extensions[id] = settings
+		}
+	}
+	s.mu.RUnlock()
+
+	return caps
+}
+
+// DeclareExtension advertises this server's support for an MCP extension (per
+// SEP-1724) in its initialize response, under capabilities.extensions[id].
+// Call it during setup, before serving. For example, a server offering MCP
+// Apps (SEP-1865) tools would declare:
+//
+//	server.DeclareExtension(mcp.UIAppsExtensionID, map[string]any{
+//		"mimeTypes": []string{mcp.UIAppMimeType},
+//	})
+func (s *Server) DeclareExtension(id string, settings map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.extensionCapabilities == nil {
+		s.extensionCapabilities = map[string]any{}
+	}
+	s.extensionCapabilities[id] = settings
+}
+
+// ClientCapabilities returns the capabilities object (capabilities.extensions,
+// roots, sampling, etc., as sent in initialize) declared by the most recently
+// initialized client.
+//
+// For a stdio server — one process per client connection, the common case for
+// locally-spawned MCP servers — this reliably reflects the single connected
+// client. An HTTP server handling multiple concurrent client sessions should
+// not rely on this for per-request decisions: it is a single process-wide
+// value reflecting only the most recent initialize seen across all sessions,
+// not any particular request's caller. This is deliberately not upgraded to
+// per-session tracking here: doing so with an in-memory map would silently
+// misbehave in exactly the deployment this library optimizes an HTTP server
+// for — horizontal scaling behind a load balancer with [JWTSessionManager],
+// where a later request from the same client can land on a different,
+// stateless instance that never saw that client's initialize. If you need
+// per-request extension awareness on HTTP, the robust option is to register
+// UI-linked tools unconditionally (the [UIAppsExtensionID] cost to a
+// non-supporting host is nil — it just ignores unknown `_meta`) rather than
+// branching on this method. Use [SupportsUIApps] to interpret the MCP Apps
+// extension's settings from the returned map.
+func (s *Server) ClientCapabilities() map[string]any {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastClientCapabilities
+}
+
+func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	tools := s.ListToolsWithContext(r.Context())
+	result := map[string]any{
+		"tools": tools,
+	}
+	s.sendMCPResponse(w, req.ID, result)
+}
+
+func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	var params ToolCallParams
+	if err := s.parseParams(req, &params); err != nil {
+		s.sendProtocolAwareError(w, r, req, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
+		return
+	}
+
+	response, err := s.CallTool(r.Context(), params.Name, params.Arguments)
+	if err != nil {
+		// Check if it's a ToolError with specific MCP error code
+		if toolErr, ok := err.(*ToolError); ok {
+			s.sendMCPError(w, req.ID, toolErr.Code, toolErr.Message, toolErr.Data)
+		} else if err == ErrUnknownTool && s.hasDiscoverableToolsNow(r.Context()) {
+			// The caller guessed a tool name directly instead of going through
+			// tool_search first; point it at discovery instead of a dead end.
+			s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: unknown tool %q. Use %s to discover available tools, then %s to invoke them.", params.Name, ToolSearchName, ExecuteToolName), nil)
+		} else {
+			s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: %v", err), nil)
+		}
+		return
+	}
+
+	s.sendMCPResponse(w, req.ID, ToolResult{
+		Content:           response.Content,
+		StructuredContent: response.StructuredContent,
+		IsError:           false,
+	})
+}
+
+// checkSession validates the MCP-Session-Id header when session management
+// is enabled. ok=false means the request is rejected: status and message
+// carry the HTTP error for the caller to render. showAll reports the
+// session's stored show-all flag (the SSE stream deliberately ignores it:
+// its notifications are broadcast, not session-scoped). With no session
+// manager configured the request is anonymous and always passes.
+func (s *Server) checkSession(ctx context.Context, r *http.Request) (showAll, ok bool, status int, message string) {
+	sm := s.getSessionManager()
+	if sm == nil {
+		return false, true, 0, ""
+	}
+	sessionID := r.Header.Get(headerSessionID)
+	if sessionID == "" {
+		return false, false, http.StatusBadRequest, "MCP-Session-Id header required"
+	}
+	valid, err := sm.ValidateSession(ctx, sessionID)
+	if err != nil {
+		return false, false, http.StatusInternalServerError, fmt.Sprintf("Session validation error: %v", err)
+	}
+	if !valid {
+		return false, false, http.StatusNotFound, "Session not found"
+	}
+	showAll, _ = sm.GetShowAll(ctx, sessionID)
+	return showAll, true, 0, ""
+}
+
+func (s *Server) sendMCPResponse(w http.ResponseWriter, id any, result any) {
+	s.writeMCPResponse(w, http.StatusOK, id, result)
+}
+
+// writeMCPResponse writes a JSON-RPC result at the given HTTP status. Legacy
+// JSON-RPC is always 200; the Modern era maps routing failures to 4xx — one
+// body, both conventions.
+func (s *Server) writeMCPResponse(w http.ResponseWriter, status int, id any, result any) {
+	response := MCPResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  result,
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *Server) parseParams(req *MCPRequest, target any) error {
+	if req.Params == nil {
+		return nil
+	}
+	paramsBytes, err := json.Marshal(req.Params)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(paramsBytes, target)
+}
+
+// sendProtocolAwareError reports a garbled/malformed request — one that
+// failed to decode, didn't carry a valid JSON-RPC envelope, or whose params
+// couldn't be unmarshaled into the shape a method expects — as opposed to a
+// well-formed request whose particular method/params turned out to be
+// semantically invalid (an unknown tool, a missing-but-parseable required
+// field, and the like), which correctly stays a 200 JSON-RPC error in both
+// eras per the spec's ordinary-method-error convention (see
+// finalizeModernResponse's doc comment).
+//
+// A Modern-era request gets the spec-required HTTP 400 for this class of
+// error; Legacy keeps its always-200 JSON-RPC convention, unchanged. Era is
+// detected the same way isModernRequest does (req may be a zero-value or
+// partially-decoded MCPRequest here — that detection's header check doesn't
+// depend on req having decoded successfully).
+func (s *Server) sendProtocolAwareError(w http.ResponseWriter, r *http.Request, req *MCPRequest, id any, code int, message string, data any) {
+	if isModernRequest(r, req) {
+		s.writeModernProtocolError(w, id, http.StatusBadRequest, code, message, data)
+		return
+	}
+	s.sendMCPError(w, id, code, message, data)
+}
+
+func (s *Server) sendMCPError(w http.ResponseWriter, id any, code int, message string, data any) {
+	// Always 200 for JSON-RPC responses
+	s.writeMCPError(w, http.StatusOK, id, code, message, data)
+}
+
+// writeMCPError writes a JSON-RPC error at the given HTTP status; see
+// writeMCPResponse for the status convention.
+func (s *Server) writeMCPError(w http.ResponseWriter, status int, id any, code int, message string, data any) {
+	response := MCPResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: &MCPError{
+			Code:    code,
+			Message: message,
+			Data:    data,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(response)
+}

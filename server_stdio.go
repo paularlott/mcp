@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -269,15 +267,8 @@ func (s *Server) stdioToolsCall(ctx context.Context, raw json.RawMessage) (any, 
 
 	response, err := s.CallTool(ctx, params.Name, params.Arguments)
 	if err != nil {
-		if toolErr, ok := err.(*ToolError); ok {
-			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
-		}
-		// Same hint the HTTP handler gives: the caller guessed a name
-		// directly instead of going through tool_search first.
-		if err == ErrUnknownTool && s.hasDiscoverableToolsNow(ctx) {
-			return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: unknown tool %q. Use %s to discover available tools, then %s to invoke them.", params.Name, ToolSearchName, ExecuteToolName), nil)
-		}
-		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: %v", err), nil)
+		e := s.toolsCallWireError(ctx, params.Name, err)
+		return nil, jsonrpc.NewError(e.Code, e.Message, e.Data)
 	}
 
 	return ToolResult{
@@ -300,15 +291,8 @@ func (s *Server) stdioResourcesRead(ctx context.Context, raw json.RawMessage) (a
 
 	resp, err := s.ReadResource(ctx, params.URI)
 	if err != nil {
-		// errors.Is, not ==: the fan-out wraps ErrUnknownResource when remotes
-		// failed outright (see ReadResource), and that case is still a miss.
-		if errors.Is(err, ErrUnknownResource) {
-			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Resource not found", nil)
-		}
-		if toolErr, ok := err.(*ToolError); ok {
-			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
-		}
-		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Resource read failed: %v", err), nil)
+		e := resourcesReadWireError(params.URI, err)
+		return nil, jsonrpc.NewError(e.Code, e.Message, e.Data)
 	}
 	return resp, nil
 }
@@ -326,13 +310,8 @@ func (s *Server) stdioPromptsGet(ctx context.Context, raw json.RawMessage) (any,
 
 	resp, err := s.GetPrompt(ctx, params.Name, params.Arguments)
 	if err != nil {
-		if err == ErrUnknownPrompt {
-			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Prompt not found", nil)
-		}
-		if toolErr, ok := err.(*ToolError); ok {
-			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
-		}
-		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Prompt render failed: %v", err), nil)
+		e := promptsGetWireError(params.Name, err)
+		return nil, jsonrpc.NewError(e.Code, e.Message, e.Data)
 	}
 	return resp, nil
 }

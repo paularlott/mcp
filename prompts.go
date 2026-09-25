@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"sort"
 )
@@ -112,15 +111,8 @@ func (s *Server) handlePromptsGet(w http.ResponseWriter, r *http.Request, req *M
 
 	resp, err := s.GetPrompt(r.Context(), params.Name, params.Arguments)
 	if err != nil {
-		if err == ErrUnknownPrompt {
-			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Prompt not found", map[string]any{"name": params.Name})
-			return
-		}
-		if toolErr, ok := err.(*ToolError); ok {
-			s.sendMCPError(w, req.ID, toolErr.Code, toolErr.Message, toolErr.Data)
-			return
-		}
-		s.sendMCPError(w, req.ID, ErrorCodeInternalError, fmt.Sprintf("Prompt render failed: %v", err), nil)
+		e := promptsGetWireError(params.Name, err)
+		s.sendMCPError(w, req.ID, e.Code, e.Message, e.Data)
 		return
 	}
 
