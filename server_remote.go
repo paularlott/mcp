@@ -2,27 +2,39 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Remote-server federation: registration, the shared tool merge, refresh, and ownership routing.
 
 // registeredClient holds a remote client with its configuration
 type registeredClient struct {
-	client       *Client
-	namespace    string
-	visibility   ToolVisibility
-	remoteSearch bool // Whether to delegate tool_search to this remote
-	excludeApps  bool // Skip tools linked to a ui:// resource (MCP Apps views)
+	client         *Client
+	namespace      string
+	visibility     ToolVisibility
+	remoteSearch   bool // Whether to delegate tool_search to this remote
+	excludeApps    bool // Skip tools linked to a ui:// resource (MCP Apps views)
+	federateSkills bool // Serve the remote's skills under skill://<ns>/… on this server
+
+	// Skills-federation cache (see federatedSkills). Guarded by its own
+	// mutex: the fetch happens outside the server lock, and a cold or
+	// expired cache must not serialize concurrent listings.
+	skillsMu          sync.Mutex
+	skillsCache       []Skill
+	skillsCacheExpiry time.Time
 }
 
 // RemoteServerOption configures options when registering a remote server.
 type RemoteServerOption func(*remoteServerOptions)
 
 type remoteServerOptions struct {
-	remoteSearch bool
-	excludeApps  bool
+	remoteSearch   bool
+	excludeApps    bool
+	federateSkills bool
 }
 
 // WithRemoteSearch enables delegating tool_search to this remote server.
@@ -30,6 +42,21 @@ type remoteServerOptions struct {
 func WithRemoteSearch() RemoteServerOption {
 	return func(o *remoteServerOptions) {
 		o.remoteSearch = true
+	}
+}
+
+// WithRemoteSkillsFederation serves the remote's skills through this
+// server's skills/list and skills/get: every URI is published with the
+// server's namespace as the first path segment (skill://<ns>/<skill-path>/
+// SKILL.md), the manifest's resource URIs are rewritten to match, and file
+// reads route back to the owning server with the namespace stripped. The
+// rewrite is the one the skills spec sanctions: relative references inside
+// a SKILL.md resolve against the skill's root, so every supporting-file
+// read stays inside the rewritten namespace, and digests are computed over
+// bytes, so they survive it.
+func WithRemoteSkillsFederation() RemoteServerOption {
+	return func(o *remoteServerOptions) {
+		o.federateSkills = true
 	}
 }
 
@@ -51,7 +78,7 @@ func (s *Server) RegisterRemoteServer(client *Client, opts ...RemoteServerOption
 	for _, opt := range opts {
 		opt(o)
 	}
-	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative, o.remoteSearch, o.excludeApps)
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative, o)
 }
 
 // RegisterRemoteServerDiscoverable registers a remote MCP server with discoverable visibility.
@@ -61,7 +88,7 @@ func (s *Server) RegisterRemoteServerDiscoverable(client *Client, opts ...Remote
 	for _, opt := range opts {
 		opt(o)
 	}
-	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable, o.remoteSearch, o.excludeApps)
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable, o)
 }
 
 // UnregisterRemoteServer removes a previously registered remote server and all its cached tools.
@@ -135,7 +162,12 @@ func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 	s.mu.Unlock()
 
 	for _, entry := range servers {
-		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility, entry.RemoteSearch, entry.ExcludeApps); err != nil {
+		o := &remoteServerOptions{
+			remoteSearch:   entry.RemoteSearch,
+			excludeApps:    entry.ExcludeApps,
+			federateSkills: entry.FederateSkills,
+		}
+		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility, o); err != nil {
 			return err
 		}
 	}
@@ -160,6 +192,10 @@ type RemoteServerEntry struct {
 	// tools — a federating server that renders no views of its own should
 	// always set this.
 	ExcludeApps bool
+	// FederateSkills serves the remote's skills through this server's
+	// skills/list and skills/get under skill://<namespace>/… URIs, with file
+	// reads routed back to the owning server. See [WithRemoteSkillsFederation].
+	FederateSkills bool
 }
 
 // remoteMergeState accumulates one merge pass over remote tool lists.
@@ -214,24 +250,42 @@ func (s *Server) remoteToolHandler(name string) ToolHandler {
 }
 
 // registerRemoteServerWithVisibility is the internal implementation for registering remote servers.
-func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility, remoteSearch, excludeApps bool) error {
+func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility, o *remoteServerOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if visibility == ToolVisibilityDiscoverable || remoteSearch {
+	if visibility == ToolVisibilityDiscoverable || o.remoteSearch {
 		s.hasDiscoverableTools = true
 	}
 
 	namespace := strings.TrimSuffix(client.Namespace(), client.separator)
 
+	// Federation rewrites skill URIs as skill://<namespace>/…, which needs a
+	// namespace to insert; refuse rather than publish malformed URIs.
+	if o.federateSkills && namespace == "" {
+		return fmt.Errorf("mcp: skills federation requires a namespace (remote %s)", client.baseURL)
+	}
+
 	regClient := &registeredClient{
-		client:       client,
-		namespace:    namespace,
-		visibility:   visibility,
-		remoteSearch: remoteSearch,
-		excludeApps:  excludeApps,
+		client:         client,
+		namespace:      namespace,
+		visibility:     visibility,
+		remoteSearch:   o.remoteSearch,
+		excludeApps:    o.excludeApps,
+		federateSkills: o.federateSkills,
 	}
 	s.remoteClients[client.baseURL] = regClient
+
+	// Skills federation serves skills/list entries even on a server with no
+	// statically-registered skills, so the capability is declared here.
+	if o.federateSkills {
+		if s.extensionCapabilities == nil {
+			s.extensionCapabilities = map[string]any{}
+		}
+		if _, ok := s.extensionCapabilities[SkillsExtensionID]; !ok {
+			s.extensionCapabilities[SkillsExtensionID] = map[string]any{}
+		}
+	}
 
 	// Propagate upstream tool changes downstream: when this remote's tool set
 	// changes, refresh our merged cache and notify our own subscribers. This hook
@@ -512,4 +566,100 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 	}
 
 	return allResults
+}
+
+// ---------------------------------------------------------------------------
+// Skills federation (SEP-2640)
+// ---------------------------------------------------------------------------
+
+const (
+	// remoteSkillsCacheTTL bounds how stale a federated skills/list may be.
+	remoteSkillsCacheTTL = time.Minute
+	// remoteSkillsFetchTimeout is each remote's budget for one skills/list.
+	remoteSkillsFetchTimeout = 5 * time.Second
+)
+
+// federatedSkills returns the remote's skills rewritten into this server's
+// namespace: the namespace becomes the FIRST path segment of every URI
+// (skill://<ns>/<skill-path>/SKILL.md), never a replacement of the skill's
+// own name segment, and the manifest's resource URIs are rewritten to the
+// same root so the listing stays internally consistent. Frontmatter and
+// digests pass through verbatim: digests are computed over bytes, not URIs.
+//
+// Listings are cached for the TTL — empty results included, so a dead
+// remote costs one attempt per TTL rather than one per request — and a
+// fetch failure keeps serving the previous listing instead of failing the
+// caller's whole skills/list: one unreachable federated server must not
+// blank the rest.
+func (rc *registeredClient) federatedSkills(ctx context.Context) []Skill {
+	rc.skillsMu.Lock()
+	if time.Now().Before(rc.skillsCacheExpiry) {
+		cached := rc.skillsCache
+		rc.skillsMu.Unlock()
+		return cached
+	}
+	rc.skillsMu.Unlock()
+
+	fetchCtx, cancel := context.WithTimeout(ctx, remoteSkillsFetchTimeout)
+	defer cancel()
+	skills, err := rc.client.ListSkills(fetchCtx)
+
+	rc.skillsMu.Lock()
+	defer rc.skillsMu.Unlock()
+	rc.skillsCacheExpiry = time.Now().Add(remoteSkillsCacheTTL)
+	if err != nil {
+		return rc.skillsCache
+	}
+	rewritten := make([]Skill, len(skills))
+	for i, skill := range skills {
+		rewritten[i] = federateSkillURI(rc.namespace, skill)
+	}
+	rc.skillsCache = rewritten
+	return rewritten
+}
+
+// federateSkillURI rewrites one skill entry (and its manifest resource URIs)
+// into namespace ns: skill://a/b/SKILL.md becomes skill://ns/a/b/SKILL.md.
+func federateSkillURI(ns string, skill Skill) Skill {
+	prefix := "skill://" + ns + "/"
+	skill.URI = prefix + strings.TrimPrefix(skill.URI, "skill://")
+	if len(skill.Resources) > 0 {
+		res := make([]SkillResource, len(skill.Resources))
+		for i, r := range skill.Resources {
+			r.URI = prefix + strings.TrimPrefix(r.URI, "skill://")
+			res[i] = r
+		}
+		skill.Resources = res
+	}
+	return skill
+}
+
+// splitFederatedSkillURI splits a namespaced skill URI skill://<ns>/<rest>
+// into the namespace and the remote's own URI (skill://<rest>). ok is false
+// for anything that is not a skill:// URI carrying a namespace segment with
+// something after it.
+func splitFederatedSkillURI(uri string) (ns, original string, ok bool) {
+	rest, has := strings.CutPrefix(uri, "skill://")
+	if !has {
+		return "", "", false
+	}
+	ns, tail, found := strings.Cut(rest, "/")
+	if !found || ns == "" || tail == "" {
+		return "", "", false
+	}
+	return ns, "skill://" + tail, true
+}
+
+// federatedSkillRemotes snapshots the registrations with skills federation
+// enabled.
+func (s *Server) federatedSkillRemotes() []*registeredClient {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	remotes := make([]*registeredClient, 0, len(s.remoteClients))
+	for _, rc := range s.remoteClients {
+		if rc.federateSkills {
+			remotes = append(remotes, rc)
+		}
+	}
+	return remotes
 }

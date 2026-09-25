@@ -254,6 +254,41 @@ func (s *Server) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	}
 	s.mu.RUnlock()
 
+	// A namespaced skill URI (skill://<ns>/…) belongs to the server
+	// federating that namespace, and the spec routes every skill read to
+	// originating servers: send it there alone, with the namespace segment
+	// stripped back to the remote's own URI. A URI naming no registered
+	// skills-federating namespace falls through to the generic fan-out — a
+	// chained gateway downstream may serve it verbatim.
+	if ns, original, ok := splitFederatedSkillURI(uri); ok {
+		for _, rc := range remoteClients {
+			if !rc.federateSkills || rc.namespace != ns {
+				continue
+			}
+			attemptCtx, cancel := context.WithTimeout(withResourceFanoutHop(ctx, hop+1), remoteResourceFanoutTimeout)
+			resp, err := rc.client.ReadResource(attemptCtx, original)
+			cancel()
+			if err == nil {
+				// Echo the namespaced URI the client asked for: the remote's
+				// envelope names its own (stripped) URI, and a client that
+				// checks the content URI against its request — MCP
+				// Inspector's conformance view, for one — reads that
+				// mismatch as no content. Only the URI field is rewritten;
+				// bytes and MIME type pass through verbatim.
+				for i := range resp.Contents {
+					if resp.Contents[i].URI == original {
+						resp.Contents[i].URI = uri
+					}
+				}
+				return resp, nil
+			}
+			if isResourceNotFoundErr(err) {
+				return nil, ErrUnknownResource
+			}
+			return nil, fmt.Errorf("%s: %w", rc.client.BaseURL(), err)
+		}
+	}
+
 	var remoteFailures []error
 	for _, rc := range remoteClients {
 		// An app-excluding registration federates no MCP Apps surface: a

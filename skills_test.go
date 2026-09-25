@@ -238,3 +238,111 @@ func TestSkillProvidersOnContext(t *testing.T) {
 		t.Fatalf("wire skills/list must include provider skills: %s", out)
 	}
 }
+
+// Skills federation (WithRemoteSkillsFederation): a registered remote's
+// skills are re-published under skill://<ns>/… URIs, the manifest's resource
+// URIs are rewritten to the same root (digests untouched — they cover bytes,
+// not URIs), skills/get resolves the rewritten forms, and file reads route
+// to the owning server with the namespace stripped. Without the option a
+// remote contributes no skills at all.
+func TestSkillsFederationFromRemoteServer(t *testing.T) {
+	remote := NewServer("remote-skills", "1.0")
+	remote.RegisterSkill(NewSkill("dashboard-ops").
+		Description("Operate dashboards").
+		File("SKILL.md", []byte("---\nname: dashboard-ops\ndescription: Operate dashboards\n---\nDo things.")).
+		File("references/regions.md", []byte("eu-1, us-1")))
+	remoteSrv := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer remoteSrv.Close()
+
+	gateway := NewServer("gateway", "1.0")
+	if err := gateway.RegisterRemoteServer(NewClient(remoteSrv.URL, nil, "app"), WithRemoteSkillsFederation()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// The capability is declared even with no statically-registered skills.
+	if _, ok := gateway.extensionCapabilities[SkillsExtensionID]; !ok {
+		t.Fatal("skills federation must declare io.modelcontextprotocol/skills")
+	}
+
+	skills := gateway.ListSkillsWithContext(context.Background())
+	if len(skills) != 1 {
+		t.Fatalf("skills = %+v, want the federated entry", skills)
+	}
+	entry := skills[0]
+	if entry.URI != "skill://app/dashboard-ops/SKILL.md" {
+		t.Fatalf("entry URI = %q, want the namespace inserted as the first path segment", entry.URI)
+	}
+	if entry.Frontmatter["name"] != "dashboard-ops" || entry.Frontmatter["description"] != "Operate dashboards" {
+		t.Fatalf("frontmatter must pass through verbatim: %+v", entry.Frontmatter)
+	}
+	if len(entry.Resources) != 2 {
+		t.Fatalf("resources = %+v", entry.Resources)
+	}
+	var wantDigest string
+	for _, r := range entry.Resources {
+		switch r.URI {
+		case "skill://app/dashboard-ops/SKILL.md", "skill://app/dashboard-ops/references/regions.md":
+		default:
+			t.Fatalf("resource URI not rewritten to the federated root: %q", r.URI)
+		}
+		if strings.HasSuffix(r.URI, "/SKILL.md") {
+			wantDigest = r.Digest
+		}
+	}
+	// The digest matches the remote's own bytes: rewriting never touches content.
+	remoteEntry, err := NewClient(remoteSrv.URL, nil, "").ListSkills(context.Background())
+	if err != nil || len(remoteEntry) != 1 {
+		t.Fatalf("remote listing = (%+v, %v)", remoteEntry, err)
+	}
+	if remoteEntry[0].Resources[0].Digest != wantDigest {
+		t.Fatalf("digest changed across the rewrite: %s vs %s", wantDigest, remoteEntry[0].Resources[0].Digest)
+	}
+
+	// skills/get by entry URI and by root URI.
+	if e, ok := gateway.GetSkillWithContext(context.Background(), "skill://app/dashboard-ops/SKILL.md"); !ok || e.URI != entry.URI {
+		t.Fatalf("get by entry URI = (%+v, %v)", e, ok)
+	}
+	if _, ok := gateway.GetSkillWithContext(context.Background(), "skill://app/dashboard-ops"); !ok {
+		t.Fatal("get by root URI must work for federated skills")
+	}
+	// A URI naming a namespace nothing federates resolves to nothing: no
+	// scanning other remotes' listings for a namespace they don't own.
+	if _, ok := gateway.GetSkillWithContext(context.Background(), "skill://other/dashboard-ops/SKILL.md"); ok {
+		t.Fatal("URI under a non-federated namespace must not resolve")
+	}
+
+	// File reads route to the owner with the namespace stripped: both the
+	// SKILL.md and a supporting file, whose rewritten URI only exists on the
+	// gateway. The response echoes the namespaced URI the client asked for —
+	// the remote's envelope names its own stripped URI, which conformance
+	// checkers read as no content (regression: MCP Inspector's skill view).
+	for uri, want := range map[string]string{
+		"skill://app/dashboard-ops/SKILL.md":              "Do things.",
+		"skill://app/dashboard-ops/references/regions.md": "eu-1, us-1",
+	} {
+		resp, err := gateway.ReadResource(context.Background(), uri)
+		if err != nil || !strings.Contains(resp.Contents[0].Text, want) {
+			t.Fatalf("ReadResource(%s) = (%+v, %v), want %q", uri, resp, err, want)
+		}
+		if resp.Contents[0].URI != uri {
+			t.Fatalf("content URI = %q, want the requested namespaced URI %q", resp.Contents[0].URI, uri)
+		}
+	}
+
+	// Without the option, the same registration federates no skills.
+	plain := NewServer("gateway-plain", "1.0")
+	if err := plain.RegisterRemoteServer(NewClient(remoteSrv.URL, nil, "app2")); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if skills := plain.ListSkillsWithContext(context.Background()); len(skills) != 0 {
+		t.Fatalf("non-federating registration must list no skills: %+v", skills)
+	}
+	if _, ok := plain.extensionCapabilities[SkillsExtensionID]; ok {
+		t.Fatal("capability must not be declared without skills federation")
+	}
+	// And its reads fall through to the generic fan-out: a namespaced URI
+	// naming no federating namespace is tried verbatim (and misses here).
+	if _, err := plain.ReadResource(context.Background(), "skill://app2/dashboard-ops/SKILL.md"); err != ErrUnknownResource {
+		t.Fatalf("unowned namespaced skill read = %v, want ErrUnknownResource", err)
+	}
+}

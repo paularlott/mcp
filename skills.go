@@ -319,7 +319,8 @@ func (s *Server) GetSkill(uri string) (*Skill, bool) {
 func (s *Server) ListSkillsWithContext(ctx context.Context) []Skill {
 	entries := s.ListSkills()
 	providers := GetSkillProviders(ctx)
-	if len(providers) == 0 {
+	federated := s.federatedSkillRemotes()
+	if len(providers) == 0 && len(federated) == 0 {
 		return entries
 	}
 	seen := make(map[string]bool, len(entries))
@@ -332,6 +333,16 @@ func (s *Server) ListSkillsWithContext(ctx context.Context) []Skill {
 			continue
 		}
 		for _, skill := range skills {
+			if !seen[skill.URI] {
+				entries = append(entries, skill)
+				seen[skill.URI] = true
+			}
+		}
+	}
+	// Skills federated from registered remotes (skill://<ns>/… entries),
+	// next after providers in the precedence order.
+	for _, rc := range federated {
+		for _, skill := range rc.federatedSkills(ctx) {
 			if !seen[skill.URI] {
 				entries = append(entries, skill)
 				seen[skill.URI] = true
@@ -358,6 +369,23 @@ func (s *Server) GetSkillWithContext(ctx context.Context, uri string) (*Skill, b
 		for i := range skills {
 			if skills[i].URI == uri || strings.TrimSuffix(skills[i].URI, "/SKILL.md") == uri {
 				return &skills[i], true
+			}
+		}
+	}
+	// Federated skills route by namespace, never by scanning: a rewritten
+	// URI is always skill://<ns>/…, so the first path segment names the one
+	// registration that can answer. A URI without a namespace segment can
+	// never match a federated entry.
+	if ns, _, ok := splitFederatedSkillURI(uri); ok {
+		for _, rc := range s.federatedSkillRemotes() {
+			if rc.namespace != ns {
+				continue
+			}
+			skills := rc.federatedSkills(ctx)
+			for i := range skills {
+				if skills[i].URI == uri || strings.TrimSuffix(skills[i].URI, "/SKILL.md") == uri {
+					return &skills[i], true
+				}
 			}
 		}
 	}
