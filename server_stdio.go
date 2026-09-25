@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -192,6 +193,25 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 
 	srv.Handle("prompts/list", s.wrapStdioModern("prompts/list", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{"prompts": s.ListPrompts(ctx)}, nil
+	}))
+
+	srv.Handle("skills/list", s.wrapStdioModern("skills/list", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]any{"skills": s.ListSkills()}, nil
+	}))
+	srv.Handle("skills/get", s.wrapStdioModern("skills/get", func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p struct {
+			URI string `json:"uri"`
+		}
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil || p.URI == "" {
+				return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "uri parameter is required", nil)
+			}
+		}
+		skill, ok := s.GetSkill(p.URI)
+		if !ok {
+			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, fmt.Sprintf("Skill not found: %s", p.URI), map[string]any{"uri": p.URI})
+		}
+		return map[string]any{"skill": skill}, nil
 	}))
 
 	srv.Handle("prompts/get", s.wrapStdioModern("prompts/get", func(ctx context.Context, params json.RawMessage) (any, error) {

@@ -314,7 +314,7 @@ func (s *Server) handleModernRequest(w http.ResponseWriter, r *http.Request, req
 // context even though this library doesn't vary it today.
 func cacheHintsFor(method string) (ttlMs int, cacheScope string, applicable bool) {
 	switch method {
-	case "tools/list", "prompts/list", "resources/list", "resources/templates/list":
+	case "tools/list", "prompts/list", "resources/list", "resources/templates/list", "skills/list":
 		return 0, "public", true
 	case "resources/read":
 		return 0, "private", true

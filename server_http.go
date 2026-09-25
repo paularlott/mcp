@@ -200,6 +200,8 @@ var dispatchableMethods = map[string]bool{
 	"resources/templates/list": true,
 	"prompts/list":             true,
 	"prompts/get":              true,
+	"skills/list":              true,
+	"skills/get":               true,
 }
 
 func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
@@ -222,6 +224,10 @@ func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCP
 		s.handlePromptsList(w, r, req)
 	case "prompts/get":
 		s.handlePromptsGet(w, r, req)
+	case "skills/list":
+		s.handleSkillsList(w, r, req)
+	case "skills/get":
+		s.handleSkillsGet(w, r, req)
 	default:
 		s.sendMCPError(w, req.ID, ErrorCodeMethodNotFound, "Method not found", map[string]any{
 			"method": req.Method,
@@ -562,4 +568,32 @@ func (s *Server) writeMCPError(w http.ResponseWriter, status int, id any, code i
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleSkillsList answers skills/list with the registered skills.
+func (s *Server) handleSkillsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	s.sendMCPResponse(w, req.ID, map[string]any{"skills": s.ListSkills()})
+}
+
+// handleSkillsGet answers skills/get with one skill's entry by URI: the
+// SKILL.md URI or the skill's root directory URI. Content is read with
+// resources/read like any other resource.
+func (s *Server) handleSkillsGet(w http.ResponseWriter, r *http.Request, req *MCPRequest) {
+	var params struct {
+		URI string `json:"uri"`
+	}
+	if err := s.parseParams(req, &params); err != nil {
+		s.sendProtocolAwareError(w, r, req, req.ID, ErrorCodeInvalidParams, "Invalid params", nil)
+		return
+	}
+	if params.URI == "" {
+		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "uri parameter is required", nil)
+		return
+	}
+	skill, ok := s.GetSkill(params.URI)
+	if !ok {
+		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, fmt.Sprintf("Skill not found: %s", params.URI), map[string]any{"uri": params.URI})
+		return
+	}
+	s.sendMCPResponse(w, req.ID, map[string]any{"skill": skill})
 }

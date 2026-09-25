@@ -116,6 +116,7 @@ type Server struct {
 	shutdownCh             chan struct{}                  // Closed by Shutdown; see modern.go's subscriptions/listen graceful closure
 	shutdownOnce           sync.Once
 	originValidator        OriginValidator // nil = defaultOriginValidator; see origin.go
+	skills                 map[string]*skillRegistration // Registered skills (SEP-2640), keyed by name
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
