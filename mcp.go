@@ -117,6 +117,7 @@ type Server struct {
 	shutdownOnce           sync.Once
 	originValidator        OriginValidator               // nil = defaultOriginValidator; see origin.go
 	skills                 map[string]*skillRegistration // Registered skills (SEP-2640), keyed by name
+	skillsFedCache         *remoteSkillsCache            // Listings federated from registered remotes (SEP-2640), keyed by namespace
 }
 
 func (s *Server) recalcHasDiscoverableToolsLocked() {
@@ -152,6 +153,7 @@ func NewServer(name, version string) *Server {
 		prompts:           make(map[string]*registeredPrompt),
 		notifications:     newNotificationHub(),
 		shutdownCh:        make(chan struct{}),
+		skillsFedCache:    newRemoteSkillsCache(DefaultRemoteToolCacheMaxEntries),
 	}
 }
 

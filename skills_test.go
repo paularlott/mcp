@@ -387,3 +387,121 @@ func TestSkillsFederationFromRemoteServer(t *testing.T) {
 		t.Fatalf("unowned namespaced skill read = %v, want ErrUnknownResource", err)
 	}
 }
+
+// RemoteProvider (ctx-attached, per-session resolution) re-publishes each
+// remote's skills under skill://<ns>/… URIs, caches listings per server, and
+// routes namespaced skill reads to the owner alone with the namespace
+// stripped — echoing the namespaced URI back in the response.
+func TestRemoteProviderSkills(t *testing.T) {
+	remote := NewServer("remote-skills", "1.0")
+	remote.RegisterSkill(NewSkill("dashboard-ops").
+		Description("Operate dashboards").
+		File("SKILL.md", []byte("---\nname: dashboard-ops\ndescription: Operate dashboards\n---\nDo things.")))
+	remoteSrv := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer remoteSrv.Close()
+
+	provider := NewRemoteProvider(func(ctx context.Context) ([]RemoteProviderConfig, error) {
+		return []RemoteProviderConfig{{Name: "app", URL: remoteSrv.URL}}, nil
+	})
+
+	skills, err := provider.ListSkills(context.Background())
+	if err != nil || len(skills) != 1 {
+		t.Fatalf("ListSkills = (%+v, %v)", skills, err)
+	}
+	if skills[0].URI != "skill://app/dashboard-ops/SKILL.md" {
+		t.Fatalf("URI = %q, want the namespace as the first path segment", skills[0].URI)
+	}
+
+	// Owner-routed read with the echoed namespaced URI.
+	resp, err := provider.ReadResource(context.Background(), "skill://app/dashboard-ops/SKILL.md")
+	if err != nil || !strings.Contains(resp.Contents[0].Text, "Do things.") {
+		t.Fatalf("namespaced read = (%+v, %v)", resp, err)
+	}
+	if resp.Contents[0].URI != "skill://app/dashboard-ops/SKILL.md" {
+		t.Fatalf("content URI = %q, want the requested namespaced URI", resp.Contents[0].URI)
+	}
+
+	// A URI under a namespace the provider does not serve is a miss for the
+	// skills routing (it falls through to the generic fan-out, which has no
+	// server holding it verbatim either).
+	if _, err := provider.ReadResource(context.Background(), "skill://other/x/SKILL.md"); err != ErrUnknownResource {
+		t.Fatalf("unowned namespace read = %v, want ErrUnknownResource", err)
+	}
+
+	// The listing is cached: a second call serves the same entries without
+	// a per-server fetch (the fake server would still answer, so assert via
+	// the provider's cache length).
+	if skills2, _ := provider.ListSkills(context.Background()); len(skills2) != 1 || provider.skillsCache.len() != 1 {
+		t.Fatalf("second listing = %+v (cache entries %d), want the cached entry", skills2, provider.skillsCache.len())
+	}
+}
+
+// Unregistering a skills-federating remote drops its cached listing: the
+// Server-level listing cache outlives the registration, so it is invalidated
+// explicitly (a re-registered server under the same namespace never serves
+// the previous incarnation's skills).
+func TestSkillsFederationCacheInvalidatedOnUnregister(t *testing.T) {
+	remote := NewServer("remote-skills", "1.0")
+	remote.RegisterSkill(NewSkill("dashboard-ops").
+		Description("Operate dashboards").
+		File("SKILL.md", []byte("---\nname: dashboard-ops\ndescription: Operate dashboards\n---\nDo things.")))
+	remoteSrv := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer remoteSrv.Close()
+
+	gateway := NewServer("gateway", "1.0")
+	client := NewClient(remoteSrv.URL, nil, "app")
+	if err := gateway.RegisterRemoteServer(client, WithRemoteSkillsFederation()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if skills := gateway.ListSkillsWithContext(context.Background()); len(skills) != 1 {
+		t.Fatalf("listing = %+v, want the federated skill", skills)
+	}
+	if gateway.skillsFedCache.len() != 1 {
+		t.Fatalf("listing cache entries = %d, want 1", gateway.skillsFedCache.len())
+	}
+
+	gateway.UnregisterRemoteServer(client)
+	if skills := gateway.ListSkillsWithContext(context.Background()); len(skills) != 0 {
+		t.Fatalf("listing after unregister = %+v, want empty", skills)
+	}
+	if gateway.skillsFedCache.len() != 0 {
+		t.Fatalf("listing cache entries after unregister = %d, want 0", gateway.skillsFedCache.len())
+	}
+}
+
+// Production-hardening regressions: a skills/get entry is a copy (mutating
+// it cannot change the cached listing the next request is served), and
+// federation rewrites only skill:// URIs — the spec permits other schemes,
+// and prefixing one would build a garbage URI nothing can route.
+func TestSkillsFederationHardening(t *testing.T) {
+	// Copy-on-get: mutate a returned federated entry, fetch it again, the
+	// cached listing must be unchanged.
+	remote := NewServer("remote-skills", "1.0")
+	remote.RegisterSkill(NewSkill("dashboard-ops").
+		Description("Operate dashboards").
+		File("SKILL.md", []byte("---\nname: dashboard-ops\ndescription: Operate dashboards\n---\nDo things.")))
+	remoteSrv := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer remoteSrv.Close()
+
+	gateway := NewServer("gateway", "1.0")
+	if err := gateway.RegisterRemoteServer(NewClient(remoteSrv.URL, nil, "app"), WithRemoteSkillsFederation()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	entry, ok := gateway.GetSkillWithContext(context.Background(), "skill://app/dashboard-ops/SKILL.md")
+	if !ok {
+		t.Fatal("entry must resolve")
+	}
+	entry.Frontmatter["description"] = "TAMPERED"
+	again, _ := gateway.GetSkillWithContext(context.Background(), "skill://app/dashboard-ops/SKILL.md")
+	if again.Frontmatter["description"] != "Operate dashboards" {
+		t.Fatalf("cached listing was tampered through the returned entry: %+v", again.Frontmatter)
+	}
+
+	// Alternate-scheme URIs pass through verbatim.
+	if got := federateSkillURI("ns", Skill{URI: "https://example.com/skill.md", Resources: []SkillResource{{URI: "https://example.com/skill.md"}}}); got.URI != "https://example.com/skill.md" || got.Resources[0].URI != "https://example.com/skill.md" {
+		t.Fatalf("alternate scheme mangled: %+v", got)
+	}
+	if got := federateSkillURI("ns", Skill{URI: "skill://a/SKILL.md", Resources: []SkillResource{{URI: "skill://a/SKILL.md"}}}); got.URI != "skill://ns/a/SKILL.md" || got.Resources[0].URI != "skill://ns/a/SKILL.md" {
+		t.Fatalf("skill:// rewrite changed: %+v", got)
+	}
+}

@@ -129,12 +129,15 @@ type RemoteProviderResolver func(ctx context.Context) ([]RemoteProviderConfig, e
 type RemoteProvider struct {
 	resolve       RemoteProviderResolver
 	cache         *remoteToolCache
+	skillsCache   *remoteSkillsCache
 	onServerError func(cfg RemoteProviderConfig, err error)
 }
 
-// Ensure RemoteProvider implements ToolProvider and ResourceProvider.
+// Ensure RemoteProvider implements ToolProvider, ResourceProvider and
+// SkillProvider.
 var _ ToolProvider = (*RemoteProvider)(nil)
 var _ ResourceProvider = (*RemoteProvider)(nil)
+var _ SkillProvider = (*RemoteProvider)(nil)
 
 // RemoteProviderOption configures a RemoteProvider.
 type RemoteProviderOption func(*remoteProviderOptions)
@@ -181,6 +184,7 @@ func NewRemoteProvider(resolve RemoteProviderResolver, opts ...RemoteProviderOpt
 	return &RemoteProvider{
 		resolve:       resolve,
 		cache:         newRemoteToolCache(o.maxCacheEntries),
+		skillsCache:   newRemoteSkillsCache(o.maxCacheEntries),
 		onServerError: o.onServerError,
 	}
 }
@@ -481,18 +485,105 @@ func (p *RemoteProvider) GetResources(ctx context.Context) (*ProvidedResources, 
 	return out, nil
 }
 
+// ListSkills implements SkillProvider: every resolved remote server's
+// skills, re-published under skill://<namespace>/… URIs — the spec-sanctioned
+// rewrite, identical in shape to a server's registered skills federation (see
+// [Server.RegisterRemoteServer] with [WithRemoteSkillsFederation]): manifests
+// rewritten to the same root, digests untouched, and reads routed back to the
+// owning server with the namespace stripped (see ReadResource). Listing and
+// caching run through the same shared machinery as the registered path.
+//
+// Listings are cached per server under the same cache-key and bound rules as
+// tool lists (CacheTTL zero uses [DefaultRemoteSkillsCacheTTL]; negative
+// disables caching), so prompts and listings cost at most one hit per server
+// per TTL. A server that fails to list is reported and skipped, never fatal
+// to the rest.
+func (p *RemoteProvider) ListSkills(ctx context.Context) ([]Skill, error) {
+	servers, err := p.resolveServers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(servers) == 0 {
+		return nil, nil
+	}
+
+	targets := make([]federatedSkillsTarget, 0, len(servers))
+	for _, cfg := range servers {
+		if cfg.Name == "" {
+			continue // skills URIs need a namespace to be published under
+		}
+		cfg := cfg
+		targets = append(targets, federatedSkillsTarget{
+			namespace: cfg.Name,
+			cacheKey:  cfg.cacheKey(),
+			ttl:       cfg.CacheTTL,
+			clientFn: func(ctx context.Context) (*Client, error) {
+				auth, err := cfg.resolveAuth(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("resolve auth for %q: %w", cfg.Name, err)
+				}
+				return cfg.newClient(auth), nil
+			},
+			onError: func(err error) {
+				p.reportError(cfg, fmt.Errorf("list skills for %q: %w", cfg.Name, err))
+			},
+		})
+	}
+	return federatedSkillsParallel(ctx, p.skillsCache, targets), nil
+}
+
 // ReadResource fans a resources/read out to all of the current request's
 // remote servers, in resolver order, and returns the first hit — mirroring
 // Server.ReadResource's own remote fan-out (see resources.go), since a
 // federated server's resource URIs are opaque and not namespaced by server
-// the way tool names are. Returns ErrUnknownResource if no server has the
-// resource; when one or more servers failed outright (rather than answering
-// not-found), the returned error still wraps ErrUnknownResource but names
-// each failing server, per the ResourceProvider miss contract.
+// the way tool names are. One exception: a namespaced skill URI
+// (skill://<ns>/…) published by [RemoteProvider.ListSkills] routes to the one
+// server named by the namespace, with the segment stripped back to the
+// remote's own URI, and the response echoes the namespaced URI the caller
+// asked for. Returns ErrUnknownResource if no server has the resource; when
+// one or more servers failed outright (rather than answering not-found), the
+// returned error still wraps ErrUnknownResource but names each failing
+// server, per the ResourceProvider miss contract.
 func (p *RemoteProvider) ReadResource(ctx context.Context, uri string) (*ResourceResponse, error) {
 	servers, err := p.resolveServers(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	if ns, original, ok := splitFederatedSkillURI(uri); ok {
+		for _, cfg := range servers {
+			if cfg.Name != ns {
+				continue
+			}
+			auth, err := cfg.resolveAuth(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("resolve auth for %q: %w", cfg.Name, err)
+			}
+			client := cfg.newClient(auth)
+
+			attemptCtx, cancel := context.WithTimeout(ctx, remoteResourceFanoutTimeout)
+			resp, err := client.ReadResource(attemptCtx, original)
+			cancel()
+			if err == nil {
+				// Echo the namespaced URI the caller asked for: the remote's
+				// envelope names its own (stripped) URI, which a client that
+				// checks the content URI against its request reads as no
+				// content. Only the URI field is rewritten.
+				for i := range resp.Contents {
+					if resp.Contents[i].URI == original {
+						resp.Contents[i].URI = uri
+					}
+				}
+				return resp, nil
+			}
+			if isResourceNotFoundErr(err) {
+				return nil, ErrUnknownResource
+			}
+			return nil, fmt.Errorf("%s: %w", cfg.URL, err)
+		}
+		// A URI naming none of this provider's servers falls through to the
+		// generic fan-out below — a chained gateway downstream may serve it
+		// verbatim.
 	}
 
 	var failures []error

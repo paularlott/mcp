@@ -19,13 +19,6 @@ type registeredClient struct {
 	remoteSearch   bool // Whether to delegate tool_search to this remote
 	excludeApps    bool // Skip tools linked to a ui:// resource (MCP Apps views)
 	federateSkills bool // Serve the remote's skills under skill://<ns>/… on this server
-
-	// Skills-federation cache (see federatedSkills). Guarded by its own
-	// mutex: the fetch happens outside the server lock, and a cold or
-	// expired cache must not serialize concurrent listings.
-	skillsMu          sync.Mutex
-	skillsCache       []Skill
-	skillsCacheExpiry time.Time
 }
 
 // RemoteServerOption configures options when registering a remote server.
@@ -101,6 +94,12 @@ func (s *Server) UnregisterRemoteServer(client *Client) {
 		return
 	}
 	delete(s.remoteClients, client.baseURL)
+
+	// Drop the federated skills listing keyed to this registration's
+	// namespace: the Server-level cache outlives the registration.
+	if regClient.federateSkills {
+		s.skillsFedCache.invalidate("registered/" + regClient.namespace)
+	}
 
 	// Remove tools belonging to this client from toolToServer and nativeToolCache
 	toRemove := make(map[string]bool)
@@ -572,66 +571,145 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 // Skills federation (SEP-2640)
 // ---------------------------------------------------------------------------
 
-const (
-	// remoteSkillsCacheTTL bounds how stale a federated skills/list may be.
-	remoteSkillsCacheTTL = time.Minute
-	// remoteSkillsFetchTimeout is each remote's budget for one skills/list.
-	remoteSkillsFetchTimeout = 5 * time.Second
-)
+// DefaultRemoteSkillsCacheTTL is how long a federated skills listing is
+// cached when a target's TTL is zero. Negative disables caching, matching
+// the tool-list rules.
+const DefaultRemoteSkillsCacheTTL = time.Minute
 
-// federatedSkills returns the remote's skills rewritten into this server's
-// namespace: the namespace becomes the FIRST path segment of every URI
-// (skill://<ns>/<skill-path>/SKILL.md), never a replacement of the skill's
-// own name segment, and the manifest's resource URIs are rewritten to the
-// same root so the listing stays internally consistent. Frontmatter and
-// digests pass through verbatim: digests are computed over bytes, not URIs.
-//
-// Listings are cached for the TTL — empty results included, so a dead
-// remote costs one attempt per TTL rather than one per request — and a
-// fetch failure keeps serving the previous listing instead of failing the
-// caller's whole skills/list: one unreachable federated server must not
-// blank the rest.
-func (rc *registeredClient) federatedSkills(ctx context.Context) []Skill {
-	rc.skillsMu.Lock()
-	if time.Now().Before(rc.skillsCacheExpiry) {
-		cached := rc.skillsCache
-		rc.skillsMu.Unlock()
-		return cached
-	}
-	rc.skillsMu.Unlock()
+// remoteSkillsFetchTimeout is each remote's budget for one skills/list.
+const remoteSkillsFetchTimeout = 5 * time.Second
 
+// federatedSkillsFor fetches one remote server's skills/list and rewrites
+// every entry into namespace ns: the namespace becomes the FIRST path
+// segment of every URI (skill://<ns>/<skill-path>/SKILL.md), never a
+// replacement of the skill's own name segment, and the manifest's resource
+// URIs are rewritten to the same root so the listing stays internally
+// consistent. Frontmatter and digests pass through verbatim: digests are
+// computed over bytes, not URIs. Shared by the registration-based skills
+// federation and RemoteProvider.ListSkills.
+func federatedSkillsFor(ctx context.Context, client *Client, ns string) ([]Skill, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, remoteSkillsFetchTimeout)
 	defer cancel()
-	skills, err := rc.client.ListSkills(fetchCtx)
-
-	rc.skillsMu.Lock()
-	defer rc.skillsMu.Unlock()
-	rc.skillsCacheExpiry = time.Now().Add(remoteSkillsCacheTTL)
+	skills, err := client.ListSkills(fetchCtx)
 	if err != nil {
-		return rc.skillsCache
+		return nil, err
 	}
 	rewritten := make([]Skill, len(skills))
 	for i, skill := range skills {
-		rewritten[i] = federateSkillURI(rc.namespace, skill)
+		rewritten[i] = federateSkillURI(ns, skill)
 	}
-	rc.skillsCache = rewritten
-	return rewritten
+	return rewritten, nil
 }
 
 // federateSkillURI rewrites one skill entry (and its manifest resource URIs)
 // into namespace ns: skill://a/b/SKILL.md becomes skill://ns/a/b/SKILL.md.
+// URIs under other schemes (the spec permits them) pass through verbatim —
+// prefixing would build a garbage URI nothing can route — and their reads
+// resolve through the generic fan-out instead of the namespaced route.
 func federateSkillURI(ns string, skill Skill) Skill {
 	prefix := "skill://" + ns + "/"
-	skill.URI = prefix + strings.TrimPrefix(skill.URI, "skill://")
+	if strings.HasPrefix(skill.URI, "skill://") {
+		skill.URI = prefix + strings.TrimPrefix(skill.URI, "skill://")
+	}
 	if len(skill.Resources) > 0 {
 		res := make([]SkillResource, len(skill.Resources))
 		for i, r := range skill.Resources {
-			r.URI = prefix + strings.TrimPrefix(r.URI, "skill://")
+			if strings.HasPrefix(r.URI, "skill://") {
+				r.URI = prefix + strings.TrimPrefix(r.URI, "skill://")
+			}
 			res[i] = r
 		}
 		skill.Resources = res
 	}
 	return skill
+}
+
+// federatedSkillsTarget is one remote whose skills are federated under its
+// namespace, with its own cache identity. clientFn builds (or returns) the
+// remote's client for a fetch; onError, when set, receives fetch failures so
+// callers can report them (a failed target is skipped, never fatal).
+type federatedSkillsTarget struct {
+	namespace string
+	cacheKey  string
+	ttl       time.Duration // zero uses DefaultRemoteSkillsCacheTTL; negative disables caching
+	clientFn  func(context.Context) (*Client, error)
+	onError   func(error)
+}
+
+// listing returns the target's namespaced skills, get-or-fetch through
+// cache: fetches cost at most one skills/list per cache window per target.
+func (t federatedSkillsTarget) listing(ctx context.Context, cache *remoteSkillsCache) []Skill {
+	if cached, ok := cache.get(t.cacheKey, time.Now()); ok {
+		return cached
+	}
+	client, err := t.clientFn(ctx)
+	if err != nil {
+		if t.onError != nil {
+			t.onError(err)
+		}
+		return nil
+	}
+	skills, err := federatedSkillsFor(ctx, client, t.namespace)
+	if err != nil {
+		if t.onError != nil {
+			t.onError(err)
+		}
+		return nil
+	}
+	ttl := t.ttl
+	if ttl == 0 {
+		ttl = DefaultRemoteSkillsCacheTTL
+	}
+	if ttl > 0 {
+		cache.put(t.cacheKey, skills, ttl, time.Now())
+	}
+	return skills
+}
+
+// federatedSkillsParallel fetches every target's listing in parallel and
+// returns them merged, URI-sorted. A failing target contributes nothing.
+func federatedSkillsParallel(ctx context.Context, cache *remoteSkillsCache, targets []federatedSkillsTarget) []Skill {
+	listings := make([][]Skill, len(targets))
+	var wg sync.WaitGroup
+	for i := range targets {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			listings[i] = targets[i].listing(ctx, cache)
+		}(i)
+	}
+	wg.Wait()
+
+	var total int
+	for _, l := range listings {
+		total += len(l)
+	}
+	out := make([]Skill, 0, total)
+	for _, l := range listings {
+		out = append(out, l...)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].URI < out[j].URI })
+	return out
+}
+
+// federatedSkillsRemotes snapshots the registrations with skills federation
+// enabled, as fetch targets against the server's shared listing cache.
+func (s *Server) federatedSkillsRemotes() []federatedSkillsTarget {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	targets := make([]federatedSkillsTarget, 0, len(s.remoteClients))
+	for _, rc := range s.remoteClients {
+		if !rc.federateSkills {
+			continue
+		}
+		rc := rc
+		targets = append(targets, federatedSkillsTarget{
+			namespace: rc.namespace,
+			cacheKey:  "registered/" + rc.namespace,
+			clientFn:  func(context.Context) (*Client, error) { return rc.client, nil },
+		})
+	}
+	return targets
 }
 
 // splitFederatedSkillURI splits a namespaced skill URI skill://<ns>/<rest>
@@ -648,18 +726,4 @@ func splitFederatedSkillURI(uri string) (ns, original string, ok bool) {
 		return "", "", false
 	}
 	return ns, "skill://" + tail, true
-}
-
-// federatedSkillRemotes snapshots the registrations with skills federation
-// enabled.
-func (s *Server) federatedSkillRemotes() []*registeredClient {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	remotes := make([]*registeredClient, 0, len(s.remoteClients))
-	for _, rc := range s.remoteClients {
-		if rc.federateSkills {
-			remotes = append(remotes, rc)
-		}
-	}
-	return remotes
 }

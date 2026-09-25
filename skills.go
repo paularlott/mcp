@@ -341,10 +341,23 @@ func (s *Server) GetSkill(uri string) (*Skill, bool) {
 // skills/list. Static registrations win URI collisions; provider errors are
 // skipped, matching the resources-from-providers convention (one failing
 // provider must not blank the whole listing).
+// copyFrontmatterMap shallow-copies a frontmatter map (its values are
+// scalars or opaque author data, never nested maps we mutate).
+func copyFrontmatterMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func (s *Server) ListSkillsWithContext(ctx context.Context) []Skill {
 	entries := s.ListSkills()
 	providers := GetSkillProviders(ctx)
-	federated := s.federatedSkillRemotes()
+	federated := s.federatedSkillsRemotes()
 	if len(providers) == 0 && len(federated) == 0 {
 		return entries
 	}
@@ -366,12 +379,10 @@ func (s *Server) ListSkillsWithContext(ctx context.Context) []Skill {
 	}
 	// Skills federated from registered remotes (skill://<ns>/… entries),
 	// next after providers in the precedence order.
-	for _, rc := range federated {
-		for _, skill := range rc.federatedSkills(ctx) {
-			if !seen[skill.URI] {
-				entries = append(entries, skill)
-				seen[skill.URI] = true
-			}
+	for _, skill := range federatedSkillsParallel(ctx, s.skillsFedCache, federated) {
+		if !seen[skill.URI] {
+			entries = append(entries, skill)
+			seen[skill.URI] = true
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].URI < entries[j].URI })
@@ -393,7 +404,12 @@ func (s *Server) GetSkillWithContext(ctx context.Context, uri string) (*Skill, b
 		}
 		for i := range skills {
 			if skills[i].URI == uri || strings.TrimSuffix(skills[i].URI, "/SKILL.md") == uri {
-				return &skills[i], true
+				// A copy, frontmatter map included: the listing is shared
+				// cache state, and a caller mutating the returned entry
+				// must not change what the next request is served.
+				entry := skills[i]
+				entry.Frontmatter = copyFrontmatterMap(entry.Frontmatter)
+				return &entry, true
 			}
 		}
 	}
@@ -402,14 +418,20 @@ func (s *Server) GetSkillWithContext(ctx context.Context, uri string) (*Skill, b
 	// registration that can answer. A URI without a namespace segment can
 	// never match a federated entry.
 	if ns, _, ok := splitFederatedSkillURI(uri); ok {
-		for _, rc := range s.federatedSkillRemotes() {
-			if rc.namespace != ns {
+		for _, target := range s.federatedSkillsRemotes() {
+			if target.namespace != ns {
 				continue
 			}
-			skills := rc.federatedSkills(ctx)
+			skills := target.listing(ctx, s.skillsFedCache)
 			for i := range skills {
 				if skills[i].URI == uri || strings.TrimSuffix(skills[i].URI, "/SKILL.md") == uri {
-					return &skills[i], true
+					// A copy, frontmatter map included: the listing is
+					// shared cache state, and a caller mutating the
+					// returned entry must not change what the next request
+					// is served.
+					entry := skills[i]
+					entry.Frontmatter = copyFrontmatterMap(entry.Frontmatter)
+					return &entry, true
 				}
 			}
 		}
