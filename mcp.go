@@ -509,9 +509,8 @@ func (s *Server) registerDiscoverableToolLocked(tool *ToolBuilder, handler ToolH
 	s.internalRegistry.RegisterTool(tool, handler, allKeywords...)
 }
 
-// RegisterTools registers multiple tools with the server in a single batch.
-// This is more efficient than calling RegisterTool multiple times as it only
-// sorts the cache once at the end.
+// RegisterTools registers multiple tools with the server in a single batch,
+// notifying subscribers once at the end.
 // Each tool's visibility is determined by whether Discoverable() was called on its ToolBuilder.
 func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 	if len(tools) == 0 {
@@ -519,45 +518,18 @@ func (s *Server) RegisterTools(tools ...*ToolRegistration) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	// Delegate to the single-tool paths so both APIs behave identically —
+	// a re-registered tool must leave the search registry (discoverable →
+	// native) and merge extra keywords the same way in either API.
 	for _, tr := range tools {
 		if tr.Tool.IsDiscoverable() {
-			// Register as discoverable tool
-			s.hasDiscoverableTools = true
-
-			regTool := &registeredTool{
-				Name:         tr.Tool.name,
-				Description:  tr.Tool.Description(),
-				Schema:       tr.Tool.buildSchema(),
-				OutputSchema: tr.Tool.buildOutputSchema(),
-				Meta:         tr.Tool.meta,
-				Icons:        tr.Tool.icons,
-				Handler:      tr.Handler,
-				Visibility:   ToolVisibilityDiscoverable,
-			}
-			s.tools[tr.Tool.name] = regTool
-
-			// Add to internal registry for search (use keywords from ToolBuilder)
-			s.internalRegistry.RegisterTool(tr.Tool, tr.Handler, tr.Tool.Keywords()...)
+			s.registerDiscoverableToolLocked(tr.Tool, tr.Handler)
 		} else {
-			// Register as native tool
-			regTool := &registeredTool{
-				Name:         tr.Tool.name,
-				Description:  tr.Tool.Description(),
-				Schema:       tr.Tool.buildSchema(),
-				OutputSchema: tr.Tool.buildOutputSchema(),
-				Meta:         tr.Tool.meta,
-				Icons:        tr.Tool.icons,
-				Handler:      tr.Handler,
-				Visibility:   ToolVisibilityNative,
-			}
-			s.tools[tr.Tool.name] = regTool
+			s.registerNativeToolLocked(tr.Tool, tr.Handler)
 		}
 	}
+	s.mu.Unlock()
 
-	// Rebuild native cache from native tools only
-	s.rebuildNativeToolCacheLocked()
 	s.NotifyToolsChanged()
 }
 
@@ -775,6 +747,57 @@ type RemoteServerEntry struct {
 	ExcludeApps bool
 }
 
+// remoteMergeState accumulates one merge pass over remote tool lists.
+// Registration merges one server into the live state under s.mu; RefreshTools
+// rebuilds state for every server and swaps it in. Both funnel each remote's
+// tools through mergeRemoteTools, so how a remote tool merges — namespace
+// handling, app exclusion, the visibility split — is defined exactly once.
+type remoteMergeState struct {
+	toolToServer  map[string]*registeredClient
+	excludedTools map[string]*registeredClient
+	nativeIndex   map[string]MCPTool
+	discoverable  []MCPTool
+}
+
+func newRemoteMergeState() *remoteMergeState {
+	return &remoteMergeState{
+		toolToServer:  make(map[string]*registeredClient),
+		excludedTools: make(map[string]*registeredClient),
+		nativeIndex:   make(map[string]MCPTool),
+	}
+}
+
+// mergeRemoteTools folds one remote server's fetched, already-namespaced
+// tool list into state. Not thread-safe by itself; callers hold whatever
+// lock their path requires.
+func (s *Server) mergeRemoteTools(regClient *registeredClient, tools []MCPTool, state *remoteMergeState) {
+	for _, tool := range tools {
+		toolName := tool.Name
+		if regClient.excludeApps && ToolIsApp(tool) {
+			// Record the skip so the namespace-prefix fallback in CallTool
+			// doesn't dispatch to it either.
+			state.excludedTools[toolName] = regClient
+			continue
+		}
+		state.toolToServer[toolName] = regClient
+		tool.Name = toolName
+		switch regClient.visibility {
+		case ToolVisibilityNative:
+			state.nativeIndex[toolName] = tool
+		case ToolVisibilityDiscoverable:
+			state.discoverable = append(state.discoverable, tool)
+		}
+	}
+}
+
+// remoteToolHandler adapts a namespaced remote tool name to a search-registry
+// handler that dispatches through the server's own CallTool.
+func (s *Server) remoteToolHandler(name string) ToolHandler {
+	return func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return s.CallTool(ctx, name, req.args)
+	}
+}
+
 // registerRemoteServerWithVisibility is the internal implementation for registering remote servers.
 func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility, remoteSearch, excludeApps bool) error {
 	s.mu.Lock()
@@ -819,42 +842,33 @@ func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility T
 		return nil
 	}
 
-	// Add tools based on visibility
-	for _, tool := range tools {
-		if excludeApps && ToolIsApp(tool) {
-			// Record the skip so the namespace-prefix fallback in CallTool
-			// doesn't dispatch to it either.
-			s.excludedTools[tool.Name] = regClient
-			continue
+	// Fold this server's tools through the shared merge, then apply the
+	// result to the live state (registration runs under s.mu).
+	state := newRemoteMergeState()
+	s.mergeRemoteTools(regClient, tools, state)
+
+	for toolName, rc := range state.toolToServer {
+		s.toolToServer[toolName] = rc
+	}
+	for toolName, rc := range state.excludedTools {
+		s.excludedTools[toolName] = rc
+	}
+	for _, tool := range state.nativeIndex {
+		// Replace-or-insert into the sorted native cache for tools/list
+		idx := sort.Search(len(s.nativeToolCache), func(i int) bool {
+			return s.nativeToolCache[i].Name >= tool.Name
+		})
+		if idx < len(s.nativeToolCache) && s.nativeToolCache[idx].Name == tool.Name {
+			s.nativeToolCache[idx] = tool
+		} else {
+			s.nativeToolCache = append(s.nativeToolCache, MCPTool{})
+			copy(s.nativeToolCache[idx+1:], s.nativeToolCache[idx:])
+			s.nativeToolCache[idx] = tool
 		}
-		toolName := tool.Name
-
-		// Add to lookup for execution
-		s.toolToServer[toolName] = regClient
-
-		toolWithNamespace := tool
-		toolWithNamespace.Name = toolName
-
-		switch visibility {
-		case ToolVisibilityNative:
-			// Add to nativeToolCache for tools/list
-			filtered := make([]MCPTool, 0, len(s.nativeToolCache))
-			for _, t := range s.nativeToolCache {
-				if t.Name != toolName {
-					filtered = append(filtered, t)
-				}
-			}
-			filtered = append(filtered, toolWithNamespace)
-			s.nativeToolCache = filtered
-
-		case ToolVisibilityDiscoverable:
-			// Add to internal registry for tool_search
-			localToolName := toolName // capture for closure
-			handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-				return s.CallTool(ctx, localToolName, req.args)
-			}
-			s.internalRegistry.RegisterMCPTool(&toolWithNamespace, handler)
-		}
+	}
+	for i := range state.discoverable {
+		tool := state.discoverable[i]
+		s.internalRegistry.RegisterMCPTool(&tool, s.remoteToolHandler(tool.Name))
 	}
 
 	// Sort native cache to maintain consistent ordering
@@ -935,29 +949,17 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 			continue // Skip failed remote servers
 		}
 
-		for _, tool := range tools {
-			// Tools from client.ListTools() already have the prefix applied
-			toolName := tool.Name
-
-			if regClient.excludeApps && ToolIsApp(tool) {
-				newExcludedTools[toolName] = regClient
-				continue
-			}
-
-			// Add to lookup for execution
-			newToolToServer[toolName] = regClient
-
-			switch regClient.visibility {
-			case ToolVisibilityNative:
-				// Add native remote tools to the native cache
-				tool.Name = toolName
-				newNativeToolIndex[toolName] = tool
-			case ToolVisibilityDiscoverable:
-				// Collect discoverable remote tools to refresh in the internal registry
-				tool.Name = toolName
-				freshDiscoverableRemoteTools = append(freshDiscoverableRemoteTools, tool)
-			}
+		// Tools from client.ListTools() already have the prefix applied.
+		// The maps are shared accumulators; discoverable is collected
+		// per server and appended (the merge appends, so a shared slice
+		// value would silently drop entries).
+		perServer := remoteMergeState{
+			toolToServer:  newToolToServer,
+			excludedTools: newExcludedTools,
+			nativeIndex:   newNativeToolIndex,
 		}
+		s.mergeRemoteTools(regClient, tools, &perServer)
+		freshDiscoverableRemoteTools = append(freshDiscoverableRemoteTools, perServer.discoverable...)
 	}
 
 	// Move from map to slice and sort for consistent ordering
@@ -983,11 +985,7 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 	}
 	for _, tool := range freshDiscoverableRemoteTools {
 		toolCopy := tool
-		localToolName := toolCopy.Name
-		handler := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-			return s.CallTool(ctx, localToolName, req.args)
-		}
-		s.internalRegistry.RegisterMCPTool(&toolCopy, handler)
+		s.internalRegistry.RegisterMCPTool(&toolCopy, s.remoteToolHandler(toolCopy.Name))
 	}
 
 	return nil
@@ -1117,12 +1115,8 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 
 	// For non-initialize requests, validate MCP-Protocol-Version header
 	if req.Method != "initialize" {
-		protocolVersion := r.Header.Get(headerProtocolVersion)
-
 		// Per spec: assume 2025-03-26 if missing for backwards compatibility
-		if protocolVersion == "" {
-			protocolVersion = "2025-03-26"
-		}
+		protocolVersion, versionOK := negotiateProtocolVersion(r.Header.Get(headerProtocolVersion), "2025-03-26")
 
 		// Validate protocol version. Still a 400 (this rejects a header, not
 		// a JSON-RPC method call, so it stays outside the "Legacy JSON-RPC
@@ -1134,7 +1128,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		// left a client with no way to learn a version it could retry with.
 		// writeModernProtocolError just means "JSON-RPC error at this HTTP
 		// status" despite the name — nothing about it is Modern-specific.
-		if !isSupportedProtocolVersion(protocolVersion) {
+		if !versionOK {
 			s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeInvalidParams,
 				fmt.Sprintf("Unsupported MCP-Protocol-Version: %s", protocolVersion), map[string]any{
 					"requested": protocolVersion,
@@ -1144,31 +1138,12 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Validate session ID if session management is enabled
-		sm := s.getSessionManager()
-		if sm != nil {
-			sessionID := r.Header.Get(headerSessionID)
-			if sessionID == "" {
-				http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
-				return
-			}
-
-			valid, err := sm.ValidateSession(r.Context(), sessionID)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("Session validation error: %v", err), http.StatusInternalServerError)
-				return
-			}
-
-			if !valid {
-				http.Error(w, "Session not found", http.StatusNotFound)
-				return
-			}
-
-			// Get show-all flag from session and apply to context
-			showAll, _ := sm.GetShowAll(r.Context(), sessionID)
-			if showAll {
-				r = r.WithContext(WithShowAllTools(r.Context()))
-			}
-		} else {
+		if showAll, ok, status, message := s.checkSession(r.Context(), r); !ok {
+			http.Error(w, message, status)
+			return
+		} else if showAll {
+			r = r.WithContext(WithShowAllTools(r.Context()))
+		} else if sm := s.getSessionManager(); sm == nil {
 			// No session management - check header/query on each request
 			if GetShowAllFromRequest(r) {
 				r = r.WithContext(WithShowAllTools(r.Context()))
@@ -1235,6 +1210,17 @@ func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCP
 	}
 }
 
+// negotiateProtocolVersion resolves the protocol version for one request:
+// requested when non-empty, fallback when empty. ok is false when the
+// requested version is not supported; callers render their own era- and
+// transport-appropriate error.
+func negotiateProtocolVersion(requested, fallback string) (version string, ok bool) {
+	if requested == "" {
+		return fallback, true
+	}
+	return requested, isSupportedProtocolVersion(requested)
+}
+
 // isSupportedProtocolVersion checks if the given version string matches one of the
 // supported MCP protocol versions. Protocol versions follow ISO date format (YYYY-MM-DD).
 // Leading/trailing whitespace is trimmed before comparison.
@@ -1277,16 +1263,13 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 	}
 
 	// Determine which protocol version to use
-	protocolVersion := MCPProtocolVersionLatest
-	if params.ProtocolVersion != "" {
-		if !isSupportedProtocolVersion(params.ProtocolVersion) {
-			s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
-				"requested": params.ProtocolVersion,
-				"supported": supportedProtocolVersions,
-			})
-			return
-		}
-		protocolVersion = params.ProtocolVersion
+	protocolVersion, ok := negotiateProtocolVersion(params.ProtocolVersion, MCPProtocolVersionLatest)
+	if !ok {
+		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
+			"requested": params.ProtocolVersion,
+			"supported": supportedProtocolVersions,
+		})
+		return
 	}
 
 	// Check for show-all flag from header or query param
@@ -1645,7 +1628,40 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 	})
 }
 
+// checkSession validates the MCP-Session-Id header when session management
+// is enabled. ok=false means the request is rejected: status and message
+// carry the HTTP error for the caller to render. showAll reports the
+// session's stored show-all flag (the SSE stream deliberately ignores it:
+// its notifications are broadcast, not session-scoped). With no session
+// manager configured the request is anonymous and always passes.
+func (s *Server) checkSession(ctx context.Context, r *http.Request) (showAll, ok bool, status int, message string) {
+	sm := s.getSessionManager()
+	if sm == nil {
+		return false, true, 0, ""
+	}
+	sessionID := r.Header.Get(headerSessionID)
+	if sessionID == "" {
+		return false, false, http.StatusBadRequest, "MCP-Session-Id header required"
+	}
+	valid, err := sm.ValidateSession(ctx, sessionID)
+	if err != nil {
+		return false, false, http.StatusInternalServerError, fmt.Sprintf("Session validation error: %v", err)
+	}
+	if !valid {
+		return false, false, http.StatusNotFound, "Session not found"
+	}
+	showAll, _ = sm.GetShowAll(ctx, sessionID)
+	return showAll, true, 0, ""
+}
+
 func (s *Server) sendMCPResponse(w http.ResponseWriter, id any, result any) {
+	s.writeMCPResponse(w, http.StatusOK, id, result)
+}
+
+// writeMCPResponse writes a JSON-RPC result at the given HTTP status. Legacy
+// JSON-RPC is always 200; the Modern era maps routing failures to 4xx — one
+// body, both conventions.
+func (s *Server) writeMCPResponse(w http.ResponseWriter, status int, id any, result any) {
 	response := MCPResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -1654,7 +1670,7 @@ func (s *Server) sendMCPResponse(w http.ResponseWriter, id any, result any) {
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(response)
 }
 
@@ -1692,6 +1708,13 @@ func (s *Server) sendProtocolAwareError(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *Server) sendMCPError(w http.ResponseWriter, id any, code int, message string, data any) {
+	// Always 200 for JSON-RPC responses
+	s.writeMCPError(w, http.StatusOK, id, code, message, data)
+}
+
+// writeMCPError writes a JSON-RPC error at the given HTTP status; see
+// writeMCPResponse for the status convention.
+func (s *Server) writeMCPError(w http.ResponseWriter, status int, id any, code int, message string, data any) {
 	response := MCPResponse{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -1704,6 +1727,6 @@ func (s *Server) sendMCPError(w http.ResponseWriter, id any, code int, message s
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.WriteHeader(http.StatusOK) // Always 200 for JSON-RPC responses
+	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(response)
 }

@@ -127,14 +127,14 @@ func TestMultiProvider_ExecuteAbortsOnRealError(t *testing.T) {
 	}
 }
 
-func TestMultiProvider_ExecuteAllMissReturnsNil(t *testing.T) {
+func TestMultiProvider_ExecuteAllMissReturnsUnknownTool(t *testing.T) {
 	a := &staticProvider{missAsUnk: true}
 	b := &staticProvider{}
 	mp := NewMultiProvider(a, b)
 
 	res, err := mp.ExecuteTool(context.Background(), "x", nil)
-	if err != nil {
-		t.Fatalf("expected nil error on all-miss, got %v", err)
+	if err != ErrUnknownTool {
+		t.Fatalf("expected ErrUnknownTool on all-miss, got %v", err)
 	}
 	if res != nil {
 		t.Fatalf("expected nil result on all-miss, got %v", res)

@@ -225,22 +225,27 @@ func (s *Server) stdioInitialize(raw json.RawMessage) (any, error) {
 		}
 	}
 
-	protocolVersion := MCPProtocolVersionLatest
-	if params.ProtocolVersion != "" {
-		if !isSupportedProtocolVersion(params.ProtocolVersion) {
-			return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
-				"requested": params.ProtocolVersion,
-				"supported": supportedProtocolVersions,
-			})
-		}
-		protocolVersion = params.ProtocolVersion
+	protocolVersion, ok := negotiateProtocolVersion(params.ProtocolVersion, MCPProtocolVersionLatest)
+	if !ok {
+		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
+			"requested": params.ProtocolVersion,
+			"supported": supportedProtocolVersions,
+		})
 	}
 
 	s.mu.Lock()
 	instructions := s.instructions
 	icons := s.icons
 	s.lastClientCapabilities = params.Capabilities
+	hasDiscoverable := s.hasDiscoverableTools
 	s.mu.Unlock()
+
+	// Match the HTTP initialize: when discoverable tools exist, tell the
+	// client about tool_search/execute_tool. stdio has no show-all mode, so
+	// the hint is unconditional on that.
+	if hasDiscoverable {
+		instructions = appendDiscoveryInstructions(instructions)
+	}
 
 	return initializeResult{
 		ProtocolVersion: protocolVersion,
@@ -266,6 +271,11 @@ func (s *Server) stdioToolsCall(ctx context.Context, raw json.RawMessage) (any, 
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
 			return nil, jsonrpc.NewError(toolErr.Code, toolErr.Message, toolErr.Data)
+		}
+		// Same hint the HTTP handler gives: the caller guessed a name
+		// directly instead of going through tool_search first.
+		if err == ErrUnknownTool && s.hasDiscoverableToolsNow(ctx) {
+			return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: unknown tool %q. Use %s to discover available tools, then %s to invoke them.", params.Name, ToolSearchName, ExecuteToolName), nil)
 		}
 		return nil, jsonrpc.NewError(ErrorCodeInternalError, fmt.Sprintf("Tool execution failed: %v", err), nil)
 	}

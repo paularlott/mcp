@@ -22,8 +22,10 @@ import "context"
 //     2. A provider that returns any other error aborts dispatch and that
 //     error is returned to the caller.
 //     3. The first provider that returns a non-nil result wins.
-//     If no provider handles the tool, ExecuteTool returns (nil, nil), which
-//     the server treats as ErrUnknownTool.
+//     If no provider handles the tool, ExecuteTool returns ErrUnknownTool —
+//     the same miss signal as every other provider, so the server (which
+//     routes by the provider's own listing, see providerForTool) and any
+//     other dispatcher treat a MultiProvider exactly like a plain one.
 //
 // MultiProvider is safe for concurrent use if its underlying providers are.
 type MultiProvider struct {
@@ -69,6 +71,7 @@ func (p *MultiProvider) GetTools(ctx context.Context) ([]MCPTool, error) {
 
 // ExecuteTool dispatches the call to the first provider that handles the tool.
 // See the MultiProvider type docs for the full skip/abort/first-success contract.
+// A total miss returns ErrUnknownTool, like every other provider's miss.
 func (p *MultiProvider) ExecuteTool(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
 	for _, provider := range p.providers {
 		result, err := provider.ExecuteTool(ctx, name, params)
@@ -82,7 +85,7 @@ func (p *MultiProvider) ExecuteTool(ctx context.Context, name string, params map
 			return result, nil
 		}
 	}
-	return nil, nil
+	return nil, ErrUnknownTool
 }
 
 // ProviderFuncs adapts plain functions to the ToolProvider interface, so a

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -110,6 +111,7 @@ func TestListToolsFromProviders_Deduplication(t *testing.T) {
 
 func TestCallToolFromProviders(t *testing.T) {
 	provider := &mockToolProvider{
+		tools: []MCPTool{{Name: "test_tool", Description: "A test tool"}},
 		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "test_tool" {
 				return map[string]any{"result": "success"}, nil
@@ -202,6 +204,10 @@ func TestToolVisibilityFiltering_ShowAllMode(t *testing.T) {
 
 func TestCallToolFromProviders_BothVisibilities(t *testing.T) {
 	provider := &mockToolProvider{
+		tools: []MCPTool{
+			{Name: "native_tool", Visibility: ToolVisibilityNative},
+			{Name: "discoverable_tool", Visibility: ToolVisibilityDiscoverable},
+		},
 		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
 			if name == "native_tool" {
 				return "native result", nil
@@ -281,5 +287,47 @@ func TestGetDiscoverableToolsFromProviders(t *testing.T) {
 
 	if len(tools) != 2 {
 		t.Errorf("expected 2 discoverable tools, got %d", len(tools))
+	}
+}
+
+// Dispatch routes by the providers' own listings, so a provider whose
+// "not mine" comes back as a non-sentinel error can no longer abort the
+// dispatch and starve every provider after it — the old probe loop's
+// failure mode.
+func TestCallToolFromProviders_NoisyMissDoesNotStarveLaterProviders(t *testing.T) {
+	noisy := &mockToolProvider{
+		tools: []MCPTool{{Name: "noisy_tool"}},
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
+			if name == "noisy_tool" {
+				return "noisy result", nil
+			}
+			// A miss shaped like a plain error, not the sentinel.
+			return nil, fmt.Errorf("provider error: no tool %q in this provider", name)
+		},
+	}
+	quiet := &mockToolProvider{
+		tools: []MCPTool{{Name: "quiet_tool"}},
+		execFunc: func(ctx context.Context, name string, params map[string]any) (any, error) {
+			if name == "quiet_tool" {
+				return "quiet result", nil
+			}
+			return nil, ErrUnknownTool
+		},
+	}
+
+	ctx := WithToolProviders(context.Background(), noisy, quiet)
+
+	result, err := callToolFromProviders(ctx, "quiet_tool", nil)
+	if err != nil {
+		t.Fatalf("a noisy miss must not starve later providers: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected the quiet provider's result")
+	}
+
+	// A name no provider lists is unknown, even if a provider would
+	// opportunistically execute it when probed.
+	if _, err := callToolFromProviders(ctx, "unlisted_tool", nil); err != ErrUnknownTool {
+		t.Fatalf("unlisted name must be ErrUnknownTool, got %v", err)
 	}
 }

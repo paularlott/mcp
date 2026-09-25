@@ -186,14 +186,7 @@ func encodeModernHeaderValue(v string) string {
 // UnsupportedProtocolVersionError and similar use 400 Bad Request rather than
 // the Legacy transport's always-200 convention (sendMCPError).
 func (s *Server) writeModernProtocolError(w http.ResponseWriter, id any, status int, code int, message string, data any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(MCPResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error:   &MCPError{Code: code, Message: message, Data: data},
-	})
+	s.writeMCPError(w, status, id, code, message, data)
 }
 
 // writeModernResult sends a successful Modern-era JSON-RPC result. Callers
@@ -202,10 +195,7 @@ func (s *Server) writeModernProtocolError(w http.ResponseWriter, id any, status 
 // produced by reusing a Legacy handler go through finalizeModernResponse
 // instead, which injects it.
 func (s *Server) writeModernResult(w http.ResponseWriter, id any, result any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(MCPResponse{JSONRPC: "2.0", ID: id, Result: result})
+	s.writeMCPResponse(w, http.StatusOK, id, result)
 }
 
 // handleModernRequest validates a Modern-era HTTP request (header/body

@@ -396,7 +396,9 @@ func (p *RemoteProvider) ExecuteTool(ctx context.Context, name string, params ma
 		result, err := client.CallTool(callCtx, name, params)
 		cancel()
 		if err == ErrToolFiltered {
-			return nil, fmt.Errorf("tool %q is disabled on server %q", name, cfg.Name)
+			// Wrap rather than replace the sentinel so callers can still
+			// errors.Is(err, ErrToolFiltered), like every other filtered path.
+			return nil, fmt.Errorf("tool %q is disabled on server %q: %w", name, cfg.Name, ErrToolFiltered)
 		}
 		// A *ToolError means the server responded with its own application-level
 		// error (the server is fine, this call just failed) — not a health

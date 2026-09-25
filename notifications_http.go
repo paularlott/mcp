@@ -43,11 +43,7 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate protocol version (default per spec for non-initialize requests).
-	protocolVersion := r.Header.Get(headerProtocolVersion)
-	if protocolVersion == "" {
-		protocolVersion = "2025-03-26"
-	}
-	if !isSupportedProtocolVersion(protocolVersion) {
+	if _, ok := negotiateProtocolVersion(r.Header.Get(headerProtocolVersion), "2025-03-26"); !ok {
 		http.Error(w, "Unsupported MCP-Protocol-Version", http.StatusBadRequest)
 		return
 	}
@@ -55,21 +51,11 @@ func (s *Server) handleSSEStream(w http.ResponseWriter, r *http.Request) {
 	// When session management is enabled, require a valid session so a stream is
 	// bound to an authenticated client. Without sessions, the stream is anonymous
 	// (broadcast to all anonymous subscribers).
-	if sm := s.getSessionManager(); sm != nil {
-		sid := r.Header.Get(headerSessionID)
-		if sid == "" {
-			http.Error(w, "MCP-Session-Id header required", http.StatusBadRequest)
-			return
-		}
-		valid, err := sm.ValidateSession(r.Context(), sid)
-		if err != nil {
-			http.Error(w, "Session validation error", http.StatusInternalServerError)
-			return
-		}
-		if !valid {
-			http.Error(w, "Session not found", http.StatusNotFound)
-			return
-		}
+	// showAll is deliberately ignored here: the stream's notifications are
+	// broadcast to every subscriber, not shaped per session.
+	if _, ok, status, message := s.checkSession(r.Context(), r); !ok {
+		http.Error(w, message, status)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

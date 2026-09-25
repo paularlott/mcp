@@ -419,12 +419,24 @@ func (c *Client) GetToolFilter() ToolFilterFunc {
 	return c.toolFilter
 }
 
+// ensureInitialized performs the initialize handshake if it hasn't happened
+// yet. The check is under c.mu.RLock: the old bare `!c.initialized` reads
+// raced with Initialize's write under c.mu. Two concurrent first calls both
+// proceed to Initialize, whose own lock makes the second a no-op.
+func (c *Client) ensureInitialized(ctx context.Context) error {
+	c.mu.RLock()
+	initialized := c.initialized
+	c.mu.RUnlock()
+	if initialized {
+		return nil
+	}
+	return c.Initialize(ctx)
+}
+
 // ListTools retrieves tools from the remote server
 func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	// Check cache first
@@ -449,7 +461,7 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("list tools error: code %d", resp.Error.Code)
+		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
 	}
 
 	// Parse the result using type assertion where possible
@@ -500,11 +512,24 @@ func (c *Client) RefreshToolCache(ctx context.Context) error {
 // If the client has a namespace, the tool name should include it (e.g., "scriptling.search").
 // The namespace will be stripped before calling the underlying tool.
 // If a tool filter is set and the tool is filtered out, returns ErrToolFiltered.
+// decodeResult converts a JSON-RPC result — which the transport already
+// decoded as a generic any — into a typed value via a marshal/unmarshal
+// round-trip. what names the payload in error messages ("tool response",
+// "resources response", ...).
+func decodeResult(result any, target any, what string) error {
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("failed to marshal result: %w", err)
+	}
+	if err := json.Unmarshal(resultBytes, target); err != nil {
+		return fmt.Errorf("failed to parse %s: %w", what, err)
+	}
+	return nil
+}
+
 func (c *Client) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	// Strip namespace if present
@@ -545,12 +570,8 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	}
 
 	var result ToolResult
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
-	if err := json.Unmarshal(resultBytes, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse tool response: %w", err)
+	if err := decodeResult(resp.Result, &result, "tool response"); err != nil {
+		return nil, err
 	}
 
 	return &ToolResponse{
@@ -563,10 +584,8 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 // resources/list. Unlike tools, resources are not cached: each call performs a
 // fresh request, since resource sets can change between calls.
 func (c *Client) ListResources(ctx context.Context) ([]MCPResource, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	req := MCPRequest{
@@ -581,18 +600,14 @@ func (c *Client) ListResources(ctx context.Context) ([]MCPResource, error) {
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("list resources error: code %d", resp.Error.Code)
+		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
 	}
 
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
 	var parsed struct {
 		Resources []MCPResource `json:"resources"`
 	}
-	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse resources response: %w", err)
+	if err := decodeResult(resp.Result, &parsed, "resources response"); err != nil {
+		return nil, err
 	}
 	return parsed.Resources, nil
 }
@@ -600,10 +615,8 @@ func (c *Client) ListResources(ctx context.Context) ([]MCPResource, error) {
 // ReadResource reads a resource by URI from the remote server via
 // resources/read.
 func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceResponse, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	req := MCPRequest{
@@ -628,13 +641,9 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 		}
 	}
 
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
 	var result ResourceResponse
-	if err := json.Unmarshal(resultBytes, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse resource response: %w", err)
+	if err := decodeResult(resp.Result, &result, "resource response"); err != nil {
+		return nil, err
 	}
 	return &result, nil
 }
@@ -642,10 +651,8 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 // ListResourceTemplates retrieves the resource templates exposed via
 // resources/templates/list from the remote server.
 func (c *Client) ListResourceTemplates(ctx context.Context) ([]MCPResourceTemplate, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	req := MCPRequest{
@@ -659,18 +666,14 @@ func (c *Client) ListResourceTemplates(ctx context.Context) ([]MCPResourceTempla
 		return nil, fmt.Errorf("list resource templates failed: %w", err)
 	}
 	if resp.Error != nil {
-		return nil, fmt.Errorf("list resource templates error: code %d", resp.Error.Code)
+		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
 	}
 
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
 	var parsed struct {
 		ResourceTemplates []MCPResourceTemplate `json:"resourceTemplates"`
 	}
-	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse resource templates response: %w", err)
+	if err := decodeResult(resp.Result, &parsed, "resource templates response"); err != nil {
+		return nil, err
 	}
 	return parsed.ResourceTemplates, nil
 }
@@ -678,10 +681,8 @@ func (c *Client) ListResourceTemplates(ctx context.Context) ([]MCPResourceTempla
 // ListPrompts retrieves the list of prompts from the remote server via
 // prompts/list. Prompts are not cached: each call performs a fresh request.
 func (c *Client) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	req := MCPRequest{
@@ -696,18 +697,14 @@ func (c *Client) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("list prompts error: code %d", resp.Error.Code)
+		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
 	}
 
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
 	var parsed struct {
 		Prompts []MCPPrompt `json:"prompts"`
 	}
-	if err := json.Unmarshal(resultBytes, &parsed); err != nil {
-		return nil, fmt.Errorf("failed to parse prompts response: %w", err)
+	if err := decodeResult(resp.Result, &parsed, "prompts response"); err != nil {
+		return nil, err
 	}
 	return parsed.Prompts, nil
 }
@@ -715,10 +712,8 @@ func (c *Client) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
 // GetPrompt renders a prompt by name with the given string arguments via
 // prompts/get.
 func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]string) (*PromptResponse, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	req := MCPRequest{
@@ -744,13 +739,9 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 		}
 	}
 
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal result: %w", err)
-	}
 	var result PromptResponse
-	if err := json.Unmarshal(resultBytes, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse prompt response: %w", err)
+	if err := decodeResult(resp.Result, &result, "prompt response"); err != nil {
+		return nil, err
 	}
 	return &result, nil
 }
@@ -802,12 +793,8 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 		httpReq.Header.Set(headerSessionID, c.sessionID)
 	}
 
-	if c.auth != nil {
-		authHeader, err := c.auth.GetAuthHeader()
-		if err != nil {
-			return fmt.Errorf("failed to get auth header: %w", err)
-		}
-		httpReq.Header.Set("Authorization", authHeader)
+	if err := c.applyAuthHeader(httpReq.Header); err != nil {
+		return fmt.Errorf("failed to get auth header: %w", err)
 	}
 
 	httpResp, err := c.httpClient.Do(httpReq)
@@ -873,10 +860,8 @@ func (c *Client) parseEventStream(data []byte, resp *MCPResponse) error {
 // This is useful when the server has many tools registered via a discovery registry.
 // The query searches tool names, descriptions, and keywords.
 func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) ([]map[string]any, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	args := map[string]any{
@@ -950,13 +935,11 @@ func (c *Client) callToolsParallel(ctx context.Context, calls []ToolCall, discov
 		return results
 	}
 
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			for i, call := range calls {
-				results[i] = ParallelToolResult{Name: call.Name, Err: err}
-			}
-			return results
+	if err := c.ensureInitialized(ctx); err != nil {
+		for i, call := range calls {
+			results[i] = ParallelToolResult{Name: call.Name, Err: err}
 		}
+		return results
 	}
 
 	if bt, ok := c.transport.(batchTransport); ok {
@@ -1069,14 +1052,12 @@ func (c *Client) callToolsBatch(ctx context.Context, bt batchTransport, calls []
 }
 
 // decodeToolResult decodes a successful tools/call (or execute_tool) response
-// result into a ToolResponse. Callers must check resp.Error first.
+// result into a ToolResponse. Callers must check resp.Error first. Returns
+// nil on a decode failure (its single-value contract predates error return;
+// batch callers report the nil as a missing response).
 func decodeToolResult(resp *MCPResponse) *ToolResponse {
 	var result ToolResult
-	resultBytes, err := json.Marshal(resp.Result)
-	if err != nil {
-		return nil
-	}
-	if err := json.Unmarshal(resultBytes, &result); err != nil {
+	if err := decodeResult(resp.Result, &result, "tool response"); err != nil {
 		return nil
 	}
 	return &ToolResponse{
@@ -1089,10 +1070,8 @@ func decodeToolResult(resp *MCPResponse) *ToolResponse {
 // This is the always-safe way to call tools returned by ToolSearch.
 // Tools may also be callable directly via CallTool when they were exposed in tools/list.
 func (c *Client) ExecuteDiscoveredTool(ctx context.Context, name string, arguments map[string]any) (*ToolResponse, error) {
-	if !c.initialized {
-		if err := c.Initialize(ctx); err != nil {
-			return nil, err
-		}
+	if err := c.ensureInitialized(ctx); err != nil {
+		return nil, err
 	}
 
 	args := map[string]any{

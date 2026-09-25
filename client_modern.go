@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // clientEra records which protocol era a Client has detected its server
@@ -235,12 +233,8 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 		}
 	}
 
-	if c.auth != nil {
-		authHeader, err := c.auth.GetAuthHeader()
-		if err != nil {
-			return fmt.Errorf("failed to get auth header: %w", err)
-		}
-		httpReq.Header.Set("Authorization", authHeader)
+	if err := c.applyAuthHeader(httpReq.Header); err != nil {
+		return fmt.Errorf("failed to get auth header: %w", err)
 	}
 
 	httpResp, err := c.httpClient.Do(httpReq)
@@ -282,40 +276,15 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 // runSSEReader: it maintains a long-lived subscriptions/listen stream
 // (POST, since Modern removes the GET endpoint entirely) instead of the
 // Legacy GET event-stream, reconnecting with the same exponential backoff.
-func (c *Client) runModernSubscriptionReader(ctx context.Context) {
-	backoff := time.Second
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		err := c.connectAndReadModernSubscription(ctx)
-		if ctx.Err() != nil {
-			return
-		}
-		if err == nil {
-			backoff = time.Second
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > 30*time.Second {
-			backoff = 30 * time.Second
-		}
-	}
-}
-
-// connectAndReadModernSubscription opens one subscriptions/listen request,
-// subscribed to every list-changed type (matching the Legacy reader's
-// receive-everything behavior), and blocks reading notifications — the ack
-// is consumed and discarded, and each subsequent notification's Modern
-// (snake_case) method name is translated back to the Legacy constant
-// handleNotification already knows, so cache invalidation and the On*Changed
-// callbacks work identically regardless of which era delivered the event.
-func (c *Client) connectAndReadModernSubscription(ctx context.Context) error {
+// connectModernSubscription builds and sends one Modern-era
+// subscriptions/listen request, subscribed to every list-changed type
+// (matching the Legacy reader's receive-everything behavior). The ack is
+// consumed and discarded via the translator, and each subsequent
+// notification's Modern (snake_case) method name is translated back to the
+// Legacy constant handleNotification already knows, so cache invalidation
+// and the On*Changed callbacks work identically regardless of which era
+// delivered the event.
+func (c *Client) connectModernSubscription(ctx context.Context) (*http.Response, func(string) (string, bool), error) {
 	req := c.withModernMeta(&MCPRequest{
 		JSONRPC: "2.0",
 		ID:      "subscribe",
@@ -330,69 +299,34 @@ func (c *Client) connectAndReadModernSubscription(ctx context.Context) error {
 	})
 	reqBody, err := json.Marshal(req)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(reqBody))
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	c.applyRequestHeaders(httpReq.Header)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
 	httpReq.Header.Set(headerMcpMethod, "subscriptions/listen")
 	httpReq.Header.Set(headerProtocolVersion, c.modernProtocolVersion())
-
-	c.mu.RLock()
-	auth := c.auth
-	c.mu.RUnlock()
-	if auth != nil {
-		if h, err := auth.GetAuthHeader(); err == nil && h != "" {
-			httpReq.Header.Set("Authorization", h)
-		}
+	if err := c.applyAuthHeader(httpReq.Header); err != nil {
+		return nil, nil, err
 	}
 
 	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("subscriptions/listen returned status %d", resp.StatusCode)
-	}
+	return resp, translateModernNotification, err
+}
 
-	reader := bufio.NewReader(resp.Body)
-	for {
-		if ctx.Err() != nil {
-			return nil
-		}
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return err
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] == ':' { // blank or comment/heartbeat
-			continue
-		}
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(payload) == 0 {
-			continue
-		}
-		var msg struct {
-			Method string `json:"method"`
-			Params any    `json:"params"`
-		}
-		if json.Unmarshal(payload, &msg) != nil {
-			continue
-		}
-		if msg.Method == "notifications/subscriptions/acknowledged" {
-			continue
-		}
-		c.handleNotification(legacyNotificationMethodName(msg.Method), msg.Params)
+// translateModernNotification reverses modernNotificationMethodName for the
+// subscription reader, and drops the subscription acknowledgement (it is a
+// handshake reply, not a change event).
+func translateModernNotification(modernMethod string) (string, bool) {
+	if modernMethod == "notifications/subscriptions/acknowledged" {
+		return "", false
 	}
+	return legacyNotificationMethodName(modernMethod), true
 }
 
 // legacyNotificationMethodName reverses modernNotificationMethodName, so the

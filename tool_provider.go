@@ -278,21 +278,49 @@ func getNativeToolsFromProviders(ctx context.Context) []MCPTool {
 
 // callToolFromProviders tries to call a tool from the providers in the context.
 // Returns ToolResponse, error - returns ErrUnknownTool if no provider handles the tool.
-func callToolFromProviders(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
-	for _, provider := range GetToolProviders(ctx) {
-		result, err := provider.ExecuteTool(ctx, name, params)
-		if err == ErrUnknownTool {
-			continue
-		}
-		if err != nil {
-			// Provider returned an error
-			return nil, err
-		}
-		if result != nil {
-			// Provider handled the tool
-			return result, nil
-		}
-	}
+// providerToolIndexKey memoizes the per-request name→provider index.
+type providerToolIndexKey struct{}
 
-	return nil, ErrUnknownTool
+// providerForTool resolves which attached provider serves a tool name, by
+// looking it up in an index built from the providers' own GetTools listings
+// (memoized once per request) — the same data tools/list is built from.
+// Routing, not probing: a tool is dispatchable exactly when it was listed,
+// first provider in context order wins a collision (the order providers are
+// attached with WithToolProviders), and a provider whose "not mine" error
+// shape is anything but a clean listing can no longer starve the providers
+// after it.
+func providerForTool(ctx context.Context, name string) (ToolProvider, bool) {
+	var index map[string]ToolProvider
+	val, err := memoizeRequest(ctx, providerToolIndexKey{}, func() (any, error) {
+		index := make(map[string]ToolProvider)
+		for _, provider := range GetToolProviders(ctx) {
+			tools, err := provider.GetTools(ctx)
+			if err != nil {
+				// Skip the erroring provider; do not hide the others' tools.
+				continue
+			}
+			for _, tool := range tools {
+				if _, taken := index[tool.Name]; !taken {
+					index[tool.Name] = provider
+				}
+			}
+		}
+		return index, nil
+	})
+	if err == nil {
+		index, _ = val.(map[string]ToolProvider)
+	}
+	if index == nil {
+		return nil, false
+	}
+	provider, ok := index[name]
+	return provider, ok
+}
+
+func callToolFromProviders(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
+	provider, ok := providerForTool(ctx, name)
+	if !ok {
+		return nil, ErrUnknownTool
+	}
+	return provider.ExecuteTool(ctx, name, params)
 }

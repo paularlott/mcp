@@ -90,22 +90,28 @@ func (c *Client) startNotifications(era clientEra) {
 	go func() {
 		defer c.readerWG.Done()
 		if era == eraModern {
-			c.runModernSubscriptionReader(ctx)
+			c.runEventStreamReader(ctx, "subscriptions/listen", c.connectModernSubscription)
 		} else {
-			c.runSSEReader(ctx)
+			c.runEventStreamReader(ctx, "event stream", c.connectLegacySSE)
 		}
 	}()
 }
 
-// runSSEReader maintains a long-lived GET event-stream connection, reconnecting
-// with exponential backoff after transient failures until the client is closed.
-func (c *Client) runSSEReader(ctx context.Context) {
+// runEventStreamReader maintains a long-lived event-stream connection,
+// reconnecting with exponential backoff (1s initial, doubling to a 30s cap)
+// after transient failures until the context is cancelled. label names the
+// connection in error messages; connect performs one connection attempt and
+// returns the response plus translate, which maps each inbound notification's
+// method name to the constant handleNotification expects (identity for the
+// Legacy reader; the Modern subscription reader reverses the snake_case
+// renaming). ok=false from translate drops the message.
+func (c *Client) runEventStreamReader(ctx context.Context, label string, connect func(ctx context.Context) (*http.Response, func(string) (string, bool), error)) {
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.connectAndReadSSE(ctx)
+		err := c.readEventStream(ctx, label, connect)
 		if ctx.Err() != nil {
 			return
 		}
@@ -125,37 +131,16 @@ func (c *Client) runSSEReader(ctx context.Context) {
 	}
 }
 
-// connectAndReadSSE opens one GET event-stream request and blocks reading
-// notifications until the stream ends or the context is cancelled.
-func (c *Client) connectAndReadSSE(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL, nil)
-	if err != nil {
-		return err
-	}
-	c.applyRequestHeaders(req.Header)
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set(headerProtocolVersion, MCPProtocolVersionLatest)
-
-	c.mu.RLock()
-	sessionID := c.sessionID
-	auth := c.auth
-	c.mu.RUnlock()
-	if sessionID != "" {
-		req.Header.Set(headerSessionID, sessionID)
-	}
-	if auth != nil {
-		if h, err := auth.GetAuthHeader(); err == nil && h != "" {
-			req.Header.Set("Authorization", h)
-		}
-	}
-
-	resp, err := c.httpClient.Do(req)
+// readEventStream opens one event-stream connection via connect and blocks
+// reading notifications until the stream ends or the context is cancelled.
+func (c *Client) readEventStream(ctx context.Context, label string, connect func(ctx context.Context) (*http.Response, func(string) (string, bool), error)) error {
+	resp, translate, err := connect(ctx)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("event stream returned status %d", resp.StatusCode)
+		return fmt.Errorf("%s returned status %d", label, resp.StatusCode)
 	}
 
 	reader := bufio.NewReader(resp.Body)
@@ -185,9 +170,61 @@ func (c *Client) connectAndReadSSE(ctx context.Context) error {
 		if json.Unmarshal(payload, &msg) != nil {
 			continue
 		}
-		c.handleNotification(msg.Method, msg.Params)
+		if method, ok := translate(msg.Method); ok {
+			c.handleNotification(method, msg.Params)
+		}
 	}
 }
+
+// applyAuthHeader sets the Authorization header from the client's auth
+// provider. A failure is returned rather than swallowed: a connection must
+// never be made unauthenticated just because building the header failed.
+// The request paths treat the error as fatal; the notification reader
+// treats it as a failed attempt and retries with backoff.
+//
+// c.auth is read without c.mu: it is immutable after construction, and
+// sendRequest/sendModernHTTPRequest run with c.mu already held (Initialize
+// calls through under its write lock), so taking it here would deadlock.
+func (c *Client) applyAuthHeader(h http.Header) error {
+	if c.auth == nil {
+		return nil
+	}
+	header, err := c.auth.GetAuthHeader()
+	if err != nil {
+		return err
+	}
+	if header != "" {
+		h.Set("Authorization", header)
+	}
+	return nil
+}
+
+// connectLegacySSE builds and sends one Legacy-era GET event-stream request.
+func (c *Client) connectLegacySSE(ctx context.Context) (*http.Response, func(string) (string, bool), error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	c.applyRequestHeaders(req.Header)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set(headerProtocolVersion, MCPProtocolVersionLatest)
+
+	c.mu.RLock()
+	sessionID := c.sessionID
+	c.mu.RUnlock()
+	if sessionID != "" {
+		req.Header.Set(headerSessionID, sessionID)
+	}
+	if err := c.applyAuthHeader(req.Header); err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	return resp, passthroughMethod, err
+}
+
+// passthroughMethod is the Legacy reader's identity translation.
+func passthroughMethod(method string) (string, bool) { return method, true }
 
 // handleNotification processes one inbound notification: invalidates the
 // relevant cache, fires the user callback, then the internal propagation hook.
