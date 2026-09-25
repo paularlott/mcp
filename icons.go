@@ -24,3 +24,48 @@ type Icon struct {
 	// "light" or "dark". Omit it for a theme-neutral icon.
 	Theme string `json:"theme,omitempty"`
 }
+
+// iconsFromRaw decodes the icons field of a JSON-deserialized tool or search
+// result (always []any of map[string]any on the wire) into []Icon without a
+// marshal round-trip. Returns nil for anything else, matching the previous
+// round-trip's silent-skip behaviour on malformed input.
+func iconsFromRaw(raw any) []Icon {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	icons := make([]Icon, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		icon := Icon{
+			Src:   stringField(m, "src"),
+			Theme: stringField(m, "theme"),
+		}
+		if mimeType, ok := m["mimeType"].(string); ok {
+			icon.MimeType = mimeType
+		}
+		if sizesRaw, ok := m["sizes"].([]any); ok {
+			sizes := make([]string, 0, len(sizesRaw))
+			for _, s := range sizesRaw {
+				if str, ok := s.(string); ok {
+					sizes = append(sizes, str)
+				}
+			}
+			if len(sizes) > 0 {
+				icon.Sizes = sizes
+			}
+		}
+		icons = append(icons, icon)
+	}
+	return icons
+}
+
+// stringField reads a string field out of a JSON-deserialized object,
+// returning "" when absent or not a string.
+func stringField(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
+}

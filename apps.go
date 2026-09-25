@@ -56,6 +56,30 @@ type UIToolMeta struct {
 // could ever have meant to send a host — see [validateUIVisibility].
 var validUIVisibilityValues = map[string]bool{"model": true, "app": true}
 
+// ToolIsApp reports whether a tool descriptor is an MCP Apps view: a tool
+// linked to a companion UI resource via _meta.ui.resourceUri. Federating
+// such a tool re-serves its view under a namespace the view's own code
+// doesn't know (its in-page JS calls bare, host-agnostic names), so a
+// federating server that excludes apps skips them entirely — see
+// [RemoteServerEntry.ExcludeApps].
+func ToolIsApp(tool MCPTool) bool {
+	raw, ok := tool.Meta["ui"]
+	if !ok || raw == nil {
+		return false
+	}
+	// _meta.ui is a map[string]any for a tool deserialized off the wire
+	// (the federated path this serves), and a typed UIToolMeta for a tool
+	// built locally via [ToolBuilder.UIResource].
+	switch ui := raw.(type) {
+	case UIToolMeta:
+		return ui.ResourceURI != ""
+	case map[string]any:
+		resourceURI, _ := ui["resourceUri"].(string)
+		return resourceURI != ""
+	}
+	return false
+}
+
 // validateUIVisibility panics on a visibility value the spec doesn't
 // define. Called from [ToolBuilder.UIResource] and [ToolBuilder.Visibility]
 // at registration time, not on the request path — the cost of validating is

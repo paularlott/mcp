@@ -88,6 +88,8 @@ upstream adds a tool  ->  emits tools/listChanged
 
 The federator calls `RefreshTools` before re-emitting, so the new tool is actually present in the merged list its clients re-fetch. Resources/prompts are not federated, so only tool changes propagate.
 
+The propagation hook is per registration, not per client: registering the same client on several servers (for example a chat-side server and a public endpoint server built from one connection) gives each server its own propagation, and none of them cancels another's.
+
 ## Transports
 
 - **HTTP**: the server serves a `GET` event-stream (opened when the client sends `Accept: text/event-stream`). Notifications are written as SSE `data:` events carrying a JSON-RPC notification. A heartbeat keeps the stream alive.

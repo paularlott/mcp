@@ -115,6 +115,7 @@ type Server struct {
 	tools                  map[string]*registeredTool   // All registered tools (native + discoverable)
 	remoteClients          map[string]*registeredClient // Remote MCP servers
 	toolToServer           map[string]*registeredClient // Tool name -> remote client mapping
+	excludedTools          map[string]*registeredClient // App tools skipped by an ExcludeApps registration (namespaced), blocked from the prefix-fallback dispatch too
 	nativeToolCache        []MCPTool                    // Native tools (visible in tools/list)
 	mu                     sync.RWMutex
 	sessionManager         SessionManager                 // Pluggable session management
@@ -153,6 +154,7 @@ type registeredClient struct {
 	namespace    string
 	visibility   ToolVisibility
 	remoteSearch bool // Whether to delegate tool_search to this remote
+	excludeApps  bool // Skip tools linked to a ui:// resource (MCP Apps views)
 }
 
 // NewServer creates a new MCP server instance.
@@ -164,6 +166,7 @@ func NewServer(name, version string) *Server {
 		tools:             make(map[string]*registeredTool),
 		remoteClients:     make(map[string]*registeredClient),
 		toolToServer:      make(map[string]*registeredClient),
+		excludedTools:     make(map[string]*registeredClient),
 		nativeToolCache:   make([]MCPTool, 0),
 		internalRegistry:  newInternalRegistry(),
 		resources:         make(map[string]*registeredResource),
@@ -323,9 +326,8 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 			// linkage (_meta.ui.resourceUri) and icons, even though the
 			// exact same tool federated via plain tools/list keeps both
 			// (see RegisterTools/ListToolsWithContext, which copy Meta and
-			// Icons straight through). Same decode as parseToolsResult's
-			// Icons handling below in this file, since Icons needs a
-			// round-trip out of []any.
+			// Icons straight through). Same iconsFromRaw decode as
+			// parseToolsResult's tools/list handling in client.go.
 			if keywordsRaw, ok := raw["keywords"].([]any); ok {
 				for _, k := range keywordsRaw {
 					if ks, ok := k.(string); ok {
@@ -337,9 +339,7 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 				result.Meta = meta
 			}
 			if iconsRaw, ok := raw["icons"]; ok {
-				if b, err := json.Marshal(iconsRaw); err == nil {
-					_ = json.Unmarshal(b, &result.Icons)
-				}
+				result.Icons = iconsFromRaw(iconsRaw)
 			}
 			allResults = append(allResults, result)
 		}
@@ -635,6 +635,7 @@ type RemoteServerOption func(*remoteServerOptions)
 
 type remoteServerOptions struct {
 	remoteSearch bool
+	excludeApps  bool
 }
 
 // WithRemoteSearch enables delegating tool_search to this remote server.
@@ -645,6 +646,17 @@ func WithRemoteSearch() RemoteServerOption {
 	}
 }
 
+// WithRemoteExcludeApps skips the remote's MCP Apps tools (any tool whose
+// _meta.ui links it to a ui:// resource) when federating it onto this
+// server: absent from tools/list and tool_search, and not callable.
+// See [RemoteServerEntry.ExcludeApps] for why a federating server that
+// renders no views of its own should always set this.
+func WithRemoteExcludeApps() RemoteServerOption {
+	return func(o *remoteServerOptions) {
+		o.excludeApps = true
+	}
+}
+
 // RegisterRemoteServer registers a remote MCP server with native visibility.
 // Remote server tools appear in tools/list and are directly callable.
 func (s *Server) RegisterRemoteServer(client *Client, opts ...RemoteServerOption) error {
@@ -652,7 +664,7 @@ func (s *Server) RegisterRemoteServer(client *Client, opts ...RemoteServerOption
 	for _, opt := range opts {
 		opt(o)
 	}
-	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative, o.remoteSearch)
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityNative, o.remoteSearch, o.excludeApps)
 }
 
 // RegisterRemoteServerDiscoverable registers a remote MCP server with discoverable visibility.
@@ -662,7 +674,7 @@ func (s *Server) RegisterRemoteServerDiscoverable(client *Client, opts ...Remote
 	for _, opt := range opts {
 		opt(o)
 	}
-	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable, o.remoteSearch)
+	return s.registerRemoteServerWithVisibility(client, ToolVisibilityDiscoverable, o.remoteSearch, o.excludeApps)
 }
 
 // UnregisterRemoteServer removes a previously registered remote server and all its cached tools.
@@ -682,6 +694,11 @@ func (s *Server) UnregisterRemoteServer(client *Client) {
 		if rc == regClient {
 			toRemove[toolName] = true
 			delete(s.toolToServer, toolName)
+		}
+	}
+	for toolName, rc := range s.excludedTools {
+		if rc == regClient {
+			delete(s.excludedTools, toolName)
 		}
 	}
 
@@ -726,11 +743,12 @@ func (s *Server) ReplaceRemoteServers(servers []RemoteServerEntry) error {
 
 	s.remoteClients = make(map[string]*registeredClient)
 	s.toolToServer = make(map[string]*registeredClient)
+	s.excludedTools = make(map[string]*registeredClient)
 
 	s.mu.Unlock()
 
 	for _, entry := range servers {
-		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility, entry.RemoteSearch); err != nil {
+		if err := s.registerRemoteServerWithVisibility(entry.Client, entry.Visibility, entry.RemoteSearch, entry.ExcludeApps); err != nil {
 			return err
 		}
 	}
@@ -747,10 +765,18 @@ type RemoteServerEntry struct {
 	Client       *Client
 	Visibility   ToolVisibility
 	RemoteSearch bool // Delegate tool_search to this remote server
+	// ExcludeApps skips the remote's MCP Apps tools (any tool whose
+	// _meta.ui links it to a ui:// resource): they are absent from
+	// tools/list and tool_search, and not callable through this server.
+	// An app view speaks bare, host-agnostic tool names, so re-serving it
+	// under a federation namespace breaks its in-page calls to its own
+	// tools — a federating server that renders no views of its own should
+	// always set this.
+	ExcludeApps bool
 }
 
 // registerRemoteServerWithVisibility is the internal implementation for registering remote servers.
-func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility, remoteSearch bool) error {
+func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility ToolVisibility, remoteSearch, excludeApps bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -765,6 +791,7 @@ func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility T
 		namespace:    namespace,
 		visibility:   visibility,
 		remoteSearch: remoteSearch,
+		excludeApps:  excludeApps,
 	}
 	s.remoteClients[client.baseURL] = regClient
 
@@ -794,6 +821,12 @@ func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility T
 
 	// Add tools based on visibility
 	for _, tool := range tools {
+		if excludeApps && ToolIsApp(tool) {
+			// Record the skip so the namespace-prefix fallback in CallTool
+			// doesn't dispatch to it either.
+			s.excludedTools[tool.Name] = regClient
+			continue
+		}
 		toolName := tool.Name
 
 		// Add to lookup for execution
@@ -867,6 +900,7 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 	// Phase 2: Build new maps without holding lock (network calls happen here)
 	newNativeToolIndex := make(map[string]MCPTool)
 	newToolToServer := make(map[string]*registeredClient)
+	newExcludedTools := make(map[string]*registeredClient)
 	// Fresh discoverable remote tools to (re)register in the internal registry.
 	freshDiscoverableRemoteTools := make([]MCPTool, 0)
 
@@ -905,6 +939,11 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 			// Tools from client.ListTools() already have the prefix applied
 			toolName := tool.Name
 
+			if regClient.excludeApps && ToolIsApp(tool) {
+				newExcludedTools[toolName] = regClient
+				continue
+			}
+
 			// Add to lookup for execution
 			newToolToServer[toolName] = regClient
 
@@ -932,6 +971,7 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 	s.mu.Lock()
 	s.nativeToolCache = newNativeToolCache
 	s.toolToServer = newToolToServer
+	s.excludedTools = newExcludedTools
 	s.mu.Unlock()
 
 	// Phase 4: Refresh discoverable remote tools in the internal registry.
@@ -1558,6 +1598,9 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 	// Fallback: match by namespace prefix to find the remote server,
 	// then call via execute_tool on that server (for tools discovered via remote tool_search)
 	for _, rc := range s.remoteClients {
+		if _, excluded := s.excludedTools[name]; excluded {
+			continue
+		}
 		if rc.namespace != "" && strings.HasPrefix(name, rc.namespace+rc.client.separator) {
 			client := rc.client
 			separator := rc.client.separator

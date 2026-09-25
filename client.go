@@ -77,10 +77,14 @@ type Client struct {
 	onToolsChanged     func()
 	onResourcesChanged func()
 	onPromptsChanged   func()
-	// onNotification is an internal hook used by the federation wiring
-	// (RegisterRemoteServer) to propagate upstream listChanged notifications
-	// downstream. It fires for every received notification, after cache handling.
-	onNotification func(method string, params any)
+	// onNotification is an internal hook list used by the federation wiring
+	// (RegisterRemoteServer and friends) to propagate upstream listChanged
+	// notifications downstream. It fires for every received notification,
+	// after cache handling. A list, not a single slot, because the same
+	// client can be registered on multiple servers (e.g. a chat-side
+	// federated view and a public endpoint view of the same remote) and each
+	// registration's propagation must survive the next.
+	onNotification []func(method string, params any)
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -1170,10 +1174,8 @@ func parseToolsResult(result any) ([]MCPTool, error) {
 						if meta, ok := toolMap["_meta"].(map[string]any); ok {
 							tool.Meta = meta
 						}
-						if iconsRaw, ok := toolMap["icons"]; ok {
-							if b, err := json.Marshal(iconsRaw); err == nil {
-								_ = json.Unmarshal(b, &tool.Icons)
-							}
+						if icons, ok := toolMap["icons"]; ok {
+							tool.Icons = iconsFromRaw(icons)
 						}
 						tools = append(tools, tool)
 					}

@@ -256,6 +256,12 @@ func (s *Server) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 
 	var remoteFailures []error
 	for _, rc := range remoteClients {
+		// An app-excluding registration federates no MCP Apps surface: a
+		// ui:// resource is an app view by definition, so don't forward
+		// reads for it either.
+		if rc.excludeApps && strings.HasPrefix(uri, "ui:") {
+			continue
+		}
 		attemptCtx, cancel := context.WithTimeout(withResourceFanoutHop(ctx, hop+1), remoteResourceFanoutTimeout)
 		resp, err := rc.client.ReadResource(attemptCtx, uri)
 		cancel()

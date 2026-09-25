@@ -136,6 +136,23 @@ result, err := server.CallTool(ctx, "unknown-tool", args)      // Returns ErrUnk
 http.HandleFunc("/mcp", server.HandleRequest)
 ```
 
+### Excluding MCP Apps tools
+
+A remote's tool list can include MCP Apps views — tools linked to a `ui://` resource via `_meta.ui.resourceUri` that a host UI renders as a sandboxed app. Federating such a tool re-serves it under your namespace, but the view's in-page code calls its own tools by bare, host-agnostic names, which a namespaced endpoint cannot resolve. If the server you're building mounts no views of its own, exclude them:
+
+```go
+server.RegisterRemoteServer(aiClient, mcp.WithRemoteExcludeApps())
+
+// or with ReplaceRemoteServers:
+server.ReplaceRemoteServers([]mcp.RemoteServerEntry{
+    {Client: aiClient, Visibility: mcp.ToolVisibilityNative, ExcludeApps: true},
+})
+```
+
+Excluded app tools are absent from `tools/list` and `tool_search`, cannot be called through the server (including via the namespace-prefix fallback that search-discovered tools use), and their `ui://` resources are not forwarded for `resources/read`. `ToolIsApp(tool)` reports whether a descriptor is an app, if you need the same check elsewhere.
+
+Registration without the option federates app tools unchanged — a server that does mount views (a chat host, for example) keeps them. The same client can be registered on multiple servers, once with `ExcludeApps` and once without, to serve both audiences from one connection.
+
 ## Parallel Tool Calls
 
 Execute multiple tools concurrently and collect all results in one call. Results are returned in the same order as the input, and a failure in one call does not affect the others.

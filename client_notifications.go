@@ -219,18 +219,21 @@ func (c *Client) handleNotification(method string, params any) {
 	}
 
 	c.mu.RLock()
-	hook := c.onNotification
+	hooks := make([]func(string, any), len(c.onNotification))
+	copy(hooks, c.onNotification)
 	c.mu.RUnlock()
-	if hook != nil {
+	for _, hook := range hooks {
 		hook(method, params)
 	}
 }
 
-// setPropagationHook installs an internal callback fired for every inbound
+// setPropagationHook appends an internal callback fired for every inbound
 // notification (after cache handling). It is used by [Server.RegisterRemoteServer]
-// to propagate upstream listChanged notifications downstream. Package-private.
+// to propagate upstream listChanged notifications downstream; appending (not
+// replacing) keeps every registration's propagation alive when one client is
+// registered on multiple servers. Package-private.
 func (c *Client) setPropagationHook(fn func(method string, params any)) {
 	c.mu.Lock()
-	c.onNotification = fn
+	c.onNotification = append(c.onNotification, fn)
 	c.mu.Unlock()
 }
