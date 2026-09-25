@@ -412,13 +412,6 @@ func (c *Client) WithToolFilter(filter ToolFilterFunc) *Client {
 	return c
 }
 
-// GetToolFilter returns the current tool filter, or nil if none is set.
-func (c *Client) GetToolFilter() ToolFilterFunc {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.toolFilter
-}
-
 // ensureInitialized performs the initialize handshake if it hasn't happened
 // yet. The check is under c.mu.RLock: the old bare `!c.initialized` reads
 // raced with Initialize's write under c.mu. Two concurrent first calls both
@@ -878,22 +871,6 @@ func (c *Client) ToolSearch(ctx context.Context, query string, maxResults int) (
 
 	// Parse the response - tool_search returns JSON with search results
 	return parseToolSearchResponse(resp)
-}
-
-// Args is a map of tool arguments. It can be used directly as a map[string]any
-// or built fluently via the Arg method.
-//
-//	// Direct map
-//	client.CallTool(ctx, "tool", map[string]any{"city": "London"})
-//
-//	// Fluent builder
-//	client.CallTool(ctx, "tool", mcp.Args{}.Arg("city", "London").Arg("units", "metric"))
-type Args map[string]any
-
-// Arg adds a key/value pair and returns the Args for chaining.
-func (a Args) Arg(key string, value any) Args {
-	a[key] = value
-	return a
 }
 
 // ToolCall represents a single tool invocation for use with parallel calls.

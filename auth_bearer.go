@@ -14,5 +14,3 @@ func NewBearerTokenAuth(token string) *BearerTokenAuth {
 func (b *BearerTokenAuth) GetAuthHeader() (string, error) {
 	return fmt.Sprintf("Bearer %s", b.token), nil
 }
-
-func (b *BearerTokenAuth) Refresh() error { return nil }

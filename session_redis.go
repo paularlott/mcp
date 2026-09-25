@@ -102,20 +102,6 @@ func (m *RedisSessionManager) ValidateSession(ctx context.Context, sessionID str
 	return true, nil
 }
 
-func (m *RedisSessionManager) GetProtocolVersion(ctx context.Context, sessionID string) (string, error) {
-	protoKey := fmt.Sprintf("mcp:session:%s:protocol", sessionID)
-
-	version, err := m.client.Get(ctx, protoKey).Result()
-	if err == redis.Nil {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("failed to get protocol version: %w", err)
-	}
-
-	return version, nil
-}
-
 func (m *RedisSessionManager) GetShowAll(ctx context.Context, sessionID string) (bool, error) {
 	showAllKey := fmt.Sprintf("mcp:session:%s:show_all", sessionID)
 

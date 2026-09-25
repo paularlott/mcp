@@ -21,9 +21,6 @@ func TestBearerTokenAuth(t *testing.T) {
 	if want := "Bearer secret-token"; header != want {
 		t.Errorf("GetAuthHeader() = %q, want %q", header, want)
 	}
-	if err := auth.Refresh(); err != nil {
-		t.Errorf("Refresh() = %v, want nil", err)
-	}
 }
 
 // TestDiscoverOAuthMeta_OAuthWellKnown verifies DiscoverOAuthMeta finds
@@ -177,17 +174,6 @@ func TestOAuth2Auth_ClientCredentials(t *testing.T) {
 	if tokenCalls != 1 {
 		t.Errorf("expected token to be cached, got %d calls", tokenCalls)
 	}
-
-	// Refresh re-reads from the underlying token source. clientcredentials'
-	// TokenSource does its own caching keyed on expiry, so this may or may not
-	// hit the network again — what matters is it succeeds and the header
-	// remains valid.
-	if err := auth.Refresh(); err != nil {
-		t.Fatalf("Refresh: %v", err)
-	}
-	if header, err := auth.GetAuthHeader(); err != nil || header != "Bearer tok-1" {
-		t.Errorf("GetAuthHeader() after Refresh = (%q, %v), want (Bearer tok-1, nil)", header, err)
-	}
 }
 
 // TestOAuth2Auth_ClientCredentials_Error verifies GetAuthHeader and Refresh
@@ -201,9 +187,6 @@ func TestOAuth2Auth_ClientCredentials_Error(t *testing.T) {
 	auth := NewOAuth2Auth("client-id", "bad-secret", ts.URL, nil)
 	if _, err := auth.GetAuthHeader(); err == nil {
 		t.Error("expected GetAuthHeader to fail")
-	}
-	if err := auth.Refresh(); err == nil {
-		t.Error("expected Refresh to fail")
 	}
 }
 

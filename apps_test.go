@@ -389,9 +389,6 @@ func TestToolBuilder_Meta_Generic(t *testing.T) {
 	if mcpTool.Meta["custom"] != 42 {
 		t.Errorf("Meta[custom] = %v, want 42", mcpTool.Meta["custom"])
 	}
-	if got := tool.MetaMap()["custom"]; got != 42 {
-		t.Errorf("MetaMap()[custom] = %v, want 42", got)
-	}
 }
 
 // --- ResourceBuilder / ResourceTemplateBuilder UIMeta ---

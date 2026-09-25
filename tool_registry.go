@@ -103,9 +103,6 @@ func (r *internalRegistry) GetRegisteredTools() []MCPTool {
 }
 
 // Search finds tools matching the query
-func (r *internalRegistry) Search(ctx context.Context, query string, maxResults int) []SearchResult {
-	return r.SearchWithAdditionalTools(ctx, query, maxResults, nil, nil)
-}
 
 // SearchWithAdditionalTools finds tools matching the query, including additional tools passed in.
 // The additional tools are typically discoverable tools from providers.
@@ -211,57 +208,8 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 }
 
 // GetTool retrieves a tool by name
-func (r *internalRegistry) GetTool(ctx context.Context, name string) (*MCPTool, error) {
-	r.mu.RLock()
-	if dt, exists := r.tools[name]; exists {
-		r.mu.RUnlock()
-		return dt.tool, nil
-	}
-	r.mu.RUnlock()
-
-	// Check context providers
-	for _, provider := range GetToolProviders(ctx) {
-		tools, err := provider.GetTools(ctx)
-		if err != nil {
-			continue
-		}
-		for _, tool := range tools {
-			if tool.Name == name {
-				return &tool, nil
-			}
-		}
-	}
-
-	return nil, ErrUnknownTool
-}
 
 // CallTool executes a tool by name
-func (r *internalRegistry) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
-	// Check registered tools first
-	r.mu.RLock()
-	if dt, exists := r.tools[name]; exists {
-		handler := dt.handler
-		r.mu.RUnlock()
-		return handler(ctx, NewToolRequest(args))
-	}
-	r.mu.RUnlock()
-
-	// Try context providers
-	for _, provider := range GetToolProviders(ctx) {
-		result, err := provider.ExecuteTool(ctx, name, args)
-		if err == ErrUnknownTool {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		if result != nil {
-			return result, nil
-		}
-	}
-
-	return nil, ErrUnknownTool
-}
 
 // Search scoring functions
 

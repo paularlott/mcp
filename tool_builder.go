@@ -220,11 +220,6 @@ func (t *ToolBuilder) Visibility(visibility ...string) *ToolBuilder {
 	return t.Meta("ui", existing)
 }
 
-// MetaMap returns the tool's extension metadata map (may be nil).
-func (t *ToolBuilder) MetaMap() map[string]any {
-	return t.meta
-}
-
 // Keywords returns the keywords set for this tool.
 func (t *ToolBuilder) Keywords() []string {
 	return t.keywords

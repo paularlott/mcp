@@ -382,16 +382,6 @@ func (s *Server) getSessionManager() SessionManager {
 	return s.sessionManager
 }
 
-// CleanupExpiredSessions removes sessions that haven't been used in the specified duration
-// Only works if a session manager is configured
-func (s *Server) CleanupExpiredSessions(maxIdleTime time.Duration) error {
-	sm := s.getSessionManager()
-	if sm == nil {
-		return nil
-	}
-	return sm.CleanupExpiredSessions(context.Background(), maxIdleTime)
-}
-
 // SetInstructions sets the server instructions that are returned during protocol initialization.
 // Instructions provide guidance to the LLM about how to use the server's capabilities.
 func (s *Server) SetInstructions(instructions string) {
@@ -1440,17 +1430,6 @@ func (s *Server) ToolSource(name string) (source string, ok bool) {
 		}
 	}
 	return "", false
-}
-
-// ListTools returns the server's native tools plus discovery tools when
-// discoverable tools are registered.
-//
-// Deprecated: Use ListToolsWithContext instead. ListTools cannot see
-// request-scoped ToolProviders, so it omits any per-user or per-request tools
-// attached via WithToolProviders. It is retained as a thin wrapper for backwards
-// compatibility and may be removed in a future version.
-func (s *Server) ListTools() []MCPTool {
-	return s.ListToolsWithContext(context.Background())
 }
 
 func (s *Server) handleToolsList(w http.ResponseWriter, r *http.Request, req *MCPRequest) {

@@ -71,18 +71,43 @@ func listPromptsFromProviders(ctx context.Context, seen map[string]bool) []MCPPr
 // getPromptFromProviders tries each provider in order. The first that returns a
 // non-nil response (or a non-miss error) terminates the search. Returns
 // ErrUnknownPrompt if no provider handles the name.
+// promptProviderIndexKey memoizes the per-request name→provider index.
+type promptProviderIndexKey struct{}
+
+// getPromptFromProviders resolves the prompt by looking up which attached
+// provider lists it (GetPrompts, memoized once per request), then renders it
+// through that provider alone — routing, not probing, matching how tool
+// calls dispatch (see providerForTool): a prompt is renderable exactly when
+// it was listed, first provider in context order wins a collision, and a
+// provider whose miss is not the clean sentinel can no longer starve the
+// providers after it.
 func getPromptFromProviders(ctx context.Context, name string, args map[string]string) (*PromptResponse, error) {
-	for _, provider := range GetPromptProviders(ctx) {
-		resp, err := provider.GetPrompt(ctx, name, args)
-		if err == ErrUnknownPrompt {
-			continue
+	var index map[string]PromptProvider
+	val, err := memoizeRequest(ctx, promptProviderIndexKey{}, func() (any, error) {
+		index := make(map[string]PromptProvider)
+		for _, provider := range GetPromptProviders(ctx) {
+			prompts, err := provider.GetPrompts(ctx)
+			if err != nil {
+				// Skip the erroring provider; do not hide the others' prompts.
+				continue
+			}
+			for _, prompt := range prompts {
+				if _, taken := index[prompt.Name]; !taken {
+					index[prompt.Name] = provider
+				}
+			}
 		}
-		if err != nil {
-			return nil, err
-		}
-		if resp != nil {
-			return resp, nil
-		}
+		return index, nil
+	})
+	if err == nil {
+		index, _ = val.(map[string]PromptProvider)
 	}
-	return nil, ErrUnknownPrompt
+	if index == nil {
+		return nil, ErrUnknownPrompt
+	}
+	provider, ok := index[name]
+	if !ok {
+		return nil, ErrUnknownPrompt
+	}
+	return provider.GetPrompt(ctx, name, args)
 }

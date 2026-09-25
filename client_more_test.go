@@ -105,18 +105,6 @@ func TestClient_GetPrompt(t *testing.T) {
 
 // TestArgs_Arg covers the Args fluent builder's Arg method, which no test
 // exercises (CallTool call sites always pass a plain map literal).
-func TestArgs_Arg(t *testing.T) {
-	args := Args{}.Arg("city", "London").Arg("units", "metric")
-	if len(args) != 2 || args["city"] != "London" || args["units"] != "metric" {
-		t.Errorf("Args = %+v, want city=London units=metric", args)
-	}
-
-	// Arg returns the same map for chaining.
-	extended := args.Arg("extra", 1)
-	if len(extended) != 3 {
-		t.Errorf("expected chained Arg to add to the same map, got %+v", extended)
-	}
-}
 
 // TestClient_Instructions covers Client.Instructions, which captures whatever
 // the remote server returned in its initialize response.

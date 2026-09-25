@@ -280,7 +280,7 @@ func TestServer_ListTools_DeprecatedWrapper(t *testing.T) {
 	s.RegisterTool(NewTool("a", "tool a"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 		return NewToolResponseText("a"), nil
 	})
-	tools := s.ListTools()
+	tools := s.ListToolsWithContext(context.Background())
 	if len(tools) != 1 || tools[0].Name != "a" {
 		t.Errorf("ListTools() = %+v, want [{a}]", tools)
 	}

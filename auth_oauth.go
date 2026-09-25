@@ -145,15 +145,3 @@ func (o *OAuth2Auth) GetAuthHeader() (string, error) {
 
 	return fmt.Sprintf("Bearer %s", token.AccessToken), nil
 }
-
-func (o *OAuth2Auth) Refresh() error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	t, err := o.source.Token()
-	if err != nil {
-		return fmt.Errorf("failed to refresh oauth2 token: %w", err)
-	}
-	o.token = t
-	return nil
-}

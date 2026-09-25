@@ -364,34 +364,6 @@ func (r *ToolRequest) ObjectBoolOr(objectName, propertyName string, defaultValue
 	return val
 }
 
-// GetObjectProperty extracts a property from an object parameter.
-//
-// Deprecated: use ObjectProperty.
-func (r *ToolRequest) GetObjectProperty(objectName, propertyName string) (any, error) {
-	return r.ObjectProperty(objectName, propertyName)
-}
-
-// GetObjectStringProperty extracts a string property from an object parameter.
-//
-// Deprecated: use ObjectString (or ObjectStringOr for a default).
-func (r *ToolRequest) GetObjectStringProperty(objectName, propertyName string) (string, error) {
-	return r.ObjectString(objectName, propertyName)
-}
-
-// GetObjectIntProperty extracts an int property from an object parameter.
-//
-// Deprecated: use ObjectInt (or ObjectIntOr for a default).
-func (r *ToolRequest) GetObjectIntProperty(objectName, propertyName string) (int, error) {
-	return r.ObjectInt(objectName, propertyName)
-}
-
-// GetObjectBoolProperty extracts a bool property from an object parameter.
-//
-// Deprecated: use ObjectBool (or ObjectBoolOr for a default).
-func (r *ToolRequest) GetObjectBoolProperty(objectName, propertyName string) (bool, error) {
-	return r.ObjectBool(objectName, propertyName)
-}
-
 // Args returns all arguments as a map
 func (r *ToolRequest) Args() map[string]any {
 	return r.args

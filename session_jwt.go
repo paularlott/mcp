@@ -23,18 +23,11 @@ type SessionManager interface {
 	// Returns true if valid, updates lastUsed timestamp if applicable
 	ValidateSession(ctx context.Context, sessionID string) (valid bool, err error)
 
-	// GetProtocolVersion returns the negotiated protocol version for a session
-	GetProtocolVersion(ctx context.Context, sessionID string) (version string, err error)
+	// GetShowAll returns whether the session was created with show-all mode
+	GetShowAll(ctx context.Context, sessionID string) (showAll bool, err error)
 
-	// GetShowAll returns whether show-all mode is enabled for a session
-	// Returns false if not set or session is invalid
-	GetShowAll(ctx context.Context, sessionID string) (bool, error)
-
-	// DeleteSession removes a session
+	// DeleteSession removes a session ahead of its natural expiry
 	DeleteSession(ctx context.Context, sessionID string) error
-
-	// CleanupExpiredSessions removes sessions older than maxIdleTime
-	CleanupExpiredSessions(ctx context.Context, maxIdleTime time.Duration) error
 }
 
 // JWTSessionManager provides stateless session management using JWT tokens
@@ -164,26 +157,6 @@ func (m *JWTSessionManager) ValidateSession(ctx context.Context, sessionID strin
 	return true, nil
 }
 
-// GetProtocolVersion extracts the protocol version from a JWT session token
-func (m *JWTSessionManager) GetProtocolVersion(ctx context.Context, sessionID string) (string, error) {
-	parts := strings.Split(sessionID, ".")
-	if len(parts) != 3 {
-		return "", fmt.Errorf("invalid token format")
-	}
-
-	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return "", fmt.Errorf("failed to decode claims: %w", err)
-	}
-
-	var claims jwtClaims
-	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return "", fmt.Errorf("failed to unmarshal claims: %w", err)
-	}
-
-	return claims.Protocol, nil
-}
-
 // GetShowAll extracts the show-all flag from a JWT session token
 func (m *JWTSessionManager) GetShowAll(ctx context.Context, sessionID string) (bool, error) {
 	parts := strings.Split(sessionID, ".")
@@ -208,12 +181,6 @@ func (m *JWTSessionManager) GetShowAll(ctx context.Context, sessionID string) (b
 func (m *JWTSessionManager) DeleteSession(ctx context.Context, sessionID string) error {
 	// JWT sessions cannot be revoked - they expire naturally
 	// This is an acceptable trade-off for the stateless benefits
-	return nil
-}
-
-// CleanupExpiredSessions is a no-op for JWT sessions (tokens expire automatically)
-func (m *JWTSessionManager) CleanupExpiredSessions(ctx context.Context, maxIdleTime time.Duration) error {
-	// JWT sessions self-expire based on expiration claim
 	return nil
 }
 

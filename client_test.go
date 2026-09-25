@@ -525,18 +525,4 @@ func TestClient_ToolFilter(t *testing.T) {
 			t.Errorf("expected 3 tools after clearing filter, got %d", len(tools))
 		}
 	})
-
-	t.Run("GetToolFilter returns current filter", func(t *testing.T) {
-		c := NewClient(ts.URL, staticAuth{"Bearer t"}, "")
-		if c.GetToolFilter() != nil {
-			t.Error("expected nil filter initially")
-		}
-
-		filter := func(name string) bool { return true }
-		c.WithToolFilter(filter)
-
-		if c.GetToolFilter() == nil {
-			t.Error("expected filter to be set")
-		}
-	})
 }
