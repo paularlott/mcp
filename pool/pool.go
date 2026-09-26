@@ -25,9 +25,6 @@ type PoolConfig struct {
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
-
-	// Default timeout for requests
-	Timeout time.Duration
 }
 
 // DefaultPoolConfig returns sensible defaults (secure by default)
@@ -38,7 +35,6 @@ func DefaultPoolConfig() *PoolConfig {
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
-		Timeout:             5 * time.Minute, // Extended timeout for slow AI/LLM operations
 	}
 }
 
@@ -121,7 +117,6 @@ func NewPool(config *PoolConfig) HTTPPool {
 		MaxIdleConns:        config.MaxIdleConns,
 		MaxIdleConnsPerHost: config.MaxIdleConnsPerHost,
 		IdleConnTimeout:     config.IdleConnTimeout,
-		Timeout:             config.Timeout,
 	}
 
 	// Apply defaults for zero values
@@ -133,9 +128,6 @@ func NewPool(config *PoolConfig) HTTPPool {
 	}
 	if merged.IdleConnTimeout == 0 {
 		merged.IdleConnTimeout = defaults.IdleConnTimeout
-	}
-	if merged.Timeout == 0 {
-		merged.Timeout = defaults.Timeout
 	}
 
 	return createPoolWithConfig(merged)
@@ -187,9 +179,13 @@ func createPoolWithConfig(cfg *PoolConfig) *DefaultPool {
 	return &DefaultPool{
 		httpClient: &http.Client{
 			Transport: transport,
-			// NOTE: Don't set Timeout here - it applies to entire request including
-			// body reading, which breaks streaming. Use context timeouts for overall
-			// request control instead.
+			// NOTE: Deliberately no Timeout: http.Client.Timeout covers the
+			// entire request including body reading, which would cut off long
+			// streaming responses (LLM completions can run for minutes). Use
+			// context deadlines for overall request control, or shallow-copy
+			// this client and set a Timeout on the copy when a per-client
+			// deadline is genuinely wanted (the copy shares this transport,
+			// so pooling is preserved).
 		},
 	}
 }
