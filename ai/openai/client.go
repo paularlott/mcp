@@ -105,6 +105,7 @@ type Config struct {
 	RetryBackoff        time.Duration        // Base backoff duration for retry (omit for 1s, must be >= 0)
 	RetryOnRateLimit    *bool                // Whether to retry on 429 rate limit errors (omit for true)
 	RetryOnServerError  *bool                // Whether to retry on 5xx server errors (omit for true)
+	PromptCaching       *bool                // Claude only: add prompt-caching breakpoints (system prompt, last tool, last message) to outbound requests (omit for true)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool

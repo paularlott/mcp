@@ -40,6 +40,7 @@ type Client struct {
 	retryBackoff       time.Duration
 	retryOnRateLimit   bool
 	retryOnServerError bool
+	promptCaching      bool
 }
 
 func New(config openai.Config) (*Client, error) {
@@ -91,6 +92,10 @@ func New(config openai.Config) (*Client, error) {
 	if config.RetryOnServerError != nil {
 		retryOnServerError = *config.RetryOnServerError
 	}
+	promptCaching := true
+	if config.PromptCaching != nil {
+		promptCaching = *config.PromptCaching
+	}
 
 	return &Client{
 		apiKey:             config.APIKey,
@@ -109,6 +114,7 @@ func New(config openai.Config) (*Client, error) {
 		retryBackoff:       retryBackoff,
 		retryOnRateLimit:   retryOnRateLimit,
 		retryOnServerError: retryOnServerError,
+		promptCaching:      promptCaching,
 	}, nil
 }
 
@@ -455,7 +461,7 @@ func (c *Client) convertToClaudeRequest(req openai.ChatCompletionRequest) Claude
 	var messages []openai.Message
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			claudeReq.System = SystemField{text: msg.GetContentAsString()}
+			claudeReq.System = NewSystemField(msg.GetContentAsString(), c.promptCaching)
 		} else {
 			messages = append(messages, msg)
 		}
@@ -469,7 +475,38 @@ func (c *Client) convertToClaudeRequest(req openai.ChatCompletionRequest) Claude
 		claudeReq.Tools = c.convertTools(req.Tools)
 	}
 
+	if c.promptCaching {
+		applyCacheBreakpoints(&claudeReq)
+	}
+
 	return claudeReq
+}
+
+// applyCacheBreakpoints marks the natural cache boundaries in an outbound
+// request for Anthropic's prompt caching: the end of the tools list and the
+// end of the conversation so far (the system prompt's own breakpoint is set
+// alongside it, in convertToClaudeRequest, since NewSystemField needs to
+// know at construction time whether to use the cacheable block form).
+//
+// Marking the LAST message on every call (rather than tracking where a
+// previous call's breakpoint was) is deliberate and self-maintaining: cache
+// lookups match the longest cached prefix, so as a conversation grows by
+// strict append, each call's breakpoint automatically becomes a superset of
+// the previous call's, and Anthropic reuses whatever portion still matches.
+//
+// Together with the system prompt, this gives up to three independently
+// cacheable, naturally-stable segments — the standard pattern recommended
+// for a tool-using, multi-turn chat client. See
+// https://docs.anthropic.com/claude/docs/prompt-caching.
+func applyCacheBreakpoints(claudeReq *ClaudeRequest) {
+	if n := len(claudeReq.Tools); n > 0 {
+		claudeReq.Tools[n-1].CacheControl = EphemeralCacheControl
+	}
+	if n := len(claudeReq.Messages); n > 0 {
+		if blocks := claudeReq.Messages[n-1].Content.blocks; len(blocks) > 0 {
+			blocks[len(blocks)-1].CacheControl = EphemeralCacheControl
+		}
+	}
 }
 
 func (c *Client) convertMessages(messages []openai.Message) []ClaudeMessage {

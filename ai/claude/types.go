@@ -8,9 +8,34 @@ import (
 	"github.com/paularlott/mcp/ai/openai"
 )
 
-// SystemField handles the Anthropic system field which can be a string or []ContentBlock
+// CacheControl marks a point in an outbound request for Anthropic's prompt
+// caching: everything up to and including the block it's attached to is
+// cached, and reused instead of reprocessed on a later request whose prefix
+// up to the same point is byte-identical. "ephemeral" is the only value
+// Anthropic currently supports. See
+// https://docs.anthropic.com/claude/docs/prompt-caching.
+type CacheControl struct {
+	Type string `json:"type"` // always "ephemeral" today
+}
+
+// EphemeralCacheControl is the cache_control value used everywhere this
+// package marks a cache breakpoint.
+var EphemeralCacheControl = &CacheControl{Type: "ephemeral"}
+
+// SystemField handles the Anthropic system field which can be a string or
+// []ContentBlock. A plain string can't carry cache_control, so this type
+// switches to the block form (a single text block) whenever caching is
+// requested for it.
 type SystemField struct {
-	text string
+	text         string
+	cacheControl bool
+}
+
+// NewSystemField builds a system field, optionally marked as a prompt-cache
+// breakpoint (see CacheControl) — used for outbound requests. cacheControl
+// is ignored for an empty text (nothing to cache).
+func NewSystemField(text string, cacheControl bool) SystemField {
+	return SystemField{text: text, cacheControl: cacheControl}
 }
 
 func (s *SystemField) UnmarshalJSON(data []byte) error {
@@ -34,7 +59,14 @@ func (s *SystemField) UnmarshalJSON(data []byte) error {
 }
 
 func (s SystemField) MarshalJSON() ([]byte, error) {
-	return json.Marshal(s.text)
+	if !s.cacheControl || s.text == "" {
+		return json.Marshal(s.text)
+	}
+	return json.Marshal([]ContentBlock{{
+		Type:         "text",
+		Text:         s.text,
+		CacheControl: EphemeralCacheControl,
+	}})
 }
 
 func (s SystemField) String() string { return s.text }
@@ -104,21 +136,23 @@ type ImageSource struct {
 
 // ContentBlock is a content block in the Claude format
 type ContentBlock struct {
-	Type      string         `json:"type"` // "text", "image", "tool_use", "tool_result"
-	Text      string         `json:"text,omitempty"`
-	ID        string         `json:"id,omitempty"`
-	Name      string         `json:"name,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	ToolUseID string         `json:"tool_use_id,omitempty"`
-	Content   any            `json:"content,omitempty"`
-	Source    *ImageSource   `json:"source,omitempty"` // image source (for type="image")
+	Type         string         `json:"type"` // "text", "image", "tool_use", "tool_result"
+	Text         string         `json:"text,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	Name         string         `json:"name,omitempty"`
+	Input        map[string]any `json:"input,omitempty"`
+	ToolUseID    string         `json:"tool_use_id,omitempty"`
+	Content      any            `json:"content,omitempty"`
+	Source       *ImageSource   `json:"source,omitempty"` // image source (for type="image")
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 // ClaudeTool is a tool definition in the Claude format
 type ClaudeTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  map[string]any `json:"input_schema"`
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 // MessagesRequestToOpenAI converts a MessagesRequest to an OpenAI ChatCompletionRequest
