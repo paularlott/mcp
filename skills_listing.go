@@ -132,16 +132,34 @@ func (c *SkillsListingCache) Invalidate() {
 // when empty. The name falls back to the URI path when the frontmatter
 // lacks one. The description is what lets the model decide a skill is
 // relevant before spending a read on it.
+//
+// name, description, and uri may originate from a remote MCP server's own
+// skills/list response, so every field is flattened to a single line first:
+// otherwise an embedded newline lets a malicious remote close out this
+// bullet (or a caller's surrounding block markers) and inject standalone
+// text into whatever prompt role the caller merges these lines into.
 func SkillPromptLine(namespace string, skill Skill) string {
 	name, _ := skill.Frontmatter["name"].(string)
 	if name == "" {
 		name = strings.TrimSuffix(strings.TrimPrefix(skill.URI, "skill://"), "/SKILL.md")
 	}
+	name = flattenPromptLine(name)
+	uri := flattenPromptLine(skill.URI)
 	if namespace != "" {
-		name = namespace + "/" + name
+		name = flattenPromptLine(namespace) + "/" + name
 	}
 	if description, _ := skill.Frontmatter["description"].(string); description != "" {
-		return "- " + name + ": " + description + " (" + skill.URI + ")"
+		return "- " + name + ": " + flattenPromptLine(description) + " (" + uri + ")"
 	}
-	return "- " + name + " (" + skill.URI + ")"
+	return "- " + name + " (" + uri + ")"
+}
+
+// flattenPromptLine collapses every line separator in untrusted, externally
+// supplied text to a single space so it cannot terminate the prompt line (or
+// any surrounding block delimiter) it is embedded in.
+func flattenPromptLine(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
 }
