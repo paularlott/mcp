@@ -17,6 +17,7 @@ type parameterBase struct {
 	name        string
 	description string
 	required    bool
+	header      string // x-mcp-header name (string, integer, boolean only)
 }
 
 // Parameter builder for constructing schemas
@@ -34,6 +35,32 @@ func (r requiredOption) applyToParam(param parameterBase) {
 
 func Required() Option {
 	return requiredOption{}
+}
+
+// headerOption marks a parameter to be mirrored into an HTTP header.
+type headerOption struct{ name string }
+
+func (h headerOption) applyToParam(param parameterBase) {}
+
+// HTTPHeader marks a string, integer or boolean parameter with the 2026-07-28
+// "x-mcp-header" annotation: clients calling the tool over Streamable HTTP
+// mirror the argument's value into an "Mcp-Param-<name>" header, so load
+// balancers and gateways can route on it without parsing the body, and the
+// server rejects a call whose header does not match the argument. name must
+// be a valid HTTP header token, unique (case-insensitively) within the tool;
+// RegisterTool panics otherwise. The option is ignored on other types.
+func HTTPHeader(name string) Option {
+	return headerOption{name: name}
+}
+
+// processHeader returns the HTTPHeader name among options, if any.
+func processHeader(options []Option) string {
+	for _, opt := range options {
+		if h, ok := opt.(headerOption); ok {
+			return h.name
+		}
+	}
+	return ""
 }
 
 // processOptions applies options to a parameterBase and returns true if required
@@ -67,6 +94,7 @@ func (s *stringParam) toParamDef() paramDef {
 		paramType:   "string",
 		description: s.description,
 		required:    s.required,
+		header:      s.header,
 		properties:  make(map[string]*paramDef),
 	}
 }
@@ -103,6 +131,7 @@ func (n *integerParam) toParamDef() paramDef {
 		paramType:   "integer",
 		description: n.description,
 		required:    n.required,
+		header:      n.header,
 		properties:  make(map[string]*paramDef),
 	}
 }
@@ -121,6 +150,7 @@ func (b *booleanParam) toParamDef() paramDef {
 		paramType:   "boolean",
 		description: b.description,
 		required:    b.required,
+		header:      b.header,
 		properties:  make(map[string]*paramDef),
 	}
 }
@@ -272,6 +302,7 @@ func String(name, description string, options ...Option) Parameter {
 			name:        name,
 			description: description,
 			required:    processOptions(options),
+			header:      processHeader(options),
 		},
 	}
 }
@@ -296,6 +327,7 @@ func Integer(name, description string, options ...Option) Parameter {
 			name:        name,
 			description: description,
 			required:    processOptions(options),
+			header:      processHeader(options),
 		},
 	}
 }
@@ -307,6 +339,7 @@ func Boolean(name, description string, options ...Option) Parameter {
 			name:        name,
 			description: description,
 			required:    processOptions(options),
+			header:      processHeader(options),
 		},
 	}
 }

@@ -19,6 +19,7 @@ type paramDef struct {
 	paramType   string
 	description string
 	required    bool
+	header      string               // x-mcp-header name, if mirrored to an HTTP header
 	properties  map[string]*paramDef // For object types
 	itemSchema  *paramDef            // For array types with complex items
 }
@@ -112,7 +113,11 @@ func (t *ToolBuilder) buildParamSchema(param *paramDef) map[string]any {
 	} else if param.paramType == "object" {
 		return t.buildObjectSchema(param)
 	} else {
-		return map[string]any{"type": param.paramType}
+		schema := map[string]any{"type": param.paramType}
+		if param.header != "" {
+			schema[xMcpHeaderKey] = param.header
+		}
+		return schema
 	}
 }
 

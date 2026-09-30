@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"sort"
 )
 
@@ -26,6 +27,12 @@ type registeredTool struct {
 // Optional keywords parameter is merged with keywords set via Discoverable() for search relevance.
 // Keywords are used in show-all mode and for discoverable tool search.
 func (s *Server) RegisterTool(tool *ToolBuilder, handler ToolHandler, keywords ...string) {
+	// An invalid x-mcp-header annotation would make clients drop the tool
+	// (2026-07-28 requires it); fail at registration, like other definition
+	// errors, rather than serve a tool nobody can call.
+	if _, err := schemaHeaderBindings(tool.buildSchema()); err != nil {
+		panic(fmt.Sprintf("mcp: tool %q: %v", tool.name, err))
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

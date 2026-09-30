@@ -232,7 +232,7 @@ func TestStdioSubscriptionsListenNotSupported(t *testing.T) {
 // (a real client's strict schema validation rejects a tools/list result
 // missing ttlMs): a stdio request whose raw params carry
 // io.modelcontextprotocol/protocolVersion must get the same resultType/
-// ttlMs/cacheScope/_meta.serverInfo shaping HTTP's finalizeModernResponse
+// ttlMs/cacheScope/_meta.serverInfo shaping HTTP's modernShape
 // applies, even though stdio has no headers to signal the era with.
 func TestStdioModernRequest_ResultShape(t *testing.T) {
 	s := NewServer("stdio-modern-shape", "1")

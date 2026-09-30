@@ -22,7 +22,9 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Dynamic Tool Providers**: Load tools from external sources (databases, scripts, APIs)
 - **Per-User Remote Servers**: Request-scoped `RemoteProvider` for federating remote MCP servers with per-user auth, filtering, and caching
 - **Provider Composition**: Combine providers with `MultiProvider` using clear miss/error semantics
-- **MCP Compliant**: Full support for protocol versions 2024-11-05 through 2025-11-25
+- **Streamed Responses**: Long-running `tools/call`, `resources/read` and `prompts/get` switch to an SSE stream with keep-alives, so proxies with read timeouts (Cloudflare, nginx, load balancers) don't cut them off; fast calls stay plain JSON
+- **Header Routing**: `x-mcp-header` tool parameters mirrored to `Mcp-Param-*` HTTP headers (`HTTPHeader()` option), validated by the server and sent automatically by the client
+- **MCP Compliant**: Full support for protocol versions 2024-11-05 through 2026-07-28, on both server and client, negotiating the highest version both sides support
 
 ## Installation
 
@@ -78,6 +80,17 @@ Mount the server as an `http.Handler` (as in Quick Start above):
 ```go
 http.HandleFunc("/mcp", server.HandleRequest)
 ```
+
+A request from a client that accepts `text/event-stream` and runs longer than
+2 seconds is answered as an SSE stream with a keep-alive comment every 15
+seconds; anything faster is a normal JSON response. Tune or disable it with:
+
+```go
+server.SetResponseStreaming(5*time.Second, 20*time.Second) // delay, keep-alive
+server.SetResponseStreaming(-1, 0)                          // always JSON
+```
+
+The client handles both response forms transparently.
 
 ### Stdio
 
@@ -140,6 +153,7 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Prompts](docs/guides/prompts.md)** - Reusable message templates with arguments, and per-user/session prompts
 - **Skills** - Serving Agent Skills directories (`skills/list`, `skills/get`, `skill://` resources) per SEP-2640, statically or per-request via `SkillProvider`
 - **[Notifications](docs/guides/notifications.md)** - Push-based list refresh (listChanged) over HTTP and stdio, with federation propagation
+- **[Protocol Support](docs/guides/protocol-support.md)** - Supported protocol versions (2024-11-05 through 2026-07-28), version negotiation, streamed responses, `x-mcp-header`, and pagination
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
 - **[Error Handling](docs/guides/error-handling.md)** - Structured error patterns and best practices

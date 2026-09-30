@@ -95,6 +95,12 @@ type clientTransport interface {
 	Close() error
 }
 
+// notifyTransport is implemented by non-HTTP transports that can send a
+// JSON-RPC notification (no response expected).
+type notifyTransport interface {
+	notify(ctx context.Context, method string, params any) error
+}
+
 // batchTransport is implemented by transports that can send several requests
 // as a single wire-level batch. The stdio transport does (it is backed by
 // [jsonrpc.Client.CallBatch]); the default HTTP path does not implement it, so
@@ -379,10 +385,56 @@ func (c *Client) initializeLegacy(ctx context.Context) error {
 			}
 		}
 	}
+	// "If the client does not support the version in the server's response,
+	// it SHOULD disconnect" (2025-11-25 lifecycle §Version Negotiation).
+	if !isSupportedProtocolVersion(c.protocolVersion) {
+		version := c.protocolVersion
+		c.protocolVersion = ""
+		c.sessionID = ""
+		return fmt.Errorf("initialize failed: server negotiated protocol version %q, which this client does not support (supported: %v)", version, supportedProtocolVersions)
+	}
 
 	c.initialized = true
 	c.era = eraLegacy
+
+	// The client MUST send notifications/initialized once initialize succeeds
+	// (2025-11-25 lifecycle §Initialization). Best effort: the server's
+	// acknowledgement carries nothing, and a server that rejects it has
+	// still completed the handshake.
+	c.sendInitializedNotification(ctx)
 	return nil
+}
+
+// sendInitializedNotification sends the Legacy notifications/initialized
+// notification over the client's transport. Called under c.mu, held by
+// Initialize (see applyLegacyHeaders for why that is fine).
+func (c *Client) sendInitializedNotification(ctx context.Context) {
+	const method = "notifications/initialized"
+	if c.transport != nil {
+		if n, ok := c.transport.(notifyTransport); ok {
+			n.notify(ctx, method, nil)
+		}
+		return
+	}
+
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
+	if err != nil {
+		return
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	c.applyLegacyHeaders(httpReq.Header, method)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	if c.applyAuthHeader(httpReq.Header) != nil {
+		return
+	}
+	if httpResp, err := c.httpClient.Do(httpReq); err == nil {
+		io.Copy(io.Discard, httpResp.Body)
+		httpResp.Body.Close()
+	}
 }
 
 // Namespace returns the namespace for this client's tools.
@@ -463,25 +515,18 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 	}
 	c.mu.RUnlock()
 
-	req := MCPRequest{
-		JSONRPC: "2.0",
-		ID:      "list-tools",
-		Method:  "tools/list",
-	}
-
-	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	pages, err := c.listPages(ctx, "list-tools", "tools/list")
+	if err != nil {
 		return nil, fmt.Errorf("list tools failed: %w", err)
 	}
-
-	if resp.Error != nil {
-		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
-	}
-
-	// Parse the result using type assertion where possible
-	tools, err := parseToolsResult(resp.Result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse tools response: %w", err)
+	var tools []MCPTool
+	for _, page := range pages {
+		// Parse the result using type assertion where possible
+		pageTools, err := parseToolsResult(page)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse tools response: %w", err)
+		}
+		tools = append(tools, pageTools...)
 	}
 
 	// Add namespace to tool names, apply filter, and cache the results
@@ -489,11 +534,23 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 	filter := c.toolFilter
 	c.mu.Unlock()
 
+	c.mu.RLock()
+	checkHeaders := c.era == eraModern && c.transport == nil
+	c.mu.RUnlock()
+
 	var namespacedTools []MCPTool
 	for _, tool := range tools {
 		// Apply filter if set (filter receives original name without namespace)
 		if filter != nil && !filter(tool.Name) {
 			continue
+		}
+		// A Streamable HTTP client MUST exclude a tool whose x-mcp-header
+		// annotations are invalid (2026-07-28), so one malformed definition
+		// does not break the rest.
+		if checkHeaders {
+			if _, err := schemaHeaderBindings(tool.InputSchema); err != nil {
+				continue
+			}
 		}
 		namespacedTools = append(namespacedTools, MCPTool{
 			Name:         c.namespace + tool.Name,
@@ -510,6 +567,48 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 	c.mu.Unlock()
 
 	return namespacedTools, nil
+}
+
+// maxListPages bounds how many pages one list call follows, so a server that
+// never stops returning a nextCursor cannot loop the client forever.
+const maxListPages = 1000
+
+// listPages sends a paginated list request (tools/list, resources/list,
+// resources/templates/list, prompts/list) and follows nextCursor until the
+// server stops returning one, returning each page's result. Every protocol
+// revision paginates these methods; a client that reads only the first page
+// silently misses the rest of a paginating server's list. A JSON-RPC error
+// is returned as a *ToolError.
+func (c *Client) listPages(ctx context.Context, id, method string) ([]any, error) {
+	var pages []any
+	cursor := ""
+	seen := map[string]bool{}
+	for len(pages) < maxListPages {
+		req := MCPRequest{JSONRPC: "2.0", ID: id, Method: method}
+		if cursor != "" {
+			req.Params = map[string]any{"cursor": cursor}
+		}
+		var resp MCPResponse
+		if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+			return nil, err
+		}
+		if resp.Error != nil {
+			return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+		}
+		pages = append(pages, resp.Result)
+
+		result, _ := resp.Result.(map[string]any)
+		next, _ := result["nextCursor"].(string)
+		if next == "" {
+			return pages, nil
+		}
+		if seen[next] {
+			return nil, fmt.Errorf("server repeated pagination cursor %q", next)
+		}
+		seen[next] = true
+		cursor = next
+	}
+	return nil, fmt.Errorf("gave up after %d pages", maxListPages)
 }
 
 // RefreshToolCache explicitly refreshes the tool cache
@@ -571,8 +670,24 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	}
 
 	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
-		return nil, fmt.Errorf("call tool failed: %w", err)
+	for attempt := 0; ; attempt++ {
+		callCtx, err := c.withToolCallHeaders(ctx, c.namespace+toolName, args)
+		if err != nil {
+			return nil, fmt.Errorf("call tool failed: %w", err)
+		}
+		resp = MCPResponse{}
+		if err := c.sendRequest(callCtx, &req, &resp, nil); err != nil {
+			return nil, fmt.Errorf("call tool failed: %w", err)
+		}
+		// HeaderMismatch on a Modern HTTP call means our view of the tool's
+		// x-mcp-header annotations is stale: refresh tools/list and retry
+		// once (2026-07-28 client behaviour, SHOULD).
+		if attempt == 0 && resp.Error != nil && resp.Error.Code == ErrorCodeHeaderMismatch && c.mirrorsParamHeaders() {
+			if c.RefreshToolCache(ctx) == nil {
+				continue
+			}
+		}
+		break
 	}
 
 	if resp.Error != nil {
@@ -602,28 +717,21 @@ func (c *Client) ListResources(ctx context.Context) ([]MCPResource, error) {
 		return nil, err
 	}
 
-	req := MCPRequest{
-		JSONRPC: "2.0",
-		ID:      "list-resources",
-		Method:  "resources/list",
-	}
-
-	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	pages, err := c.listPages(ctx, "list-resources", "resources/list")
+	if err != nil {
 		return nil, fmt.Errorf("list resources failed: %w", err)
 	}
-
-	if resp.Error != nil {
-		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+	var all []MCPResource
+	for _, page := range pages {
+		var parsed struct {
+			Resources []MCPResource `json:"resources"`
+		}
+		if err := decodeResult(page, &parsed, "resources response"); err != nil {
+			return nil, err
+		}
+		all = append(all, parsed.Resources...)
 	}
-
-	var parsed struct {
-		Resources []MCPResource `json:"resources"`
-	}
-	if err := decodeResult(resp.Result, &parsed, "resources response"); err != nil {
-		return nil, err
-	}
-	return parsed.Resources, nil
+	return all, nil
 }
 
 // ReadResource reads a resource by URI from the remote server via
@@ -669,27 +777,21 @@ func (c *Client) ListResourceTemplates(ctx context.Context) ([]MCPResourceTempla
 		return nil, err
 	}
 
-	req := MCPRequest{
-		JSONRPC: "2.0",
-		ID:      "list-resource-templates",
-		Method:  "resources/templates/list",
-	}
-
-	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	pages, err := c.listPages(ctx, "list-resource-templates", "resources/templates/list")
+	if err != nil {
 		return nil, fmt.Errorf("list resource templates failed: %w", err)
 	}
-	if resp.Error != nil {
-		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+	var all []MCPResourceTemplate
+	for _, page := range pages {
+		var parsed struct {
+			ResourceTemplates []MCPResourceTemplate `json:"resourceTemplates"`
+		}
+		if err := decodeResult(page, &parsed, "resource templates response"); err != nil {
+			return nil, err
+		}
+		all = append(all, parsed.ResourceTemplates...)
 	}
-
-	var parsed struct {
-		ResourceTemplates []MCPResourceTemplate `json:"resourceTemplates"`
-	}
-	if err := decodeResult(resp.Result, &parsed, "resource templates response"); err != nil {
-		return nil, err
-	}
-	return parsed.ResourceTemplates, nil
+	return all, nil
 }
 
 // ListPrompts retrieves the list of prompts from the remote server via
@@ -699,28 +801,21 @@ func (c *Client) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
 		return nil, err
 	}
 
-	req := MCPRequest{
-		JSONRPC: "2.0",
-		ID:      "list-prompts",
-		Method:  "prompts/list",
-	}
-
-	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	pages, err := c.listPages(ctx, "list-prompts", "prompts/list")
+	if err != nil {
 		return nil, fmt.Errorf("list prompts failed: %w", err)
 	}
-
-	if resp.Error != nil {
-		return nil, &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+	var all []MCPPrompt
+	for _, page := range pages {
+		var parsed struct {
+			Prompts []MCPPrompt `json:"prompts"`
+		}
+		if err := decodeResult(page, &parsed, "prompts response"); err != nil {
+			return nil, err
+		}
+		all = append(all, parsed.Prompts...)
 	}
-
-	var parsed struct {
-		Prompts []MCPPrompt `json:"prompts"`
-	}
-	if err := decodeResult(resp.Result, &parsed, "prompts response"); err != nil {
-		return nil, err
-	}
-	return parsed.Prompts, nil
+	return all, nil
 }
 
 // GetPrompt renders a prompt by name with the given string arguments via
@@ -790,10 +885,9 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	c.applyRequestHeaders(httpReq.Header)
+	c.applyLegacyHeaders(httpReq.Header, req.Method)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json, text/event-stream")
-	httpReq.Header.Set("User-Agent", fmt.Sprintf("%s/%s", mcpClientName, mcpClientVersion))
 
 	// Mirror the resource fan-out hop counter (see resources.go) when the
 	// caller's ctx carries one — i.e. when this request is itself a
@@ -801,10 +895,6 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 	// it toward maxResourceFanoutHops.
 	if hop := resourceFanoutHopFrom(ctx); hop > 0 {
 		httpReq.Header.Set(headerResourceFanoutHop, strconv.Itoa(hop))
-	}
-
-	if c.sessionID != "" && req.Method != "initialize" {
-		httpReq.Header.Set(headerSessionID, c.sessionID)
 	}
 
 	if err := c.applyAuthHeader(httpReq.Header); err != nil {
@@ -826,16 +916,14 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 		return fmt.Errorf("server returned status %d", httpResp.StatusCode)
 	}
 
-	// Read the entire response body first
+	// A request may be answered with an SSE stream (see client_stream.go).
+	if strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream") {
+		return c.readResponseStream(ctx, httpResp.Body, req, resp)
+	}
+
 	bodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	// Check if it's an event stream
-	if strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream") {
-		// Handle Server-Sent Events format
-		return c.parseEventStream(bodyBytes, resp)
 	}
 
 	// Try to decode as JSON
@@ -844,30 +932,6 @@ func (c *Client) sendRequest(ctx context.Context, req *MCPRequest, resp *MCPResp
 	}
 
 	return nil
-}
-
-func (c *Client) parseEventStream(data []byte, resp *MCPResponse) error {
-	lines := bytes.Split(data, []byte("\n"))
-	var jsonData []byte
-
-	for _, line := range lines {
-		line = bytes.TrimSpace(line)
-		if bytes.HasPrefix(line, []byte("data:")) {
-			// Tolerate optional space after colon and skip empty data lines
-			payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-			if len(payload) == 0 {
-				continue
-			}
-			jsonData = payload
-			break
-		}
-	}
-
-	if len(jsonData) == 0 {
-		return fmt.Errorf("no JSON data found in event stream")
-	}
-
-	return json.Unmarshal(jsonData, resp)
 }
 
 // ToolSearch performs a tool search using the tool_search MCP tool.

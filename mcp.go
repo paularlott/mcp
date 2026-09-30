@@ -94,6 +94,11 @@ func firstPresent(values map[string]any, keys ...string) any {
 // per-request or per-user tools, prefer ToolProvider with WithToolProviders
 // rather than mutating the shared server.
 type Server struct {
+	// Streamed-response settings; see SetResponseStreaming (server_stream.go).
+	streamingConfigured bool
+	streamingDelay      time.Duration
+	streamingKeepAlive  time.Duration
+
 	name                   string
 	version                string
 	instructions           string

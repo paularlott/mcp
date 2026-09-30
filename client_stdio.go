@@ -45,6 +45,10 @@ func (t *stdioTransport) roundTrip(ctx context.Context, req *MCPRequest, resp *M
 	return nil
 }
 
+func (t *stdioTransport) notify(ctx context.Context, method string, params any) error {
+	return t.rpc.Notify(ctx, method, params)
+}
+
 func (t *stdioTransport) Close() error {
 	return t.rpc.Close()
 }

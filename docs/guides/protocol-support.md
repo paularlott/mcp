@@ -141,12 +141,80 @@ bytes. A consumer that does render icons is responsible for the spec's
 security precautions (reject non-`https(s)`/`data:` schemes, verify
 same-origin, fetch without credentials, validate content by magic bytes).
 
+### Tool parameters mirrored to headers (`x-mcp-header`)
+
+A tool can mark string, integer or boolean parameters for mirroring into
+`Mcp-Param-<Name>` HTTP headers, so gateways can route on them without parsing
+the body:
+
+```go
+server.RegisterTool(
+    mcp.NewTool("query", "Run a query",
+        mcp.String("region", "Region", mcp.Required(), mcp.HTTPHeader("Region")),
+        mcp.String("sql", "Query"),
+    ),
+    handler,
+)
+```
+
+- **Server:** a Modern `tools/call` whose `Mcp-Param-*` headers don't match
+  the arguments (missing, different, invalid characters, malformed Base64, or
+  sent for an argument with no value) is rejected with `400` and
+  `HeaderMismatch` (`-32020`) before the tool runs. Integers compare
+  numerically. This covers registered tools, federated remote tools and
+  context-provider tools. `RegisterTool` panics on an invalid annotation.
+- **Client (Modern, HTTP):** annotated arguments are mirrored automatically,
+  Base64-encoded when not header-safe; tool definitions with invalid
+  annotations are left out of `ListTools`; a `HeaderMismatch` refreshes the
+  tool list and retries the call once.
+- Legacy-era requests, and stdio, don't use the mechanism.
+
+### Pagination
+
+`ListTools`, `ListResources`, `ListResourceTemplates` and `ListPrompts` follow
+`nextCursor` to the end of the list (bounded; a repeated cursor is an error).
+
 ### Known gaps
 
-- The `x-mcp-header` tool-parameter-to-HTTP-header mirroring mechanism isn't
-  implemented — no current tool needs per-parameter header routing.
 - MRTR (server-initiated sampling/elicitation/roots) doesn't apply: this
   library implements none of those capabilities in either era.
+
+## Streamed responses (both eras)
+
+On the Streamable HTTP transport both eras let a server answer a request with
+either `application/json` or a `text/event-stream` (SSE) stream, and require
+clients to handle both. A plain JSON response sends nothing until the handler
+finishes, so any intermediary with a read timeout (Cloudflare's ~100s origin
+timeout, nginx `proxy_read_timeout`, load balancers) kills a slow tool call.
+
+**Server.** For `tools/call`, `resources/read` and `prompts/get`, when the
+client's `Accept` header lists `text/event-stream`:
+
+- A call that finishes within the streaming delay (default 2s) is answered as
+  `application/json`, exactly as before.
+- A longer call switches to SSE (`Cache-Control: no-cache, no-transform`,
+  `X-Accel-Buffering: no`), sends a `: ping` comment every keep-alive interval
+  (default 15s) so intermediaries see traffic, then the JSON-RPC response as a
+  single event, and closes the stream.
+- A client disconnect cancels the request's context and nothing further is
+  sent (2026-07-28: closing the stream is cancellation).
+- No SSE event ids are sent: the stream is not resumable (2026-07-28 removes
+  resumability; this server never offered replay for Legacy).
+
+```go
+server.SetResponseStreaming(5*time.Second, 20*time.Second) // delay, keep-alive
+server.SetResponseStreaming(-1, 0)                          // disable: always JSON
+```
+
+**Client.** A streamed response is parsed incrementally (WHATWG SSE rules:
+CR/LF/CRLF, comments, multi-line data, event types). The call completes on the
+response whose id matches the request; notifications that arrive first
+(`notifications/progress`, `notifications/message`, list changes) reach the
+notification handlers in order. Legacy era only: a server-to-client request
+on the stream is answered (`ping` with an empty result, anything else with
+Method not found), and a stream that closes after an event id is resumed with
+`GET` + `Last-Event-ID` after the server's `retry` delay (bounded retries).
+Cancelling the call's context closes the stream.
 
 ## Version Negotiation (Legacy)
 
@@ -164,6 +232,16 @@ During initialization, clients specify their preferred protocol version:
   }
 }
 ```
+
+If the server supports the requested version it echoes it back; otherwise it
+answers with the latest version it supports (the spec's MUST), and the client
+refuses the session if it cannot speak that version. A value that is not a
+protocol version at all (not `YYYY-MM-DD`) is rejected with
+`Unsupported protocol version`. After a successful `initialize` the client
+sends `notifications/initialized`, and includes the negotiated
+`MCP-Protocol-Version` (and `MCP-Session-Id`, if issued) on every later
+request. The server acknowledges notifications, and client responses, with
+`202 Accepted` and no body.
 
 The server responds with the negotiated version and capabilities:
 

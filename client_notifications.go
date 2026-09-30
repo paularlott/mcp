@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -143,24 +142,17 @@ func (c *Client) readEventStream(ctx context.Context, label string, connect func
 		return fmt.Errorf("%s returned status %d", label, resp.StatusCode)
 	}
 
-	reader := bufio.NewReader(resp.Body)
+	reader := newSSEReader(resp.Body)
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		line, err := reader.ReadBytes('\n')
+		event, err := reader.next()
 		if err != nil {
 			return err
 		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] == ':' { // blank or comment/heartbeat
-			continue
-		}
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(payload) == 0 {
+		payload := bytes.TrimSpace(event.Data)
+		if event.Event != "message" || len(payload) == 0 {
 			continue
 		}
 		var msg struct {
@@ -207,11 +199,15 @@ func (c *Client) connectLegacySSE(ctx context.Context) (*http.Response, func(str
 	}
 	c.applyRequestHeaders(req.Header)
 	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set(headerProtocolVersion, MCPProtocolVersionLatest)
 
 	c.mu.RLock()
 	sessionID := c.sessionID
+	protocolVersion := c.protocolVersion
 	c.mu.RUnlock()
+	if protocolVersion == "" {
+		protocolVersion = MCPProtocolVersionLatest
+	}
+	req.Header.Set(headerProtocolVersion, protocolVersion)
 	if sessionID != "" {
 		req.Header.Set(headerSessionID, sessionID)
 	}

@@ -26,7 +26,6 @@ import (
 // and docs/guides/protocol-support.md for the full picture.
 //
 // Known gaps, deliberately out of scope for this pass (see the guide):
-//   - The x-mcp-header tool-parameter-to-HTTP-header mirroring mechanism.
 //   - MRTR (server-initiated sampling/elicitation/roots) — this library
 //     implements none of these in either era, so there is nothing to migrate.
 //   - stdio does not implement subscriptions/listen: doing so correctly needs
@@ -192,7 +191,7 @@ func (s *Server) writeModernProtocolError(w http.ResponseWriter, id any, status 
 // writeModernResult sends a successful Modern-era JSON-RPC result. Callers
 // (handleServerDiscoverHTTP, handleSubscriptionsListen's initial handshake)
 // are expected to have already included "resultType" in result; results
-// produced by reusing a Legacy handler go through finalizeModernResponse
+// produced by reusing a Legacy handler go through modernShape
 // instead, which injects it.
 func (s *Server) writeModernResult(w http.ResponseWriter, id any, result any) {
 	s.writeMCPResponse(w, http.StatusOK, id, result)
@@ -279,6 +278,15 @@ func (s *Server) handleModernRequest(w http.ResponseWriter, r *http.Request, req
 		s.mu.Unlock()
 	}
 
+	// x-mcp-header: every Mcp-Param-* header a tool declares must match the
+	// body before the tool runs (xmcpheader.go).
+	if req.Method == "tools/call" {
+		if msg := s.checkToolCallHeaders(r, params); msg != "" {
+			s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeHeaderMismatch, msg, nil)
+			return
+		}
+	}
+
 	switch req.Method {
 	case "server/discover":
 		s.handleServerDiscoverHTTP(w, r, req)
@@ -295,9 +303,7 @@ func (s *Server) handleModernRequest(w http.ResponseWriter, r *http.Request, req
 				"Method not found", map[string]any{"method": req.Method})
 			return
 		}
-		capture := newModernResponseCapture()
-		s.dispatchMethod(capture, r, req)
-		s.finalizeModernResponse(w, req.Method, capture)
+		s.dispatchResponse(w, r, req, s.modernShape)
 	}
 }
 
@@ -325,7 +331,7 @@ func cacheHintsFor(method string) (ttlMs int, cacheScope string, applicable bool
 }
 
 // modernResponseCapture buffers a Legacy handler's output so
-// finalizeModernResponse can inject Modern-only result fields before writing
+// modernShape can inject Modern-only result fields before writing
 // the real response.
 type modernResponseCapture struct {
 	header http.Header
@@ -343,20 +349,16 @@ func (c *modernResponseCapture) Write(b []byte) (int, error) { return c.body.Wri
 
 func (c *modernResponseCapture) WriteHeader(status int) { c.status = status }
 
-// finalizeModernResponse rewrites a captured Legacy-shaped response into the
-// Modern wire format: successful results gain "resultType": "complete" and
+// modernShape rewrites a captured Legacy-shaped response into the Modern wire
+// format: successful results gain "resultType": "complete" and
 // _meta.io.modelcontextprotocol/serverInfo; JSON-RPC-level errors (e.g.
 // unknown tool) pass through unchanged, since those are ordinary method
-// errors in both eras, not protocol-level ones.
-func (s *Server) finalizeModernResponse(w http.ResponseWriter, method string, capture *modernResponseCapture) {
+// errors in both eras, not protocol-level ones. The result is written as
+// JSON or as an SSE event by dispatchResponse (server_stream.go).
+func (s *Server) modernShape(method string, capture *modernResponseCapture) capturedResponse {
 	var raw map[string]any
 	if err := json.Unmarshal(capture.body.Bytes(), &raw); err != nil {
-		for k, v := range capture.header {
-			w.Header()[k] = v
-		}
-		w.WriteHeader(capture.status)
-		w.Write(capture.body.Bytes())
-		return
+		return capturedResponse{status: capture.status, header: capture.header, body: capture.body.Bytes()}
 	}
 
 	if resultRaw, ok := raw["result"]; ok {
@@ -378,14 +380,16 @@ func (s *Server) finalizeModernResponse(w http.ResponseWriter, method string, ca
 		raw["result"] = resultMap
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.WriteHeader(capture.status)
-	json.NewEncoder(w).Encode(raw)
+	var body bytes.Buffer
+	json.NewEncoder(&body).Encode(raw)
+	header := http.Header{}
+	header.Set("Content-Type", "application/json; charset=utf-8")
+	header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	return capturedResponse{status: capture.status, header: header, body: body.Bytes()}
 }
 
 // serverInfoMap builds the io.modelcontextprotocol/serverInfo object shared
-// by every Modern-era result (buildDiscoverResult, finalizeModernResponse,
+// by every Modern-era result (buildDiscoverResult, modernShape,
 // shapeModernResult), so the server's identity — including icons, if set via
 // [Server.SetIcons] — is reported consistently everywhere it appears.
 func (s *Server) serverInfoMap() map[string]any {
@@ -514,7 +518,7 @@ func stdioModernMeta(params json.RawMessage) (meta map[string]any, isModern bool
 	return parsed.Meta, true
 }
 
-// shapeModernResult is finalizeModernResponse's transport-agnostic core,
+// shapeModernResult is modernShape's transport-agnostic core,
 // operating on an already-decoded result value (stdio has no HTTP response
 // to capture and rewrite): resultType, _meta.serverInfo, and — for cacheable
 // operations — ttlMs/cacheScope.

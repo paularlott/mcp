@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // The Legacy-era HTTP transport: request handling, dispatch, initialization, capabilities, sessions, and wire writers.
@@ -117,6 +118,18 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A JSON-RPC notification (a method but no id) or response (an id but no
+	// method — a Legacy client answering a server-to-client request) is
+	// acknowledged with 202 Accepted and no body, per the Streamable HTTP
+	// transport in both eras. This server sends no server-to-client requests
+	// and defines no handling for client notifications
+	// (notifications/initialized, notifications/cancelled), so accepting is
+	// all there is to do.
+	if (req.ID == nil && req.Method != "") || (req.ID != nil && req.Method == "") {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
 	// Ensure ID is never nil - use empty string as default
 	if req.ID == nil {
 		req.ID = ""
@@ -170,7 +183,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.dispatchMethod(w, r, &req)
+	s.dispatchResponse(w, r, &req, legacyShape)
 }
 
 // dispatchMethod routes a parsed request to its handler. Both the Legacy path
@@ -246,6 +259,37 @@ func negotiateProtocolVersion(requested, fallback string) (version string, ok bo
 	return requested, isSupportedProtocolVersion(requested)
 }
 
+// negotiateInitializeVersion implements Legacy initialize version negotiation
+// (2025-11-25 lifecycle §Version Negotiation): a supported requested version
+// is echoed back; for any other protocol version "the server MUST respond
+// with another protocol version it supports", which SHOULD be the latest —
+// so an unknown version (a newer Legacy revision, or the Modern label sent
+// through initialize by mistake) negotiates down to MCPProtocolVersionLatest
+// and the client decides whether it can speak that. ok is false only for a
+// value that is not a protocol version at all (not YYYY-MM-DD), which is
+// rejected with the spec's own "Unsupported protocol version" error example.
+// An empty value means the client did not say; the latest is used.
+func negotiateInitializeVersion(requested string) (version string, ok bool) {
+	requested = strings.TrimSpace(requested)
+	switch {
+	case requested == "":
+		return MCPProtocolVersionLatest, true
+	case isSupportedProtocolVersion(requested):
+		return requested, true
+	case isProtocolVersionLabel(requested):
+		return MCPProtocolVersionLatest, true
+	default:
+		return "", false
+	}
+}
+
+// isProtocolVersionLabel reports whether v has the YYYY-MM-DD shape MCP
+// protocol revisions use.
+func isProtocolVersionLabel(v string) bool {
+	_, err := time.Parse("2006-01-02", v)
+	return err == nil
+}
+
 // isSupportedProtocolVersion checks if the given version string matches one of the
 // supported MCP protocol versions. Protocol versions follow ISO date format (YYYY-MM-DD).
 // Leading/trailing whitespace is trimmed before comparison.
@@ -288,7 +332,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 	}
 
 	// Determine which protocol version to use
-	protocolVersion, ok := negotiateProtocolVersion(params.ProtocolVersion, MCPProtocolVersionLatest)
+	protocolVersion, ok := negotiateInitializeVersion(params.ProtocolVersion)
 	if !ok {
 		s.sendMCPError(w, req.ID, ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
 			"requested": params.ProtocolVersion,
@@ -531,7 +575,7 @@ func (s *Server) parseParams(req *MCPRequest, target any) error {
 // semantically invalid (an unknown tool, a missing-but-parseable required
 // field, and the like), which correctly stays a 200 JSON-RPC error in both
 // eras per the spec's ordinary-method-error convention (see
-// finalizeModernResponse's doc comment).
+// modernShape's doc comment).
 //
 // A Modern-era request gets the spec-required HTTP 400 for this class of
 // error; Legacy keeps its always-200 JSON-RPC convention, unchanged. Era is

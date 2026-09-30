@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -242,27 +241,24 @@ func TestUnknownToolDirectCallNoHintWithoutDiscoverableTools(t *testing.T) {
 	}
 }
 
-func TestMissingIDDefaultsToEmpty(t *testing.T) {
+// A message without an id is a JSON-RPC notification; one with an id but no
+// method is a response. The Streamable HTTP transport (both eras) requires
+// 202 Accepted with no body for either.
+func TestNotificationAndResponseGet202(t *testing.T) {
 	s := NewServer("s", "1")
-	// body without id
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  "ping",
-	}
-	b, _ := json.Marshal(payload)
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
-	// read raw json to assert id field is present and empty string
-	data, _ := io.ReadAll(rr.Body)
-	var out map[string]any
-	_ = json.Unmarshal(data, &out)
-	if _, ok := out["id"]; !ok {
-		t.Fatalf("id not present")
-	}
-	if out["id"] != "" {
-		t.Fatalf("expected empty id, got %v", out["id"])
+	for name, payload := range map[string]map[string]any{
+		"notification without id":   {"jsonrpc": "2.0", "method": "notifications/initialized"},
+		"ping without id":           {"jsonrpc": "2.0", "method": "ping"},
+		"client response to server": {"jsonrpc": "2.0", "id": "srv-1", "result": map[string]any{}},
+	} {
+		b, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted || rr.Body.Len() != 0 {
+			t.Fatalf("%s: got %d %q, want 202 with no body", name, rr.Code, rr.Body.String())
+		}
 	}
 }
 

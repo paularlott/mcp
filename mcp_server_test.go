@@ -55,9 +55,29 @@ func TestInitialize_DefaultsAndVersion(t *testing.T) {
 		t.Fatalf("unexpected error: %+v", rpc.Error)
 	}
 
-	// initialize with unsupported version
+	// An unsupported protocol version is negotiated, not rejected: "the
+	// server MUST respond with another protocol version it supports", the
+	// latest (2025-11-25 lifecycle §Version Negotiation). Covers an older
+	// unknown revision, a newer Legacy one, and the Modern label sent through
+	// initialize.
+	for i, requested := range []string{"1900-01-01", "2099-01-01", MCPProtocolVersionModern} {
+		_, rpc = doRPC(t, handler, MCPRequest{JSONRPC: "2.0", ID: 10 + i, Method: "initialize", Params: map[string]any{
+			"protocolVersion": requested,
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "t", "version": "1"},
+		}}, nil)
+		if rpc.Error != nil {
+			t.Fatalf("%s: unexpected error %+v", requested, rpc.Error)
+		}
+		if got := rpc.Result.(map[string]any)["protocolVersion"]; got != MCPProtocolVersionLatest {
+			t.Fatalf("%s: negotiated %v, want %s", requested, got, MCPProtocolVersionLatest)
+		}
+	}
+
+	// Something that is not a protocol version at all is still rejected, as
+	// in the spec's own error example.
 	_, rpc = doRPC(t, handler, MCPRequest{JSONRPC: "2.0", ID: 3, Method: "initialize", Params: map[string]any{
-		"protocolVersion": "1900-01-01",
+		"protocolVersion": "1.0.0",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "t", "version": "1"},
 	}}, nil)

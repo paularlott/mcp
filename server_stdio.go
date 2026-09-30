@@ -243,7 +243,7 @@ func (s *Server) stdioInitialize(raw json.RawMessage) (any, error) {
 		}
 	}
 
-	protocolVersion, ok := negotiateProtocolVersion(params.ProtocolVersion, MCPProtocolVersionLatest)
+	protocolVersion, ok := negotiateInitializeVersion(params.ProtocolVersion)
 	if !ok {
 		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Unsupported protocol version", map[string]any{
 			"requested": params.ProtocolVersion,

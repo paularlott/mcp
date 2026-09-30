@@ -232,6 +232,11 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 			httpReq.Header.Set(headerMcpName, encodeModernHeaderValue(name))
 		}
 	}
+	// Mcp-Param-* headers mirrored from x-mcp-header tool arguments (set by
+	// CallTool, see client_xmcpheader.go).
+	for k, v := range toolCallHeadersFrom(ctx) {
+		httpReq.Header[k] = v
+	}
 
 	if err := c.applyAuthHeader(httpReq.Header); err != nil {
 		return fmt.Errorf("failed to get auth header: %w", err)
@@ -247,6 +252,11 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 		*respHeaders = httpResp.Header
 	}
 
+	// A request may be answered with an SSE stream (see client_stream.go).
+	if httpResp.StatusCode == http.StatusOK && strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream") {
+		return c.readResponseStream(ctx, httpResp.Body, req, resp)
+	}
+
 	bodyBytes, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return fmt.Errorf("failed to read response body: %w", err)
@@ -260,10 +270,6 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 			return nil
 		}
 		return fmt.Errorf("server returned status %d", httpResp.StatusCode)
-	}
-
-	if strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream") {
-		return c.parseEventStream(bodyBytes, resp)
 	}
 
 	if err := json.Unmarshal(bodyBytes, resp); err != nil {

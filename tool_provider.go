@@ -290,9 +290,21 @@ type providerToolIndexKey struct{}
 // shape is anything but a clean listing can no longer starve the providers
 // after it.
 func providerForTool(ctx context.Context, name string) (ToolProvider, bool) {
-	var index map[string]ToolProvider
+	entry, ok := providerToolIndex(ctx)[name]
+	return entry.provider, ok
+}
+
+// providerToolEntry is one provider-served tool in the per-request index.
+type providerToolEntry struct {
+	provider    ToolProvider
+	inputSchema any
+}
+
+// providerToolIndex builds (once per request) the name → provider index,
+// keeping each tool's input schema for header validation (xmcpheader.go).
+func providerToolIndex(ctx context.Context) map[string]providerToolEntry {
 	val, err := memoizeRequest(ctx, providerToolIndexKey{}, func() (any, error) {
-		index := make(map[string]ToolProvider)
+		index := make(map[string]providerToolEntry)
 		for _, provider := range GetToolProviders(ctx) {
 			tools, err := provider.GetTools(ctx)
 			if err != nil {
@@ -301,20 +313,17 @@ func providerForTool(ctx context.Context, name string) (ToolProvider, bool) {
 			}
 			for _, tool := range tools {
 				if _, taken := index[tool.Name]; !taken {
-					index[tool.Name] = provider
+					index[tool.Name] = providerToolEntry{provider: provider, inputSchema: tool.InputSchema}
 				}
 			}
 		}
 		return index, nil
 	})
-	if err == nil {
-		index, _ = val.(map[string]ToolProvider)
+	if err != nil {
+		return nil
 	}
-	if index == nil {
-		return nil, false
-	}
-	provider, ok := index[name]
-	return provider, ok
+	index, _ := val.(map[string]providerToolEntry)
+	return index
 }
 
 func callToolFromProviders(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
