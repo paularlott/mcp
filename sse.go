@@ -128,7 +128,8 @@ func (s *sseReader) next() (sseMessage, error) {
 				s.idBuf = string(value)
 			}
 		case "retry":
-			if ms, err := strconv.ParseUint(string(value), 10, 32); err == nil && isASCIIDigits(value) {
+			// ParseUint accepts only ASCII digits (no sign, space or "_").
+			if ms, err := strconv.ParseUint(string(value), 10, 32); err == nil {
 				s.Retry = time.Duration(ms) * time.Millisecond
 			}
 		}
@@ -140,16 +141,4 @@ func finishSSEMessage(event string, data []byte) sseMessage {
 		event = "message"
 	}
 	return sseMessage{Event: event, Data: bytes.TrimSuffix(data, []byte("\n"))}
-}
-
-func isASCIIDigits(b []byte) bool {
-	if len(b) == 0 {
-		return false
-	}
-	for _, c := range b {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }

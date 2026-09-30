@@ -30,31 +30,35 @@ func (c *Client) mirrorsParamHeaders() bool {
 }
 
 // withToolCallHeaders returns ctx carrying the Mcp-Param-* headers for a
-// tools/call of name (as listed, i.e. namespaced) with args. An argument
-// whose value cannot be represented as its annotated type is an error: the
-// server would reject the call with HeaderMismatch anyway.
-func (c *Client) withToolCallHeaders(ctx context.Context, name string, args map[string]any) (context.Context, error) {
+// tools/call of name (as listed, i.e. namespaced) with args.
+//
+// lookupErr is non-fatal: tools/list could not be loaded to learn the
+// annotations, so the call goes out without Mcp-Param-* headers. It is
+// returned so that, if the server then answers HeaderMismatch, the caller can
+// report the real cause. err is fatal: an argument whose value cannot be
+// represented as its annotated type (the server would reject the call).
+func (c *Client) withToolCallHeaders(ctx context.Context, name string, args map[string]any) (out context.Context, lookupErr, err error) {
 	if !c.mirrorsParamHeaders() {
-		return ctx, nil
+		return ctx, nil, nil
 	}
 	schema, ok := c.cachedToolSchema(name)
 	if !ok {
-		if _, err := c.ListTools(ctx); err != nil {
-			return ctx, nil // cannot learn the annotations; the server will say if any were needed
+		if _, listErr := c.ListTools(ctx); listErr != nil {
+			return ctx, listErr, nil
 		}
 		if schema, ok = c.cachedToolSchema(name); !ok {
-			return ctx, nil
+			return ctx, nil, nil
 		}
 	}
-	bindings, err := schemaHeaderBindings(schema)
-	if err != nil || len(bindings) == 0 {
-		return ctx, nil
+	bindings, bindErr := schemaHeaderBindings(schema)
+	if bindErr != nil || len(bindings) == 0 {
+		return ctx, nil, nil
 	}
 	headers, err := mcpParamHeaders(bindings, args)
 	if err != nil {
-		return ctx, err
+		return ctx, nil, err
 	}
-	return context.WithValue(ctx, toolCallHeadersKey{}, headers), nil
+	return context.WithValue(ctx, toolCallHeadersKey{}, headers), nil, nil
 }
 
 // cachedToolSchema looks up a tool's inputSchema in the tools/list cache.

@@ -124,7 +124,10 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// transport in both eras. This server sends no server-to-client requests
 	// and defines no handling for client notifications
 	// (notifications/initialized, notifications/cancelled), so accepting is
-	// all there is to do.
+	// all there is to do. Deliberately lenient: a response is accepted even
+	// though 2026-07-28 forbids clients from sending one (a response carries
+	// no era signal to reject it by), and this runs before session/version
+	// checks, since an ignored message needs no validated context.
 	if (req.ID == nil && req.Method != "") || (req.ID != nil && req.Method == "") {
 		w.WriteHeader(http.StatusAccepted)
 		return

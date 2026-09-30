@@ -626,8 +626,8 @@ func TestClientStream_LegacyResumeGivesUp(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "gave up") {
 		t.Fatalf("err = %v, want give-up error", err)
 	}
-	if n := gets.Load(); n != maxStreamResumes {
-		t.Fatalf("resume attempts = %d, want %d", n, maxStreamResumes)
+	if n := gets.Load(); n != maxIdleStreamResumes {
+		t.Fatalf("resume attempts = %d, want %d", n, maxIdleStreamResumes)
 	}
 }
 

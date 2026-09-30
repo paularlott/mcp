@@ -45,12 +45,22 @@ import (
 // signal to the server.
 
 const (
-	// maxStreamResumes bounds consecutive resume attempts that deliver no
-	// new event, so a server that keeps closing the stream cannot loop us.
-	maxStreamResumes = 5
+	// maxIdleStreamResumes bounds consecutive resumes that deliver no real
+	// message (priming events, keep-alives and empty data do not count), so
+	// a server that keeps closing the stream cannot loop us.
+	maxIdleStreamResumes = 5
+	// maxStreamResumes bounds resumes for one request regardless of
+	// progress: a server that trickles a notification per reconnect still
+	// cannot keep the client reconnecting forever.
+	maxStreamResumes = 100
 	// defaultStreamRetry is the resume delay when the server sent no retry.
 	defaultStreamRetry = time.Second
 )
+
+// minStreamRetry floors the server's retry delay so "retry: 1" cannot turn
+// into a reconnect storm. Waiting longer than asked still honours retry,
+// which sets the minimum wait. A variable so tests can shorten it.
+var minStreamRetry = 100 * time.Millisecond
 
 // streamEnvelope is the union of the JSON-RPC message shapes a response
 // stream can carry.
@@ -67,12 +77,16 @@ func (e *streamEnvelope) hasID() bool {
 }
 
 // readResponseStream reads the SSE response to req from body until the
-// matching JSON-RPC response arrives, decoding it into resp.
+// matching JSON-RPC response arrives, decoding it into resp. body belongs to
+// the caller (it closes it too; closing twice is harmless); resumed bodies
+// are closed here as soon as they are superseded.
 func (c *Client) readResponseStream(ctx context.Context, body io.ReadCloser, req *MCPRequest, resp *MCPResponse) error {
 	wantID := normalizeJSONRPCID(req.ID)
 	notifier := &streamNotifier{c: c}
 	rd := newSSEReader(body)
-	resumes := 0
+	current := body
+	defer func() { current.Close() }()
+	idle, total := 0, 0
 
 	for {
 		found, progressed, err := c.consumeResponseStream(ctx, rd, wantID, resp, notifier)
@@ -80,21 +94,28 @@ func (c *Client) readResponseStream(ctx context.Context, body io.ReadCloser, req
 			return err
 		}
 		if progressed {
-			resumes = 0
+			idle = 0
 		}
 
 		// The stream ended without the response.
 		if c.era == eraModern || rd.LastEventID == "" {
 			return fmt.Errorf("event stream ended without a response to request %v", req.ID)
 		}
-		if resumes >= maxStreamResumes {
-			return fmt.Errorf("event stream for request %v: gave up after %d resume attempts", req.ID, resumes)
+		if idle >= maxIdleStreamResumes {
+			return fmt.Errorf("event stream for request %v: gave up after %d resume attempts without progress", req.ID, idle)
 		}
-		resumes++
+		if total >= maxStreamResumes {
+			return fmt.Errorf("event stream for request %v: gave up after %d resume attempts", req.ID, total)
+		}
+		idle++
+		total++
 
 		delay := rd.Retry
 		if delay <= 0 {
 			delay = defaultStreamRetry
+		}
+		if delay < minStreamRetry {
+			delay = minStreamRetry
 		}
 		select {
 		case <-ctx.Done():
@@ -106,9 +127,8 @@ func (c *Client) readResponseStream(ctx context.Context, body io.ReadCloser, req
 		if err != nil {
 			return fmt.Errorf("resuming event stream for request %v: %w", req.ID, err)
 		}
-		body.Close()
-		body = next
-		defer next.Close()
+		current.Close()
+		current = next
 
 		// Carry the cursor over; the resumed stream will advance it.
 		lastID, retry := rd.LastEventID, rd.Retry
@@ -119,7 +139,8 @@ func (c *Client) readResponseStream(ctx context.Context, body io.ReadCloser, req
 
 // consumeResponseStream reads events until the response to wantID arrives
 // (found) or the stream ends (found=false, err=nil). progressed reports
-// whether any event was received.
+// whether a real JSON-RPC message arrived — not just keep-alives, priming
+// events or other empty events, which a stalled server can send forever.
 func (c *Client) consumeResponseStream(ctx context.Context, rd *sseReader, wantID any, resp *MCPResponse, notifier *streamNotifier) (found, progressed bool, err error) {
 	for {
 		msg, err := rd.next()
@@ -132,10 +153,10 @@ func (c *Client) consumeResponseStream(ctx context.Context, rd *sseReader, wantI
 			}
 			return false, progressed, fmt.Errorf("failed to read event stream: %w", err)
 		}
-		progressed = true
 		if msg.Event != "message" || len(bytes.TrimSpace(msg.Data)) == 0 {
 			continue // other event types, and priming events with empty data
 		}
+		progressed = true
 
 		var env streamEnvelope
 		if err := json.Unmarshal(msg.Data, &env); err != nil {

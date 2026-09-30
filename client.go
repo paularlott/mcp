@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -549,6 +550,7 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 		// does not break the rest.
 		if checkHeaders {
 			if _, err := schemaHeaderBindings(tool.InputSchema); err != nil {
+				slog.Warn("mcp: excluding tool with invalid x-mcp-header annotation", "server", c.baseURL, "tool", tool.Name, "reason", err.Error())
 				continue
 			}
 		}
@@ -670,11 +672,13 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 	}
 
 	var resp MCPResponse
+	var lookupErr error
 	for attempt := 0; ; attempt++ {
-		callCtx, err := c.withToolCallHeaders(ctx, c.namespace+toolName, args)
+		callCtx, lErr, err := c.withToolCallHeaders(ctx, c.namespace+toolName, args)
 		if err != nil {
 			return nil, fmt.Errorf("call tool failed: %w", err)
 		}
+		lookupErr = lErr
 		resp = MCPResponse{}
 		if err := c.sendRequest(callCtx, &req, &resp, nil); err != nil {
 			return nil, fmt.Errorf("call tool failed: %w", err)
@@ -683,11 +687,25 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 		// x-mcp-header annotations is stale: refresh tools/list and retry
 		// once (2026-07-28 client behaviour, SHOULD).
 		if attempt == 0 && resp.Error != nil && resp.Error.Code == ErrorCodeHeaderMismatch && c.mirrorsParamHeaders() {
-			if c.RefreshToolCache(ctx) == nil {
+			refreshErr := c.RefreshToolCache(ctx)
+			if refreshErr == nil {
 				continue
 			}
+			lookupErr = refreshErr
 		}
 		break
+	}
+
+	// A HeaderMismatch after the annotations could not be loaded is a
+	// symptom; the tools/list failure is the cause worth reporting. Both are
+	// wrapped: errors.Is reaches the cause, and errors.As still finds the
+	// server's *ToolError (HeaderMismatch) like on any other JSON-RPC error.
+	// A direct err.(*ToolError) assertion deliberately does not match, so a
+	// federating Server reports this as its own internal error rather than
+	// forwarding a HeaderMismatch about its upstream hop to its caller.
+	if resp.Error != nil && resp.Error.Code == ErrorCodeHeaderMismatch && lookupErr != nil {
+		toolErr := &ToolError{Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+		return nil, fmt.Errorf("call tool failed: could not load tool definitions to send its Mcp-Param-* headers: %w (server: %w)", lookupErr, toolErr)
 	}
 
 	if resp.Error != nil {
