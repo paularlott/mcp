@@ -68,8 +68,8 @@ func TestNormalizeValuePointers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != 5.0 {
-		t.Errorf("normalized *int = %#v, want 5.0", got)
+	if got != int64(5) {
+		t.Errorf("normalized *int = %#v, want int64(5)", got)
 	}
 }
 
@@ -441,5 +441,40 @@ func TestEncodeListArrayDirectNestedErrorPropagation(t *testing.T) {
 	_, err = enc.encodeListArray([]any{complex128(1)}, 0, "")
 	if err == nil {
 		t.Error("expected error for unsupported top-level item value")
+	}
+}
+
+// Integers encode exactly, even beyond float64's 2^53 precision.
+func TestEncodeLargeIntegerExact(t *testing.T) {
+	got, err := Encode(map[string]any{"id": int64(9007199254740993)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "id: 9007199254740993" {
+		t.Errorf("Encode = %q", got)
+	}
+}
+
+// DecodeOptions.Integers decodes integer literals as int64; the default
+// keeps encoding/json's float64.
+func TestDecodeIntegersOption(t *testing.T) {
+	text := "age: 30\nratio: 1.5\nexp: 1e3\nbig: 99999999999999999999"
+	def, err := Decode(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.(map[string]any)["age"] != float64(30) {
+		t.Errorf("default age = %#v, want float64(30)", def.(map[string]any)["age"])
+	}
+	v, err := DecodeWithOptions(text, &DecodeOptions{Strict: true, Integers: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := v.(map[string]any)
+	if m["age"] != int64(30) || m["ratio"] != 1.5 || m["exp"] != float64(1000) {
+		t.Errorf("Integers decode = %#v", m)
+	}
+	if _, ok := m["big"].(float64); !ok {
+		t.Errorf("out-of-range integer should stay float64, got %#v", m["big"])
 	}
 }

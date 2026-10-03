@@ -13,6 +13,11 @@ type EncodeOptions struct {
 type DecodeOptions struct {
 	Strict     bool // Enable strict validation (default: true)
 	IndentSize int  // Expected indentation size (0 = auto-detect, default: 0)
+	// Integers decodes integer literals (no fraction or exponent) as int64
+	// instead of float64, as a Python or JavaScript BigInt-aware reader
+	// would. Out-of-range integers still decode as float64. Default: false,
+	// matching encoding/json.
+	Integers bool
 }
 
 // Encode converts a Go value to TOON format.
@@ -52,5 +57,6 @@ func DecodeWithOptions(data string, opts *DecodeOptions) (any, error) {
 	}
 
 	decoder := newDecoder(opts.Strict, opts.IndentSize)
+	decoder.integers = opts.Integers
 	return decoder.decode(data)
 }

@@ -98,8 +98,12 @@ func normalizeValue(v any) (any, error) {
 		err = json.Unmarshal(jsonBytes, &result)
 		return result, err
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(val.Int()), nil
+		// Integers stay exact (float64 loses precision above 2^53).
+		return val.Int(), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		if u := val.Uint(); u <= math.MaxInt64 {
+			return int64(u), nil
+		}
 		return float64(val.Uint()), nil
 	case reflect.Float32, reflect.Float64:
 		return val.Float(), nil
@@ -114,6 +118,8 @@ func (e *encoder) encode(v any, depth int) (string, error) {
 		return "null", nil
 	case bool:
 		return strconv.FormatBool(val), nil
+	case int64:
+		return strconv.FormatInt(val, 10), nil
 	case float64:
 		return e.formatNumber(val), nil
 	case string:
@@ -432,7 +438,7 @@ func (e *encoder) isTabular(arr []any) bool {
 
 func (e *encoder) isPrimitive(v any) bool {
 	switch v.(type) {
-	case nil, bool, float64, string:
+	case nil, bool, int64, float64, string:
 		return true
 	default:
 		return false

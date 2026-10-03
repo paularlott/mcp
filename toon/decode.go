@@ -10,6 +10,7 @@ import (
 type decoder struct {
 	strict     bool
 	indentSize int
+	integers   bool // decode integer literals as int64 (DecodeOptions.Integers)
 }
 
 func newDecoder(strict bool, indentSize int) *decoder {
@@ -570,6 +571,14 @@ func (d *decoder) parseValue(s string) any {
 		// Check for leading zeros (invalid numbers)
 		if strings.HasPrefix(s, "0") && len(s) > 1 && s[1] != '.' && s[1] != 'e' && s[1] != 'E' {
 			return s // Treat as string
+		}
+		// With DecodeOptions.Integers, integer literals decode as int64 so
+		// 30 stays an integer; a fraction, exponent or out-of-range integer
+		// stays float64.
+		if d.integers && !strings.ContainsAny(s, ".eE") {
+			if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+				return i
+			}
 		}
 		return f
 	}
