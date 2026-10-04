@@ -118,16 +118,30 @@ type Client interface {
 }
 ```
 
+Decision models are an optional extension, kept off `Client` so existing
+implementations keep compiling. Probe with a type assertion:
+
+```go
+type DecisionCaller interface {
+    Decide(ctx context.Context, req SystemOneRequest) (*SystemOneResponse, error)
+}
+
+if dc, ok := client.(ai.DecisionCaller); ok {
+    resp, err := dc.Decide(ctx, req)
+}
+```
+
 ## Provider Capabilities
 
-| Feature           | OpenAI | Claude | Gemini | Ollama | ZAi | Mistral |
-| ----------------- | ------ | ------ | ------ | ------ | --- | ------- |
-| Chat              | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
-| Streaming         | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
-| Tools             | ✅     | ✅     | ✅     | ✅     | ✅  | ✅      |
-| Embeddings        | ✅     | ❌     | ✅     | ✅     | ✅  | ✅      |
-| Responses API     | ✅ native | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated |
-| Streaming Responses | ✅ native SSE | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated | ✅ emulated |
+| Feature             | OpenAI        | Claude      | Gemini      | Ollama        | ZAi         | Mistral     |
+| ------------------- | ------------- | ----------- | ----------- | ------------- | ----------- | ----------- |
+| Chat                | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          |
+| Streaming           | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          |
+| Tools               | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          |
+| Embeddings          | ✅            | ❌          | ✅          | ✅            | ✅          | ✅          |
+| Responses API       | ✅ native     | ✅ emulated | ✅ emulated | ✅ emulated   | ✅ emulated | ✅ emulated |
+| Streaming Responses | ✅ native SSE | ✅ emulated | ✅ emulated | ✅ emulated   | ✅ emulated | ✅ emulated |
+| Decision models     | ❌            | ❌          | ❌          | ✅ System One | ❌          | ❌          |
 
 The Responses API is **natively** supported on `api.openai.com` (real `/responses` SSE endpoint). For all other providers it is **transparently emulated** via chat completions — callers see identical types, event sequences, and field structures regardless of provider.
 

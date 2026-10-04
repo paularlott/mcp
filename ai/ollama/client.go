@@ -657,10 +657,15 @@ func decompressBody(resp *http.Response) io.ReadCloser {
 // Provider returns the provider name.
 func (c *Client) Provider() string { return c.provider }
 
-// SupportsCapability reports Ollama's client-level capabilities: embeddings yes,
-// native Responses API no (it is emulated).
+// SupportsCapability reports Ollama's client-level capabilities: embeddings
+// and decision models (System One) yes, native Responses API no (it is
+// emulated).
 func (c *Client) SupportsCapability(cap string) bool {
-	return cap != "responses"
+	switch cap {
+	case "embeddings", "decision":
+		return true
+	}
+	return false
 }
 
 // Close is a no-op (response managers persist like the other providers).

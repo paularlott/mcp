@@ -33,3 +33,13 @@ type Client interface {
 	// Close/cleanup
 	Close() error
 }
+
+// DecisionCaller is implemented by clients whose provider runs decision
+// models (see ProviderCapabilityDecision). It is a separate interface, not
+// a Client method, so existing Client implementations keep compiling; probe
+// with a type assertion:
+//
+//	dc, ok := client.(ai.DecisionCaller)
+type DecisionCaller interface {
+	Decide(ctx context.Context, req SystemOneRequest) (*SystemOneResponse, error)
+}
