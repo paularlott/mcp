@@ -22,12 +22,20 @@ const (
 	providerOllama  = "ollama"
 	providerZAi     = "zai"
 	providerMistral = "mistral"
+	providerGrok    = "grok"
 
 	// DefaultRequestTimeout is the default timeout for AI completion requests.
 	DefaultRequestTimeout = 10 * time.Minute
 )
 
 const MAX_TOOL_CALL_ITERATIONS = 20
+
+// nativeResponsesHosts maps providers with a native /responses endpoint to the
+// official API host on which it is auto-enabled.
+var nativeResponsesHosts = map[string]string{
+	providerOpenAI: "api.openai.com",
+	providerGrok:   "api.x.ai",
+}
 
 // MCPServer interface for MCP server operations (local server)
 type MCPServer interface {
@@ -59,22 +67,23 @@ func (m *MCPServerFuncs) CallTool(ctx context.Context, name string, args map[str
 type Client struct {
 	baseURL            string
 	apiKey             string
-	provider           string        // Provider name for ai.Client interface
-	localServer        MCPServer     // Local MCP server (no namespace)
-	remoteServers      []*mcp.Client // Remote MCP servers (each has their own namespace)
-	extraHeaders       http.Header   // Custom headers added to all requests
-	httpPool           pool.HTTPPool // Optional custom HTTP pool
-	maxTokens          int           // Default max_tokens
-	temperature        *float64      // Default temperature
-	topP               *float64      // Default top_p
-	frequencyPenalty   *float64      // Default frequency_penalty
-	presencePenalty    *float64      // Default presence_penalty
-	requestTimeout     time.Duration // Timeout for AI requests (0 = use caller's context)
-	useNativeResponses bool          // Use native Responses API endpoint
-	maxRetries         int           // Max retry attempts for retryable errors
-	retryBackoff       time.Duration // Base backoff for retries
-	retryOnRateLimit   bool          // Retry on 429
-	retryOnServerError bool          // Retry on 5xx
+	provider           string           // Provider name for ai.Client interface
+	localServer        MCPServer        // Local MCP server (no namespace)
+	remoteServers      []*mcp.Client    // Remote MCP servers (each has their own namespace)
+	extraHeaders       http.Header      // Custom headers added to all requests
+	httpPool           pool.HTTPPool    // Optional custom HTTP pool
+	maxTokens          int              // Default max_tokens
+	temperature        *float64         // Default temperature
+	topP               *float64         // Default top_p
+	frequencyPenalty   *float64         // Default frequency_penalty
+	presencePenalty    *float64         // Default presence_penalty
+	requestTimeout     time.Duration    // Timeout for AI requests (<= 0 = none beyond the caller's context)
+	useNativeResponses bool             // Use native Responses API endpoint
+	maxRetries         int              // Max retry attempts for retryable errors
+	retryBackoff       time.Duration    // Base backoff for retries
+	retryOnRateLimit   bool             // Retry on 429
+	retryOnServerError bool             // Retry on 5xx
+	responses          *ResponseManager // Emulated Responses API storage, scoped to this client
 }
 
 // RemoteServerConfig holds configuration for a remote MCP server
@@ -87,25 +96,28 @@ type RemoteServerConfig struct {
 
 // Config holds configuration for the OpenAI client
 type Config struct {
-	APIKey              string
-	BaseURL             string
-	Provider            string               // Provider name (openai, ollama, zai, mistral)
-	LocalServer         MCPServer            // Local MCP server (no namespace)
-	RemoteServerConfigs []RemoteServerConfig // Remote MCP server configs
-	ExtraHeaders        http.Header          // Custom headers added to all requests
-	HTTPPool            pool.HTTPPool        // Optional custom HTTP pool (nil = use default secure pool)
-	MaxTokens           int                  // Default max_tokens for requests (0 = no default)
-	Temperature         *float64             // Default temperature for requests (nil = no default)
-	TopP                *float64             // Default top_p for requests (nil = no default)
-	FrequencyPenalty    *float64             // Default frequency_penalty for requests (nil = no default)
-	PresencePenalty     *float64             // Default presence_penalty for requests (nil = no default)
-	RequestTimeout      time.Duration        // Timeout for AI requests using a detached context (0 = use caller's context, default 10m)
-	UseNativeResponses  *bool                // Use native Responses API endpoint (nil = auto-detect: true for OpenAI api.openai.com, false otherwise)
-	MaxRetries          int                  // Maximum number of retries for retryable errors (omit or 0 = default 3, -1 = disable)
-	RetryBackoff        time.Duration        // Base backoff duration for retry (omit for 1s, must be >= 0)
-	RetryOnRateLimit    *bool                // Whether to retry on 429 rate limit errors (omit for true)
-	RetryOnServerError  *bool                // Whether to retry on 5xx server errors (omit for true)
-	PromptCaching       *bool                // Claude only: add prompt-caching breakpoints (system prompt, last tool, last message) to outbound requests (omit for true)
+	APIKey               string
+	BaseURL              string
+	Provider             string                             // Provider name (openai, ollama, zai, mistral, grok)
+	LocalServer          MCPServer                          // Local MCP server (no namespace)
+	RemoteServerConfigs  []RemoteServerConfig               // Remote MCP server configs
+	ExtraHeaders         http.Header                        // Custom headers added to all requests
+	HTTPPool             pool.HTTPPool                      // Optional custom HTTP pool (nil = use default secure pool)
+	MaxTokens            int                                // Default max_tokens for requests (0 = no default)
+	Temperature          *float64                           // Default temperature for requests (nil = no default)
+	TopP                 *float64                           // Default top_p for requests (nil = no default)
+	FrequencyPenalty     *float64                           // Default frequency_penalty for requests (nil = no default)
+	PresencePenalty      *float64                           // Default presence_penalty for requests (nil = no default)
+	RequestTimeout       time.Duration                      // Timeout for AI requests (0 = default 10m, negative = none beyond the caller's context)
+	UseNativeResponses   *bool                              // Use native Responses API endpoint (nil = auto-detect: true for OpenAI api.openai.com, false otherwise)
+	MaxRetries           int                                // Maximum number of retries for retryable errors (omit or 0 = default 3, -1 = disable)
+	RetryBackoff         time.Duration                      // Base backoff duration for retry (omit for 1s, must be >= 0)
+	RetryOnRateLimit     *bool                              // Whether to retry on 429 rate limit errors (omit for true)
+	RetryOnServerError   *bool                              // Whether to retry on 5xx server errors (omit for true)
+	PromptCaching        *bool                              // Claude only: add prompt-caching breakpoints (system prompt, last tool, last message) to outbound requests (omit for true)
+	ResponseStore        ResponseStore                      // Storage for emulated Responses API responses (nil = shared in-process memory store)
+	MaxConversationBytes int                                // Emulated Responses API: largest conversation previous_response_id may continue (0 = 8 MiB, -1 = unlimited)
+	OnResponseStoreError func(responseID string, err error) // Emulated Responses API: called when saving a finished background or streamed response fails (saves are retried)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -130,19 +142,21 @@ func New(config Config) (*Client, error) {
 			config.BaseURL = "https://api.z.ai/api/paas/v4/"
 		case providerMistral:
 			config.BaseURL = "https://api.mistral.ai/v1"
+		case providerGrok:
+			config.BaseURL = "https://api.x.ai/v1"
 		default:
 			config.BaseURL = "https://api.openai.com/v1"
 		}
 	}
 
 	// Auto-detect native responses support if not explicitly set
-	// Only OpenAI's official API supports native /responses endpoint
+	// Only OpenAI's and xAI's official APIs support the native /responses endpoint
 	useNativeResponses := false
 	if config.UseNativeResponses != nil {
 		useNativeResponses = *config.UseNativeResponses
-	} else if config.Provider == providerOpenAI {
+	} else if nativeHost, ok := nativeResponsesHosts[config.Provider]; ok {
 		// Parse URL and check exact domain match to prevent subdomain attacks
-		if u, err := url.Parse(config.BaseURL); err == nil && u.Hostname() == "api.openai.com" {
+		if u, err := url.Parse(config.BaseURL); err == nil && u.Hostname() == nativeHost {
 			useNativeResponses = true
 		}
 	}
@@ -210,6 +224,7 @@ func New(config Config) (*Client, error) {
 		retryBackoff:       retryBackoff,
 		retryOnRateLimit:   retryOnRateLimit,
 		retryOnServerError: retryOnServerError,
+		responses:          NewClientResponseManager(config, config.Provider, config.BaseURL),
 	}, nil
 }
 
@@ -274,13 +289,20 @@ func (c *Client) Provider() string {
 	return c.provider
 }
 
-// SupportsCapability checks if the provider supports a capability
+// SupportsCapability reports the client's capabilities: "responses" when it
+// uses the native Responses API, "responses_emulated" when it emulates it,
+// and "embeddings" for every provider except xAI, which has no embedding
+// models.
 func (c *Client) SupportsCapability(cap string) bool {
-	if c.provider == providerOpenAI {
-		return true // OpenAI supports everything
+	switch cap {
+	case "responses":
+		return c.useNativeResponses
+	case "responses_emulated":
+		return !c.useNativeResponses
+	case "embeddings":
+		return c.provider != providerGrok
 	}
-	// Ollama, ZAi, Mistral support embeddings but not responses API
-	return cap != "responses"
+	return false
 }
 
 // Close closes the client
@@ -318,7 +340,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatCompletionRequest) 
 		req.PresencePenalty = c.presencePenalty
 	}
 
-	if !requestHasTools {
+	if !requestHasTools && !MCPToolsDisabled(ctx) {
 		// Add tools from all servers
 		tools, err := c.getAllTools(ctx)
 		if err == nil && len(tools) > 0 {
@@ -445,7 +467,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 			req.PresencePenalty = c.presencePenalty
 		}
 
-		if !requestHasTools {
+		if !requestHasTools && !MCPToolsDisabled(ctx) {
 			// Add tools from all servers
 			tools, err := c.getAllTools(ctx)
 
@@ -472,7 +494,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req ChatCompletionReq
 			req.Stream = true
 
 			// Stream single completion
-			finalResponse, retryMeta, err := c.streamSingleCompletion(ctx, req, responseChan)
+			finalResponse, retryMeta, err := c.streamSingleCompletion(ctx, req, responseChan, hasServers && !requestHasTools)
 			stream.SetRetryMetadata(retryMeta)
 			if err != nil {
 				errorChan <- err
@@ -563,7 +585,12 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 	// Use emulation unless native responses are explicitly enabled
 	// Only OpenAI's official API supports the native /responses endpoint
 	if !c.useNativeResponses {
-		return CreateResponseEmulated(ctx, c, GetManager(), req)
+		return CreateResponseEmulated(ctx, c, c.responses, req)
+	}
+
+	var err error
+	if req.PreviousResponseID, err = c.nativeResponseID(ctx, req.PreviousResponseID); err != nil {
+		return nil, err
 	}
 
 	// Handle background processing
@@ -572,7 +599,8 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 		hasTools := len(req.Tools) > 0
 		needsToolProcessing := !hasTools && (c.localServer != nil || len(c.remoteServers) > 0)
 
-		if needsToolProcessing {
+		// xAI rejects background requests, so run those here too
+		if needsToolProcessing || c.provider == providerGrok {
 			// Use hybrid: local state + goroutine for tool processing
 			return c.createResponseBackground(ctx, req)
 		}
@@ -595,12 +623,50 @@ func (c *Client) CreateResponse(ctx context.Context, req CreateResponseRequest) 
 	return c.createResponseSync(ctx, req)
 }
 
+// detachedContext returns a context for work that outlives the call starting
+// it: free of ctx's cancellation but keeping its values (e.g. the tool
+// handler), and limited to timeout when positive.
+func detachedContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	}
+	return context.WithCancel(context.WithoutCancel(ctx))
+}
+
+// nativeResponseID maps the local ID of a background response this client
+// ran itself (for MCP tools, or a provider without native background
+// support) to the provider's ID for its result, so it can be continued,
+// compacted or deleted at the provider. Other IDs are returned unchanged.
+func (c *Client) nativeResponseID(ctx context.Context, id string) (string, error) {
+	if id == "" {
+		return id, nil
+	}
+	state, ok := c.responses.Get(id)
+	if !ok {
+		return id, nil
+	}
+	switch status := state.GetStatus(); {
+	case status == StatusCompleted && state.GetResult() != nil && state.GetResult().ID != "":
+		return state.GetResult().ID, nil
+	case isInProgress(status):
+		return "", fmt.Errorf("response %s is still in progress", id)
+	default:
+		return "", fmt.Errorf("response %s is %s and can't be continued", id, status)
+	}
+}
+
 // createResponseBackground creates an async response that processes in background
 func (c *Client) createResponseBackground(ctx context.Context, req CreateResponseRequest) (*ResponseObject, error) {
-	asyncCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	// Detached from the caller's cancellation (the call returns at once),
+	// keeping its values, e.g. the tool handler
+	asyncCtx, cancel := detachedContext(ctx, c.requestTimeout)
 
 	// Create response state immediately with in_progress status
-	state := GetManager().Create(cancel, req.Model)
+	state, err := c.responses.begin(ctx, cancel, req.Model, nil)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	// Start async processing
 	go func() {
@@ -652,7 +718,7 @@ func (c *Client) createResponseSync(ctx context.Context, req CreateResponseReque
 		req.TopP = c.topP
 	}
 
-	if !requestHasTools {
+	if !requestHasTools && !MCPToolsDisabled(ctx) {
 		// Add tools from all servers
 		tools, err := c.getAllTools(ctx)
 		if err == nil && len(tools) > 0 {
@@ -726,15 +792,7 @@ func (c *Client) createResponseSync(ctx context.Context, req CreateResponseReque
 			}
 		}
 
-		// Append tool results to input for next iteration
-		// Convert Messages to Response API input format
-		for _, result := range toolResults {
-			req.Input = append(req.Input, map[string]any{
-				"type":         "tool_call_result",
-				"tool_call_id": result.ToolCallID,
-				"content":      result.Content,
-			})
-		}
+		req.Input = appendToolTurnToInput(req.Input, response, toolResults)
 	}
 
 	return nil, NewMaxToolIterationsError(MAX_TOOL_CALL_ITERATIONS)
@@ -749,6 +807,21 @@ func (c *Client) createSingleResponse(ctx context.Context, req CreateResponseReq
 	}
 
 	return &response, nil
+}
+
+// appendToolTurnToInput appends a tool-calling turn to a Responses API input:
+// the response's output items (function calls, and any reasoning items that
+// must accompany them) followed by a function_call_output for each result.
+func appendToolTurnToInput(input []any, response *ResponseObject, toolResults []Message) []any {
+	input = append(input, response.Output...)
+	for _, result := range toolResults {
+		input = append(input, map[string]any{
+			"type":    "function_call_output",
+			"call_id": result.ToolCallID,
+			"output":  result.Content,
+		})
+	}
+	return input
 }
 
 // hasResponseToolCalls checks if a ResponseObject contains any tool calls in its output
@@ -788,11 +861,12 @@ func extractToolCallsFromResponse(response *ResponseObject) []ToolCall {
 					Type: "function",
 				}
 
-				// Prefer "id" field, fallback to "call_id" if not present
-				if id, ok := itemMap["id"].(string); ok {
-					toolCall.ID = id
-				} else if callID, ok := itemMap["call_id"].(string); ok {
+				// Prefer "call_id" (what function_call_output must reference),
+				// fall back to the item "id" if not present
+				if callID, ok := itemMap["call_id"].(string); ok && callID != "" {
 					toolCall.ID = callID
+				} else if id, ok := itemMap["id"].(string); ok {
+					toolCall.ID = id
 				}
 
 				// Extract function name and arguments
@@ -824,14 +898,14 @@ func extractToolCallsFromResponse(response *ResponseObject) []ToolCall {
 func (c *Client) GetResponse(ctx context.Context, id string) (*ResponseObject, error) {
 	// Use emulation unless native responses are explicitly enabled
 	if !c.useNativeResponses {
-		return GetResponseEmulated(ctx, GetManager(), id)
+		return GetResponseEmulated(ctx, c.responses, id)
 	}
 
 	// Check local state manager first (for background responses)
-	if state, ok := GetManager().Get(id); ok {
+	if state, ok := c.responses.Get(id); ok {
 		// If still in progress, wait for it
 		if state.GetStatus() == StatusInProgress {
-			return GetResponseEmulated(ctx, GetManager(), id)
+			return GetResponseEmulated(ctx, c.responses, id)
 		}
 		// If completed, return the result (which has the native API's ID)
 		if result := state.GetResult(); result != nil {
@@ -862,12 +936,16 @@ func (c *Client) GetResponse(ctx context.Context, id string) (*ResponseObject, e
 func (c *Client) CancelResponse(ctx context.Context, id string) (*ResponseObject, error) {
 	// Use emulation unless native responses are explicitly enabled
 	if !c.useNativeResponses {
-		return CancelResponseEmulated(ctx, GetManager(), id)
+		return CancelResponseEmulated(ctx, c.responses, id)
 	}
 
 	// Check local state manager first (for background responses)
-	if _, ok := GetManager().Get(id); ok {
-		return CancelResponseEmulated(ctx, GetManager(), id)
+	if _, ok := c.responses.Get(id); ok {
+		return CancelResponseEmulated(ctx, c.responses, id)
+	}
+
+	if c.provider == providerGrok {
+		return nil, fmt.Errorf("failed to cancel response: not supported by xAI")
 	}
 
 	// Validate ID to prevent path traversal
@@ -889,14 +967,24 @@ func (c *Client) CancelResponse(ctx context.Context, id string) (*ResponseObject
 func (c *Client) DeleteResponse(ctx context.Context, id string) error {
 	// Use emulation unless native responses are explicitly enabled
 	if !c.useNativeResponses {
-		return DeleteResponseEmulated(ctx, GetManager(), id)
+		return DeleteResponseEmulated(ctx, c.responses, id)
 	}
 
-	// Check local state manager first (for background responses)
-	if _, ok := GetManager().Get(id); ok {
-		return DeleteResponseEmulated(ctx, GetManager(), id)
+	// Check local state manager first (for background responses). A
+	// completed one also exists at the provider under its result's ID.
+	if state, ok := c.responses.Get(id); ok {
+		if result := state.GetResult(); state.GetStatus() == StatusCompleted && result != nil && result.ID != "" && result.ID != id {
+			if err := c.deleteNativeResponse(ctx, result.ID); err != nil {
+				return err
+			}
+		}
+		return DeleteResponseEmulated(ctx, c.responses, id)
 	}
+	return c.deleteNativeResponse(ctx, id)
+}
 
+// deleteNativeResponse deletes a response at the provider.
+func (c *Client) deleteNativeResponse(ctx context.Context, id string) error {
 	// Validate ID to prevent path traversal
 	if strings.Contains(id, "/") || strings.Contains(id, "..") {
 		return fmt.Errorf("invalid response ID: %s", id)
@@ -920,27 +1008,35 @@ func (c *Client) DeleteResponse(ctx context.Context, id string) error {
 	return nil
 }
 
-// CompactResponse compacts a response by ID using the OpenAI Responses API
+// CompactResponse compacts a conversation using the Responses API
+// POST /responses/compact endpoint, returning output to pass as the input of
+// the next request in place of the conversation.
 // https://platform.openai.com/docs/api-reference/responses/compact
-// Uses emulated responses by default unless UseNativeResponses is explicitly set to true.
-func (c *Client) CompactResponse(ctx context.Context, id string) (*ResponseObject, error) {
-	// Use emulation unless native responses are explicitly enabled
+// Without native responses the model summarises the conversation instead.
+func (c *Client) CompactResponse(ctx context.Context, req CompactResponseRequest) (*CompactedResponse, error) {
 	if !c.useNativeResponses {
-		return CompactResponseEmulated(ctx, GetManager(), id)
+		return CompactResponseEmulated(ctx, c, c.responses, req)
 	}
 
-	// Check local state manager first (for background responses)
-	if _, ok := GetManager().Get(id); ok {
-		return CompactResponseEmulated(ctx, GetManager(), id)
+	if req.Model == "" {
+		return nil, fmt.Errorf("failed to compact response: model is required")
+	}
+	var err error
+	if req.PreviousResponseID, err = c.nativeResponseID(ctx, req.PreviousResponseID); err != nil {
+		return nil, fmt.Errorf("failed to compact response: %w", err)
+	}
+	if c.provider == providerGrok {
+		// xAI's compact endpoint requires input and has no previous_response_id
+		if req.PreviousResponseID != "" {
+			return nil, fmt.Errorf("failed to compact response: xAI does not support previous_response_id for compaction, pass input instead")
+		}
+		if len(req.Input) == 0 {
+			return nil, fmt.Errorf("failed to compact response: input is required")
+		}
 	}
 
-	// Validate ID to prevent path traversal
-	if strings.Contains(id, "/") || strings.Contains(id, "..") {
-		return nil, fmt.Errorf("invalid response ID: %s", id)
-	}
-
-	var response ResponseObject
-	if err := c.doRequest(ctx, "POST", "responses/"+id+"/compact", nil, &response); err != nil {
+	var response CompactedResponse
+	if err := c.doRequest(ctx, "POST", "responses/compact", req, &response); err != nil {
 		return nil, fmt.Errorf("failed to compact response: %w", err)
 	}
 
@@ -984,7 +1080,10 @@ func (c *Client) nonStreamingChatCompletion(ctx context.Context, req ChatComplet
 }
 
 // streamSingleCompletion handles a single streaming completion
-func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionRequest, responseChan chan<- ChatCompletionResponse) (*ChatCompletionResponse, *RetryMetadata, error) {
+// streamSingleCompletion streams one completion to responseChan. When
+// handleTools is set, tool calls are handled internally (MCP servers), so
+// tool-call chunks are withheld from the caller.
+func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionRequest, responseChan chan<- ChatCompletionResponse, handleTools bool) (*ChatCompletionResponse, *RetryMetadata, error) {
 	var finalResponse *ChatCompletionResponse
 	var assistantContent strings.Builder
 
@@ -992,7 +1091,6 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 	toolAccumulator := NewStreamingToolCallAccumulator()
 
 	// Check if we have any MCP servers
-	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
 	retryMeta, streamErr := c.streamRequest(ctx, "POST", "chat/completions", req, func(response *ChatCompletionResponse) (bool, error) {
 		if response == nil {
@@ -1009,7 +1107,7 @@ func (c *Client) streamSingleCompletion(ctx context.Context, req ChatCompletionR
 		// 1. No MCP servers (client handles tool calls), OR
 		// 2. MCP servers exist but this chunk has no tool calls (just content) AND
 		// 3. This chunk doesn't signal tool_calls finish (which would make client think stream is done)
-		shouldSendToClient := !hasServers ||
+		shouldSendToClient := !handleTools ||
 			(len(response.Choices) > 0 &&
 				len(response.Choices[0].Delta.ToolCalls) == 0 &&
 				response.Choices[0].FinishReason != "tool_calls")
@@ -1087,8 +1185,7 @@ func (c *Client) processStreamChunk(response *ChatCompletionResponse, toolAccumu
 	choice := response.Choices[0]
 
 	// Handle tool calls using the accumulator with ID callback
-	hasServers := c.localServer != nil || len(c.remoteServers) > 0
-	if len(choice.Delta.ToolCalls) > 0 && hasServers {
+	if len(choice.Delta.ToolCalls) > 0 {
 		// Use callback to update response with generated IDs
 		toolAccumulator.ProcessDeltaWithIDCallback(choice.Delta, func(index int, id string) {
 			// Update the response chunk with the generated ID so it's forwarded to clients

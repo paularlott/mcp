@@ -67,7 +67,7 @@ func New(config openai.Config) (*Client, error) {
 	}
 
 	// Get the global response manager
-	responseManager := openai.GetManager()
+	responseManager := openai.NewClientResponseManager(config, providerName, config.BaseURL)
 
 	// Retry defaults
 	maxRetries := config.MaxRetries
@@ -128,7 +128,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 	currentMessages := req.Messages
 	requestHasTools := len(req.Tools) > 0
 
-	if !requestHasTools {
+	if !requestHasTools && !openai.MCPToolsDisabled(ctx) {
 		tools, err := c.getAllTools(ctx)
 		if err == nil && len(tools) > 0 {
 			req.Tools = openai.MCPToolsToOpenAI(tools)
@@ -267,7 +267,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 		requestHasTools := len(req.Tools) > 0
 		hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
-		if !requestHasTools {
+		if !requestHasTools && !openai.MCPToolsDisabled(ctx) {
 			tools, err := c.getAllTools(ctx)
 			if err == nil && hasServers && len(tools) > 0 {
 				req.Tools = openai.MCPToolsToOpenAI(tools)
@@ -302,7 +302,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 			claudeReq := c.convertToClaudeRequest(req)
 			claudeReq.Stream = true
 
-			finalResponse, retryMeta, err := c.streamSingleCompletion(ctx, claudeReq, currentMessages, responseChan)
+			finalResponse, retryMeta, err := c.streamSingleCompletion(ctx, claudeReq, currentMessages, responseChan, hasServers && !requestHasTools)
 			stream.SetRetryMetadata(retryMeta)
 			if err != nil {
 				errorChan <- err
@@ -369,10 +369,12 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 	return stream
 }
 
-func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeRequest, originalMessages []openai.Message, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, *openai.RetryMetadata, error) {
+// streamSingleCompletion streams one completion to responseChan. When
+// handleTools is set, tool calls are handled internally (MCP servers), so
+// tool-call chunks are withheld from the caller.
+func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeRequest, originalMessages []openai.Message, responseChan chan<- openai.ChatCompletionResponse, handleTools bool) (*openai.ChatCompletionResponse, *openai.RetryMetadata, error) {
 	var assistantContent strings.Builder
 	toolAccumulator := openai.NewStreamingToolCallAccumulator()
-	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 	var responseID, responseModel string
 	var finishReason string
 
@@ -387,7 +389,7 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 			}
 			if len(chunk.Choices) > 0 {
 				assistantContent.WriteString(chunk.Choices[0].Delta.Content)
-				if len(chunk.Choices[0].Delta.ToolCalls) > 0 && hasServers {
+				if len(chunk.Choices[0].Delta.ToolCalls) > 0 {
 					toolAccumulator.ProcessDelta(chunk.Choices[0].Delta)
 				}
 				if chunk.Choices[0].FinishReason != "" {
@@ -395,8 +397,8 @@ func (c *Client) streamSingleCompletion(ctx context.Context, claudeReq ClaudeReq
 				}
 			}
 
-			// Only send to client if no servers or no tool calls
-			shouldSendToClient := !hasServers || (len(chunk.Choices) > 0 && len(chunk.Choices[0].Delta.ToolCalls) == 0 && chunk.Choices[0].FinishReason != "tool_calls")
+			// Withhold tool-call chunks when handling tools internally
+			shouldSendToClient := !handleTools || (len(chunk.Choices) > 0 && len(chunk.Choices[0].Delta.ToolCalls) == 0 && chunk.Choices[0].FinishReason != "tool_calls")
 			if shouldSendToClient {
 				select {
 				case responseChan <- *chunk:
@@ -1034,8 +1036,8 @@ func (c *Client) Provider() string {
 
 // SupportsCapability checks if the provider supports a capability
 func (c *Client) SupportsCapability(cap string) bool {
-	// Claude doesn't support embeddings or responses API
-	return cap != "embeddings" && cap != "responses"
+	// No embeddings, and the Responses API is emulated
+	return cap == "responses_emulated"
 }
 
 // GetModels fetches the list of available models from Claude API
@@ -1071,7 +1073,7 @@ func (c *Client) StreamResponse(ctx context.Context, req openai.CreateResponseRe
 	go func() {
 		defer close(eventChan)
 		defer close(errorChan)
-		openai.StreamResponseEmulated(ctx, c, req, eventChan, errorChan)
+		openai.StreamResponseEmulatedWithManager(ctx, c, c.responseManager, req, eventChan, errorChan)
 	}()
 	return openai.NewResponseStream(ctx, eventChan, errorChan)
 }
@@ -1097,9 +1099,9 @@ func (c *Client) DeleteResponse(ctx context.Context, id string) error {
 	return openai.DeleteResponseEmulated(ctx, c.responseManager, id)
 }
 
-// CompactResponse compacts a response by removing intermediate reasoning steps
-func (c *Client) CompactResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return openai.CompactResponseEmulated(ctx, c.responseManager, id)
+// CompactResponse compacts a conversation by having the model summarise it
+func (c *Client) CompactResponse(ctx context.Context, req openai.CompactResponseRequest) (*openai.CompactedResponse, error) {
+	return openai.CompactResponseEmulated(ctx, c, c.responseManager, req)
 }
 
 // Close closes the client

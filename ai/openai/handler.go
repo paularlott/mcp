@@ -37,6 +37,20 @@ func ToolHandlerFromContext(ctx context.Context) ToolHandler {
 	return nil
 }
 
+type withoutMCPToolsKey struct{}
+
+// WithoutMCPTools returns a context in which clients don't inject tools from
+// their attached MCP servers into requests, e.g. for internal summarisation.
+func WithoutMCPTools(ctx context.Context) context.Context {
+	return context.WithValue(ctx, withoutMCPToolsKey{}, true)
+}
+
+// MCPToolsDisabled reports whether WithoutMCPTools was applied to ctx.
+func MCPToolsDisabled(ctx context.Context) bool {
+	v, _ := ctx.Value(withoutMCPToolsKey{}).(bool)
+	return v
+}
+
 // GenerateToolCallID creates a unique ID for tool calls.
 // This is useful when LLMs don't provide an ID in streaming responses.
 // The format matches OpenAI's tool call ID format: "call_" followed by random characters.

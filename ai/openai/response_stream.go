@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,12 +70,13 @@ func (e *ResponseStreamEvent) Response() *ResponseObject {
 //	}
 //	if err := stream.Err(); err != nil { ... }
 type ResponseStream struct {
-	eventChan <-chan ResponseStreamEvent
-	errorChan <-chan error
-	ctx       context.Context
-	current   *ResponseStreamEvent
-	err       error
-	done      bool
+	eventChan  <-chan ResponseStreamEvent
+	errorChan  <-chan error
+	ctx        context.Context
+	current    *ResponseStreamEvent
+	err        error
+	pendingErr error // received, but delivered after the events buffered before it
+	done       bool
 }
 
 // NewResponseStream creates a ResponseStream from event and error channels.
@@ -92,6 +94,23 @@ func (s *ResponseStream) Next() bool {
 		return false
 	}
 	for {
+		// An error is reported only after the events buffered before it:
+		// the producer sends its events, then the error, so by the time the
+		// error arrives every earlier event is already in the buffer.
+		if s.pendingErr != nil {
+			select {
+			case event, ok := <-s.eventChan:
+				if ok {
+					s.current = &event
+					return true
+				}
+			default:
+			}
+			s.err = s.pendingErr
+			s.done = true
+			return false
+		}
+
 		select {
 		case <-s.ctx.Done():
 			s.err = s.ctx.Err()
@@ -99,9 +118,9 @@ func (s *ResponseStream) Next() bool {
 			return false
 		case err, ok := <-s.errorChan:
 			if ok && err != nil {
-				s.err = err
-				s.done = true
-				return false
+				s.pendingErr = err
+				s.errorChan = nil
+				continue
 			}
 			s.errorChan = nil
 			continue
@@ -159,7 +178,7 @@ func (c *Client) StreamResponse(ctx context.Context, req CreateResponseRequest) 
 		if c.useNativeResponses {
 			c.streamResponseNative(ctx, req, eventChan, errorChan)
 		} else {
-			StreamResponseEmulated(ctx, c, req, eventChan, errorChan)
+			StreamResponseEmulatedWithManager(ctx, c, c.responses, req, eventChan, errorChan)
 		}
 	}()
 
@@ -177,7 +196,13 @@ func (c *Client) streamResponseNative(ctx context.Context, req CreateResponseReq
 	requestHasTools := len(req.Tools) > 0
 	hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
-	if !requestHasTools {
+	var err error
+	if req.PreviousResponseID, err = c.nativeResponseID(ctx, req.PreviousResponseID); err != nil {
+		errorChan <- err
+		return
+	}
+
+	if !requestHasTools && !MCPToolsDisabled(ctx) {
 		tools, err := c.getAllTools(ctx)
 		if err == nil && len(tools) > 0 {
 			req.Tools = MCPToolsToOpenAI(tools)
@@ -186,10 +211,19 @@ func (c *Client) streamResponseNative(ctx context.Context, req CreateResponseReq
 
 	toolHandler := ToolHandlerFromContext(ctx)
 
+	// When the client runs the tools, merge the rounds into one lifecycle
+	var merge *toolLoopStream
+	if !requestHasTools && hasServers {
+		merge = &toolLoopStream{}
+	}
+
 	for iteration := 0; iteration < MAX_TOOL_CALL_ITERATIONS; iteration++ {
 		req.Background = false
+		if merge != nil {
+			merge.startRound()
+		}
 
-		finalResp, err := c.streamSingleResponse(ctx, req, eventChan, requestHasTools || !hasServers)
+		finalResp, err := c.streamSingleResponse(ctx, req, eventChan, merge)
 		if err != nil {
 			errorChan <- err
 			return
@@ -232,29 +266,27 @@ func (c *Client) streamResponseNative(ctx context.Context, req CreateResponseReq
 			}
 		}
 
-		// Append tool results to input for next iteration
-		for _, result := range toolResults {
-			req.Input = append(req.Input, map[string]any{
-				"type":    "function_call_output",
-				"call_id": result.ToolCallID,
-				"output":  result.Content,
-			})
-		}
+		req.Input = appendToolTurnToInput(req.Input, finalResp, toolResults)
 	}
 
 	errorChan <- NewMaxToolIterationsError(MAX_TOOL_CALL_ITERATIONS)
 }
 
 // streamSingleResponse makes one streaming call to /responses and forwards events.
-// If forwardAll is true, all events are forwarded; otherwise tool-related events are suppressed.
-// Returns the final ResponseObject from the "response.completed" event.
-func (c *Client) streamSingleResponse(ctx context.Context, req CreateResponseRequest, eventChan chan<- ResponseStreamEvent, forwardAll bool) (*ResponseObject, error) {
-	streamReq := struct {
-		CreateResponseRequest
-		Stream bool `json:"stream"`
-	}{req, true}
+// With merge set, events are rewritten into the tool loop's single lifecycle
+// (see toolLoopStream); otherwise they are forwarded as is.
+// Returns the upstream ResponseObject from the "response.completed" event.
+func (c *Client) streamSingleResponse(ctx context.Context, req CreateResponseRequest, eventChan chan<- ResponseStreamEvent, merge *toolLoopStream) (*ResponseObject, error) {
+	// Set stream via ExtraBody: embedding the request in a wrapper struct with
+	// a Stream field doesn't work, as its MarshalJSON is promoted and drops it.
+	extra := make(map[string]any, len(req.ExtraBody)+1)
+	for k, v := range req.ExtraBody {
+		extra[k] = v
+	}
+	extra["stream"] = true
+	req.ExtraBody = extra
 
-	reqBody, err := c.marshalBody(streamReq)
+	reqBody, err := c.marshalBody(req)
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +315,9 @@ func (c *Client) streamSingleResponse(ctx context.Context, req CreateResponseReq
 		body, _ := io.ReadAll(resp.Body)
 		return nil, c.handleError(resp.StatusCode, body)
 	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "text/event-stream") {
+		return nil, fmt.Errorf("expected text/event-stream response, got %q", ct)
+	}
 
 	var finalResp *ResponseObject
 	decoder := newSSEDecoder(resp.Body)
@@ -290,7 +325,7 @@ func (c *Client) streamSingleResponse(ctx context.Context, req CreateResponseReq
 	for {
 		sseEvent, err := decoder.Next()
 		if err != nil {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, fmt.Errorf("SSE read error: %w", err)
@@ -320,11 +355,11 @@ func (c *Client) streamSingleResponse(ctx context.Context, req CreateResponseReq
 			finalResp = event.Response()
 		}
 
-		// Suppress tool-call events when we're handling tools internally
-		isToolEvent := strings.HasPrefix(envelope.Type, "response.function_call") ||
-			strings.HasPrefix(envelope.Type, "response.tool_call")
-		if !forwardAll && isToolEvent {
-			continue
+		if merge != nil {
+			var forward bool
+			if event, forward = merge.rewrite(event); !forward {
+				continue
+			}
 		}
 
 		select {
@@ -342,13 +377,47 @@ func (c *Client) streamSingleResponse(ctx context.Context, req CreateResponseReq
 // identical behaviour regardless of provider.
 // This is a standalone function so Gemini, Claude, and other providers can use it directly.
 func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, req CreateResponseRequest, eventChan chan<- ResponseStreamEvent, errorChan chan<- error) {
-	chatReq, err := ConvertResponseToChatRequest(req)
+	StreamResponseEmulatedWithManager(ctx, completer, GetManager(), req, eventChan, errorChan)
+}
+
+// StreamResponseEmulatedWithManager is StreamResponseEmulated with an explicit
+// response manager: it continues the conversation of req.PreviousResponseID
+// from the manager and stores the streamed response there (unless req.Store
+// is false), so it can be retrieved or continued by ID like a non-streamed
+// one.
+func StreamResponseEmulatedWithManager(ctx context.Context, completer ChatStreamCompleter, manager *ResponseManager, req CreateResponseRequest, eventChan chan<- ResponseStreamEvent, errorChan chan<- error) {
+	chatReq, conv, err := emulatedChatRequest(ctx, manager, req)
 	if err != nil {
 		errorChan <- err
 		return
 	}
 
+	// Cancelling the response (from any instance) stops the stream
+	ctx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+
+	// With store: false nothing is kept; the response only gets an ID
+	var state *ResponseState
 	respID := generateID()
+	if storeRequested(req) {
+		if state, err = manager.begin(ctx, cancelStream, req.Model, conv); err != nil {
+			errorChan <- err
+			return
+		}
+		respID = state.ID
+	}
+	finished := false
+	defer func() {
+		// Don't leave an abandoned stream in progress forever
+		if !finished && state != nil {
+			if ctx.Err() != nil {
+				state.SetError(ctx.Err())
+			} else {
+				state.SetError(fmt.Errorf("stream ended before completion"))
+			}
+		}
+	}()
+
 	createdAt := timeNowUnix()
 
 	send := func(eventType string, payload map[string]any) bool {
@@ -379,28 +448,48 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 		return
 	}
 
-	msgItemID := generateID()
-	if !send("response.output_item.added", map[string]any{
-		"output_index": 0,
-		"item": map[string]any{
-			"id": msgItemID, "type": "message",
-			"role": "assistant", "status": "in_progress", "content": []any{},
-		},
-	}) {
-		return
+	// Output items are opened in the order they first appear in the stream:
+	// a message item for text, a function_call item per tool call.
+	type outputItem struct {
+		id       string
+		toolIdx  int // tool call index; -1 for the message item
+		callID   string
+		name     string
+		argsSent int // bytes of arguments already sent as deltas
 	}
-	if !send("response.content_part.added", map[string]any{
-		"item_id": msgItemID, "output_index": 0, "content_index": 0,
-		"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
-	}) {
-		return
+	var items []*outputItem
+	var msgItem *outputItem
+	toolItems := map[int]*outputItem{}
+	toolAcc := NewStreamingToolCallAccumulator()
+
+	openMessage := func() bool {
+		msgItem = &outputItem{id: generateID(), toolIdx: -1}
+		items = append(items, msgItem)
+		idx := len(items) - 1
+		return send("response.output_item.added", map[string]any{
+			"output_index": idx,
+			"item": map[string]any{
+				"id": msgItem.id, "type": "message",
+				"role": "assistant", "status": "in_progress", "content": []any{},
+			},
+		}) && send("response.content_part.added", map[string]any{
+			"item_id": msgItem.id, "output_index": idx, "content_index": 0,
+			"part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
+		})
+	}
+	outputIndex := func(item *outputItem) int {
+		for i, it := range items {
+			if it == item {
+				return i
+			}
+		}
+		return -1
 	}
 
 	stream := completer.StreamChatCompletion(ctx, chatReq)
 
 	var textBuf strings.Builder
 	var finalUsage *Usage
-	var finalChunk *ChatCompletionResponse
 
 	for stream.Next() {
 		chunk := stream.Current()
@@ -410,64 +499,126 @@ func StreamResponseEmulated(ctx context.Context, completer ChatStreamCompleter, 
 		if len(chunk.Choices) == 0 {
 			continue
 		}
-		if delta := chunk.Choices[0].Delta.Content; delta != "" {
-			textBuf.WriteString(delta)
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			if msgItem == nil && !openMessage() {
+				return
+			}
+			textBuf.WriteString(delta.Content)
 			if !send("response.output_text.delta", map[string]any{
-				"item_id": msgItemID, "output_index": 0, "content_index": 0, "delta": delta,
+				"item_id": msgItem.id, "output_index": outputIndex(msgItem), "content_index": 0, "delta": delta.Content,
 			}) {
 				return
 			}
 		}
-		if chunk.Choices[0].FinishReason != "" {
-			finalChunk = &chunk
+		if len(delta.ToolCalls) == 0 {
+			continue
+		}
+		toolAcc.ProcessDelta(delta)
+		for _, dtc := range delta.ToolCalls {
+			acc := toolAcc.toolCalls[dtc.Index]
+			item := toolItems[dtc.Index]
+			if item == nil {
+				item = &outputItem{id: acc.ID, toolIdx: dtc.Index, callID: acc.ID, name: acc.Name}
+				toolItems[dtc.Index] = item
+				items = append(items, item)
+				if !send("response.output_item.added", map[string]any{
+					"output_index": len(items) - 1,
+					"item": map[string]any{
+						"id": item.id, "type": "function_call", "status": "in_progress",
+						"call_id": item.callID, "name": item.name, "arguments": "",
+					},
+				}) {
+					return
+				}
+			}
+			if args := acc.Arguments.String(); len(args) > item.argsSent {
+				fragment := args[item.argsSent:]
+				item.argsSent = len(args)
+				if !send("response.function_call_arguments.delta", map[string]any{
+					"item_id": item.id, "output_index": outputIndex(item), "delta": fragment,
+				}) {
+					return
+				}
+			}
 		}
 	}
 	if err := stream.Err(); err != nil {
+		if state != nil {
+			state.SetError(err)
+		}
+		finished = true
 		errorChan <- err
 		return
 	}
 
+	// A reply with neither text nor tool calls still gets an (empty) message
+	if len(items) == 0 && !openMessage() {
+		return
+	}
+
 	fullText := textBuf.String()
-
-	if !send("response.output_text.done", map[string]any{
-		"item_id": msgItemID, "output_index": 0, "content_index": 0, "text": fullText,
-	}) {
-		return
-	}
-	if !send("response.content_part.done", map[string]any{
-		"item_id": msgItemID, "output_index": 0, "content_index": 0,
-		"part": map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
-	}) {
-		return
-	}
-	if !send("response.output_item.done", map[string]any{
-		"output_index": 0,
-		"item": map[string]any{
-			"id": msgItemID, "type": "message", "role": "assistant", "status": "completed",
-			"content": []any{
-				map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
-			},
-		},
-	}) {
-		return
-	}
-
-	chatID := respID
-	if finalChunk != nil && finalChunk.ID != "" {
-		chatID = finalChunk.ID
-	}
-	respObj := &ResponseObject{
-		ID: chatID, Object: "response", Status: "completed",
-		CreatedAt: createdAt, Model: req.Model,
-		Usage: toResponseUsage(finalUsage),
-		Output: []any{
-			map[string]any{
-				"id": msgItemID, "type": "message", "role": "assistant", "status": "completed",
+	output := make([]any, 0, len(items))
+	for idx, item := range items {
+		if item.toolIdx < 0 {
+			if !send("response.output_text.done", map[string]any{
+				"item_id": item.id, "output_index": idx, "content_index": 0, "text": fullText,
+			}) {
+				return
+			}
+			if !send("response.content_part.done", map[string]any{
+				"item_id": item.id, "output_index": idx, "content_index": 0,
+				"part": map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
+			}) {
+				return
+			}
+			done := map[string]any{
+				"id": item.id, "type": "message", "role": "assistant", "status": "completed",
 				"content": []any{
 					map[string]any{"type": "output_text", "text": fullText, "annotations": []any{}},
 				},
-			},
-		},
+			}
+			if !send("response.output_item.done", map[string]any{"output_index": idx, "item": done}) {
+				return
+			}
+			output = append(output, done)
+			continue
+		}
+
+		acc := toolAcc.toolCalls[item.toolIdx]
+		args := acc.Arguments.String()
+		if args == "" || args == "null" {
+			args = "{}"
+		}
+		if !send("response.function_call_arguments.done", map[string]any{
+			"item_id": item.id, "output_index": idx, "name": acc.Name, "arguments": args,
+		}) {
+			return
+		}
+		done := map[string]any{
+			"id": item.id, "type": "function_call", "status": "completed",
+			"call_id": item.callID, "name": acc.Name, "arguments": args,
+		}
+		if !send("response.output_item.done", map[string]any{"output_index": idx, "item": done}) {
+			return
+		}
+		output = append(output, done)
 	}
+
+	respObj := &ResponseObject{
+		ID: respID, Object: "response", Status: "completed",
+		CreatedAt: createdAt, Model: req.Model,
+		Usage:  toResponseUsage(finalUsage),
+		Output: output,
+	}
+	if state != nil {
+		reply := Message{Role: "assistant", Content: fullText, ToolCalls: toolAcc.Finalize()}
+		state.Lock()
+		state.reply = &reply
+		state.Unlock()
+		// A failed save is reported and retried; the stream still completes
+		_ = state.finish(StatusCompleted, respObj, nil)
+	}
+	finished = true
 	send("response.completed", map[string]any{"response": respObj})
 }

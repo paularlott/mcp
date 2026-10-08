@@ -2,7 +2,6 @@ package ollama
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 // out of multimodal content parts into Ollama's top-level images field.
 func (c *Client) convertMessages(messages []openai.Message) []message {
 	out := make([]message, 0, len(messages))
+	toolNames := map[string]string{} // tool call id -> tool name
 	for _, m := range messages {
 		om := message{Role: m.Role}
 		text, images := splitContent(m)
@@ -22,9 +22,19 @@ func (c *Client) convertMessages(messages []openai.Message) []message {
 		om.Images = images
 		if len(m.ToolCalls) > 0 {
 			om.ToolCalls = toolCallsFromOpenAI(m.ToolCalls)
+			for _, tc := range m.ToolCalls {
+				toolNames[tc.ID] = tc.Function.Name
+			}
 		}
 		// OpenAI echoes the tool result into a "tool"-role message whose
-		// content is the result; Ollama expects role "tool" too, with content.
+		// content is the result; Ollama expects role "tool" too, with content
+		// and the tool's name.
+		if m.Role == "tool" {
+			om.ToolName = toolNames[m.ToolCallID]
+			if om.ToolName == "" {
+				om.ToolName = m.ToolCallID // ids used to be the tool name
+			}
+		}
 		out = append(out, om)
 	}
 	return out
@@ -96,6 +106,7 @@ func toolCallsFromOpenAI(calls []openai.ToolCall) []toolCall {
 	out := make([]toolCall, 0, len(calls))
 	for _, call := range calls {
 		out = append(out, toolCall{
+			ID: call.ID,
 			Function: toolCallFunction{
 				Name:      call.Function.Name,
 				Arguments: call.Function.Arguments,
@@ -212,7 +223,7 @@ func toolCallsToOpenAI(calls []toolCall) []openai.ToolCall {
 	for i, call := range calls {
 		out = append(out, openai.ToolCall{
 			Index: i,
-			ID:    call.Function.Name, // Ollama carries no tool-call id
+			ID:    toolCallID(call, i),
 			Type:  "function",
 			Function: openai.ToolCallFunction{
 				Name:      call.Function.Name,
@@ -223,9 +234,18 @@ func toolCallsToOpenAI(calls []toolCall) []openai.ToolCall {
 	return out
 }
 
+// toolCallID returns the call's id, or a generated one for Ollama versions
+// that don't send one. Reusing the tool name would make ids collide when a
+// tool is called more than once.
+func toolCallID(call toolCall, index int) string {
+	if call.ID != "" {
+		return call.ID
+	}
+	return openai.GenerateToolCallID(index)
+}
+
 // streamChunkToOpenAI converts one streamed Ollama chat object into an OpenAI
-// chat.completion.chunk. Returns nil for chunks that produce no OpenAI delta
-// (e.g. the terminal usage-only object when there is no usage to report).
+// chat.completion.chunk. It always returns a chunk with one choice.
 func streamChunkToOpenAI(model string, resp *chatResponse) *openai.ChatCompletionResponse {
 	chunk := &openai.ChatCompletionResponse{
 		ID:     model,
@@ -246,10 +266,14 @@ func streamChunkToOpenAI(model string, resp *chatResponse) *openai.ChatCompletio
 	if len(resp.Message.ToolCalls) > 0 {
 		deltas := make([]openai.DeltaToolCall, 0, len(resp.Message.ToolCalls))
 		for i, call := range resp.Message.ToolCalls {
-			args, _ := json.Marshal(call.Function.Arguments)
+			args, _ := openai.ArgumentsJSON(call.Function.Arguments)
+			index := i
+			if call.Function.Index != nil {
+				index = *call.Function.Index
+			}
 			deltas = append(deltas, openai.DeltaToolCall{
-				Index: i,
-				ID:    call.Function.Name,
+				Index: index,
+				ID:    toolCallID(call, index),
 				Type:  "function",
 				Function: openai.DeltaFunction{
 					Name:      call.Function.Name,

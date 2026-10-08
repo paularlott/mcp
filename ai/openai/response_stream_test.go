@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -507,5 +508,29 @@ func TestClient_StreamResponse_Native_WithToolLoop(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Errorf("callCount = %d, want 2", callCount)
+	}
+}
+
+// Events sent before an error are all delivered before the error, however
+// select orders the ready channels.
+func TestResponseStream_EventsBeforeErrorAreDelivered(t *testing.T) {
+	for i := 0; i < 500; i++ {
+		events := make(chan ResponseStreamEvent, 3)
+		errs := make(chan error, 1)
+		for j := 0; j < 3; j++ {
+			events <- ResponseStreamEvent{Type: fmt.Sprint("e", j)}
+		}
+		errs <- errors.New("boom")
+		close(events)
+		close(errs)
+
+		s := NewResponseStream(context.Background(), events, errs)
+		n := 0
+		for s.Next() {
+			n++
+		}
+		if n != 3 || s.Err() == nil || s.Err().Error() != "boom" {
+			t.Fatalf("run %d: got %d events, err %v; want 3 events then boom", i, n, s.Err())
+		}
 	}
 }

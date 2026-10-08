@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -246,5 +247,29 @@ func TestChatStream_DoneLifecycle(t *testing.T) {
 	// Calling Next() again on a done stream should return false immediately
 	if s.Next() {
 		t.Fatal("Next() on done stream should return false")
+	}
+}
+
+// Chunks sent before an error are all delivered before the error, however
+// select orders the ready channels.
+func TestChatStream_ChunksBeforeErrorAreDelivered(t *testing.T) {
+	for i := 0; i < 500; i++ {
+		chunks := make(chan ChatCompletionResponse, 3)
+		errs := make(chan error, 1)
+		for j := 0; j < 3; j++ {
+			chunks <- ChatCompletionResponse{ID: fmt.Sprint(j)}
+		}
+		errs <- errors.New("boom")
+		close(chunks)
+		close(errs)
+
+		s := NewChatStream(context.Background(), chunks, errs)
+		n := 0
+		for s.Next() {
+			n++
+		}
+		if n != 3 || s.Err() == nil || s.Err().Error() != "boom" {
+			t.Fatalf("run %d: got %d chunks, err %v; want 3 chunks then boom", i, n, s.Err())
+		}
 	}
 }

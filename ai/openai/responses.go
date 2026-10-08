@@ -174,7 +174,7 @@ const (
 	// CancelStatusCode is returned by POST /responses/{id}/cancel.
 	CancelStatusCode = http.StatusOK
 
-	// CompactStatusCode is returned by POST /responses/{id}/compact.
+	// CompactStatusCode is returned by POST /responses/compact.
 	CompactStatusCode = http.StatusOK
 
 	// InputItemsStatusCode is returned by GET /responses/{id}/input_items.
@@ -183,6 +183,27 @@ const (
 	// InputTokensStatusCode is returned by POST /responses/input_tokens.
 	InputTokensStatusCode = http.StatusOK
 )
+
+// CompactResponseRequest is a request to compact a conversation with
+// POST /responses/compact. The conversation is the stored conversation of
+// PreviousResponseID (if set) followed by Input.
+type CompactResponseRequest struct {
+	Model              string `json:"model"`
+	Input              []any  `json:"input,omitempty"`
+	PreviousResponseID string `json:"previous_response_id,omitempty"`
+	Instructions       string `json:"instructions,omitempty"`
+}
+
+// CompactedResponse is the result of compacting a conversation. Pass Output
+// verbatim as the input of the next request in place of the conversation.
+type CompactedResponse struct {
+	ID        string         `json:"id"`
+	Object    string         `json:"object"` // "response.compaction"
+	CreatedAt int64          `json:"created_at"`
+	Model     string         `json:"model,omitempty"`
+	Output    []any          `json:"output"`
+	Usage     *ResponseUsage `json:"usage,omitempty"`
+}
 
 // TokenDetail represents detailed information about a token
 type TokenDetail struct {
@@ -236,11 +257,13 @@ var createResponseRequestJSONFields = map[string]struct{}{
 // This matches OpenAI SDK extra_body behavior for provider-specific fields.
 func (r CreateResponseRequest) MarshalJSON() ([]byte, error) {
 	type createResponseRequestAlias CreateResponseRequest
-	base, err := json.Marshal(createResponseRequestAlias(r))
+	alias := createResponseRequestAlias(r)
+	alias.Tools = nil
+	base, err := json.Marshal(alias)
 	if err != nil {
 		return nil, err
 	}
-	if len(r.ExtraBody) == 0 {
+	if len(r.ExtraBody) == 0 && len(r.Tools) == 0 {
 		return base, nil
 	}
 
@@ -248,10 +271,35 @@ func (r CreateResponseRequest) MarshalJSON() ([]byte, error) {
 	if err := json.Unmarshal(base, &body); err != nil {
 		return nil, err
 	}
+	if len(r.Tools) > 0 {
+		body["tools"] = responsesTools(r.Tools)
+	}
 	for key, value := range r.ExtraBody {
 		body[key] = value
 	}
 	return json.Marshal(body)
+}
+
+// responsesTools converts tools to the Responses API wire format, where
+// function tools are flat ({type, name, description, parameters}) rather
+// than nested under "function" as in Chat Completions.
+func responsesTools(tools []Tool) []map[string]any {
+	out := make([]map[string]any, len(tools))
+	for i, t := range tools {
+		if t.Type != "function" {
+			out[i] = map[string]any{"type": t.Type}
+			continue
+		}
+		m := map[string]any{"type": t.Type, "name": t.Function.Name}
+		if t.Function.Description != "" {
+			m["description"] = t.Function.Description
+		}
+		if t.Function.Parameters != nil {
+			m["parameters"] = t.Function.Parameters
+		}
+		out[i] = m
+	}
+	return out
 }
 
 // UnmarshalJSON captures unknown provider-specific request fields into

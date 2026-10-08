@@ -331,7 +331,7 @@ func TestReadChatStreamSkipsBlankAndMalformedLines(t *testing.T) {
 	body := "\n" + `not json at all` + "\n" + ndjson(t, chatResponse{Model: "m", Message: message{Role: "assistant", Content: "ok"}, Done: true, DoneReason: "stop"})
 	c := &Client{}
 	ch := make(chan openai.ChatCompletionResponse, 10)
-	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch)
+	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, false)
 	if err != nil {
 		t.Fatalf("readChatStream() error: %v", err)
 	}
@@ -351,15 +351,14 @@ func TestReadChatStreamSkipsBlankAndMalformedLines(t *testing.T) {
 }
 
 func TestReadChatStreamToolCallAssembly(t *testing.T) {
-	// Multiple NDJSON lines each carrying tool call index 0: last write wins
-	// per the documented behaviour.
-	body := ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{Function: toolCallFunction{Name: "f", Arguments: map[string]any{"a": 1}}}}}}) +
-		ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{Function: toolCallFunction{Name: "f", Arguments: map[string]any{"a": 2}}}}}}) +
+	// The same call id sent twice is one call: last write wins.
+	body := ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{ID: "call_1", Function: toolCallFunction{Name: "f", Arguments: map[string]any{"a": 1}}}}}}) +
+		ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{ID: "call_1", Function: toolCallFunction{Name: "f", Arguments: map[string]any{"a": 2}}}}}}) +
 		ndjson(t, chatResponse{Done: true, DoneReason: "tool_calls"})
 
 	c := &Client{}
 	ch := make(chan openai.ChatCompletionResponse, 10)
-	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch)
+	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, false)
 	if err != nil {
 		t.Fatalf("readChatStream() error: %v", err)
 	}
@@ -369,8 +368,86 @@ func TestReadChatStreamToolCallAssembly(t *testing.T) {
 	if resp.Choices[0].Message.ToolCalls[0].Function.Arguments["a"] != float64(2) {
 		t.Errorf("arguments = %+v, want a=2 (last write wins)", resp.Choices[0].Message.ToolCalls[0].Function.Arguments)
 	}
+	if resp.Choices[0].Message.ToolCalls[0].ID != "call_1" {
+		t.Errorf("id = %q, want call_1", resp.Choices[0].Message.ToolCalls[0].ID)
+	}
 	if resp.Choices[0].FinishReason != "tool_calls" {
 		t.Errorf("finish reason = %q, want tool_calls", resp.Choices[0].FinishReason)
+	}
+}
+
+func intPtr(i int) *int { return &i }
+
+// Ollama streams parallel tool calls one per object, each first in its own
+// tool_calls array; function.index tells them apart.
+func TestReadChatStreamParallelToolCalls(t *testing.T) {
+	body := ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{ID: "call_a", Function: toolCallFunction{Index: intPtr(0), Name: "weather", Arguments: map[string]any{"city": "Paris"}}}}}}) +
+		ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{ID: "call_b", Function: toolCallFunction{Index: intPtr(1), Name: "weather", Arguments: map[string]any{"city": "Tokyo"}}}}}}) +
+		ndjson(t, chatResponse{Done: true, DoneReason: "stop"})
+
+	c := &Client{}
+	ch := make(chan openai.ChatCompletionResponse, 10)
+	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := resp.Choices[0].Message.ToolCalls
+	if len(calls) != 2 || calls[0].ID != "call_a" || calls[1].ID != "call_b" ||
+		calls[0].Function.Arguments["city"] != "Paris" || calls[1].Function.Arguments["city"] != "Tokyo" {
+		t.Fatalf("tool calls = %+v", calls)
+	}
+	close(ch)
+	var indices []int
+	for chunk := range ch {
+		for _, d := range chunk.Choices[0].Delta.ToolCalls {
+			indices = append(indices, d.Index)
+		}
+	}
+	if len(indices) != 2 || indices[0] != 0 || indices[1] != 1 {
+		t.Errorf("forwarded delta indices = %v, want [0 1]", indices)
+	}
+}
+
+func TestReadChatStreamWithoutIDsGeneratesDistinctIDs(t *testing.T) {
+	body := ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{
+		{Function: toolCallFunction{Name: "f"}},
+		{Function: toolCallFunction{Name: "f"}},
+	}}})
+	c := &Client{}
+	ch := make(chan openai.ChatCompletionResponse, 10)
+	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := resp.Choices[0].Message.ToolCalls
+	if len(calls) != 2 || calls[0].ID == "" || calls[0].ID == calls[1].ID {
+		t.Fatalf("tool calls = %+v, want two distinct ids", calls)
+	}
+}
+
+func TestReadChatStreamHandleToolsWithholdsToolDeltas(t *testing.T) {
+	body := ndjson(t, chatResponse{Message: message{Content: "checking"}}) +
+		ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{ID: "call_a", Function: toolCallFunction{Name: "f"}}}}}) +
+		ndjson(t, chatResponse{Done: true, DoneReason: "stop"})
+	c := &Client{}
+	ch := make(chan openai.ChatCompletionResponse, 10)
+	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("assembled tool calls = %+v, want 1", resp.Choices[0].Message.ToolCalls)
+	}
+	close(ch)
+	n := 0
+	for chunk := range ch {
+		n++
+		if len(chunk.Choices[0].Delta.ToolCalls) > 0 {
+			t.Errorf("tool delta forwarded: %+v", chunk)
+		}
+	}
+	if n != 2 {
+		t.Errorf("chunks forwarded = %d, want 2 (text and done)", n)
 	}
 }
 
@@ -380,7 +457,7 @@ func TestReadChatStreamToolCallsNoContentSetsFinishReason(t *testing.T) {
 	body := ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{Function: toolCallFunction{Name: "f"}}}}})
 	c := &Client{}
 	ch := make(chan openai.ChatCompletionResponse, 10)
-	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch)
+	resp, err := c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, false)
 	if err != nil {
 		t.Fatalf("readChatStream() error: %v", err)
 	}
@@ -407,7 +484,7 @@ func (r *errReader) Read(p []byte) (int, error) {
 func TestReadChatStreamScannerError(t *testing.T) {
 	c := &Client{}
 	ch := make(chan openai.ChatCompletionResponse, 10)
-	_, err := c.readChatStream(context.Background(), &errReader{data: []byte("partial line without newline")}, "m", ch)
+	_, err := c.readChatStream(context.Background(), &errReader{data: []byte("partial line without newline")}, "m", ch, false)
 	if err == nil || !strings.Contains(err.Error(), "boom read error") {
 		t.Fatalf("error = %v, want boom read error", err)
 	}
@@ -431,8 +508,38 @@ func TestReadChatStreamContextCancelledMidStream(t *testing.T) {
 	cancel() // already cancelled before we start reading
 	c := &Client{}
 	ch := make(chan openai.ChatCompletionResponse) // unbuffered, nobody reads
-	_, err := c.readChatStream(ctx, pr, "m", ch)
+	_, err := c.readChatStream(ctx, pr, "m", ch, false)
 	if err == nil {
 		t.Fatal("expected context-cancelled error")
+	}
+}
+
+func TestReadChatStreamNoArgumentsAndHostileIndex(t *testing.T) {
+	body := ndjson(t, chatResponse{Message: message{ToolCalls: []toolCall{{ID: "call_a", Function: toolCallFunction{Index: intPtr(1 << 40), Name: "f"}}}}}) +
+		ndjson(t, chatResponse{Done: true, DoneReason: "stop"})
+	c := &Client{}
+	ch := make(chan openai.ChatCompletionResponse, 10)
+	done := make(chan struct{})
+	var resp *openai.ChatCompletionResponse
+	var err error
+	go func() {
+		resp, err = c.readChatStream(context.Background(), strings.NewReader(body), "m", ch, false)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("readChatStream spun on a huge tool call index")
+	}
+	if err != nil || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("resp = %+v, %v", resp, err)
+	}
+	close(ch)
+	for chunk := range ch {
+		for _, d := range chunk.Choices[0].Delta.ToolCalls {
+			if d.Function.Arguments != "{}" {
+				t.Errorf("delta arguments = %q, want {}", d.Function.Arguments)
+			}
+		}
 	}
 }

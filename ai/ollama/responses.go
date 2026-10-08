@@ -15,7 +15,7 @@ func (c *Client) StreamResponse(ctx context.Context, req openai.CreateResponseRe
 	go func() {
 		defer close(eventChan)
 		defer close(errorChan)
-		openai.StreamResponseEmulated(ctx, c, req, eventChan, errorChan)
+		openai.StreamResponseEmulatedWithManager(ctx, c, c.responseManager, req, eventChan, errorChan)
 	}()
 	return openai.NewResponseStream(ctx, eventChan, errorChan)
 }
@@ -36,6 +36,7 @@ func (c *Client) DeleteResponse(ctx context.Context, id string) error {
 	return openai.DeleteResponseEmulated(ctx, c.responseManager, id)
 }
 
-func (c *Client) CompactResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return openai.CompactResponseEmulated(ctx, c.responseManager, id)
+// CompactResponse compacts a conversation by having the model summarise it
+func (c *Client) CompactResponse(ctx context.Context, req openai.CompactResponseRequest) (*openai.CompactedResponse, error) {
+	return openai.CompactResponseEmulated(ctx, c, c.responseManager, req)
 }

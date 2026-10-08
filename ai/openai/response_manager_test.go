@@ -3,7 +3,6 @@ package openai
 import (
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestResponseState_SetStatus(t *testing.T) {
@@ -133,63 +132,20 @@ func TestResponseManager_Delete_NonExistent(t *testing.T) {
 	m.Delete("does-not-exist")
 }
 
-func TestResponseManager_CleanupOldResponses(t *testing.T) {
+func TestResponseManager_FinishedResponsesLeaveProcessState(t *testing.T) {
 	m := NewResponseManager()
-
-	// A completed response, artificially aged.
-	oldState := m.Create(func() {}, "gpt-x")
-	oldState.SetResult(&ResponseObject{ID: oldState.ID})
-	oldState.Lock()
-	oldState.created_at = time.Now().Add(-1 * time.Hour)
-	oldState.Unlock()
-
-	// A recent completed response.
-	newState := m.Create(func() {}, "gpt-x")
-	newState.SetResult(&ResponseObject{ID: newState.ID})
-
-	// An in-progress response, also artificially aged — must NOT be cleaned up.
-	inProgress := m.Create(func() {}, "gpt-x")
-	inProgress.Lock()
-	inProgress.created_at = time.Now().Add(-1 * time.Hour)
-	inProgress.Unlock()
-
-	m.CleanupOldResponses(10 * time.Minute)
-
-	if _, ok := m.Get(oldState.ID); ok {
-		t.Error("expected old completed response to be cleaned up")
+	state := m.Create(func() {}, "gpt-x")
+	if lookupLive(state.ID) == nil {
+		t.Fatal("in-progress response should be held in process")
 	}
-	if _, ok := m.Get(newState.ID); !ok {
-		t.Error("expected recent response to remain")
+	state.SetResult(&ResponseObject{ID: state.ID})
+	if lookupLive(state.ID) != nil {
+		t.Error("finished response should no longer be held in process")
 	}
-	if _, ok := m.Get(inProgress.ID); !ok {
-		t.Error("expected in-progress response to remain regardless of age")
+	got, ok := m.Get(state.ID)
+	if !ok || got.GetStatus() != StatusCompleted || got.GetResult().ID != state.ID {
+		t.Errorf("Get() = %+v, %v; want completed snapshot from the store", got, ok)
 	}
-}
-
-func TestResponseManager_StartCleanupTask(t *testing.T) {
-	m := NewResponseManager()
-	oldState := m.Create(func() {}, "gpt-x")
-	oldState.SetResult(&ResponseObject{ID: oldState.ID})
-	oldState.Lock()
-	oldState.created_at = time.Now().Add(-1 * time.Hour)
-	oldState.Unlock()
-
-	m.StartCleanupTask(10*time.Millisecond, 1*time.Millisecond)
-
-	deadline := time.After(2 * time.Second)
-	for {
-		if _, ok := m.Get(oldState.ID); !ok {
-			break // cleaned up
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for cleanup task to remove old response")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-
-	// Calling StartCleanupTask again must be a no-op (sync.Once) and not panic.
-	m.StartCleanupTask(10*time.Millisecond, 1*time.Millisecond)
 }
 
 func TestGetManager_And_Shutdown(t *testing.T) {

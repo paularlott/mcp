@@ -11,6 +11,7 @@ type ChatStream struct {
 	ctx          context.Context
 	current      *ChatCompletionResponse
 	err          error
+	pendingErr   error // received, but delivered after the chunks buffered before it
 	done         bool
 
 	retryOnce   sync.Once
@@ -48,6 +49,23 @@ func (s *ChatStream) Next() bool {
 	}
 
 	for {
+		// An error is reported only after the chunks buffered before it:
+		// the producer sends its chunks, then the error, so by the time the
+		// error arrives every earlier chunk is already in the buffer.
+		if s.pendingErr != nil {
+			select {
+			case resp, ok := <-s.responseChan:
+				if ok {
+					s.current = &resp
+					return true
+				}
+			default:
+			}
+			s.err = s.pendingErr
+			s.done = true
+			return false
+		}
+
 		select {
 		case <-s.ctx.Done():
 			s.err = s.ctx.Err()
@@ -55,9 +73,9 @@ func (s *ChatStream) Next() bool {
 			return false
 		case err, ok := <-s.errorChan:
 			if ok && err != nil {
-				s.err = err
-				s.done = true
-				return false
+				s.pendingErr = err
+				s.errorChan = nil
+				continue
 			}
 			// Channel closed with no error — nil it out so we drain
 			// any remaining buffered responses before stopping.

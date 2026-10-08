@@ -21,7 +21,7 @@ func NewClient(config Config) (Client, error) {
 
 	// Create provider-specific client
 	switch config.Provider {
-	case ProviderOpenAI, ProviderZAi, ProviderMistral:
+	case ProviderOpenAI, ProviderZAi, ProviderMistral, ProviderGrok:
 		return openai.New(config.Config)
 	case ProviderOllama:
 		return ollama.New(config.Config)
@@ -51,6 +51,7 @@ func validateConfig(config *Config) error {
 		ProviderOllama:  true,
 		ProviderZAi:     true,
 		ProviderMistral: true,
+		ProviderGrok:    true,
 	}
 	if !validProviders[config.Provider] {
 		return fmt.Errorf("unknown provider: %s", config.Provider)

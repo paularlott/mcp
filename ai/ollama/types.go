@@ -11,15 +11,18 @@ type message struct {
 	Content   string     `json:"content,omitempty"`
 	Images    []string   `json:"images,omitempty"` // base64-encoded, no data: prefix
 	ToolCalls []toolCall `json:"tool_calls,omitempty"`
+	ToolName  string     `json:"tool_name,omitempty"` // tool role: the tool whose result this is
 }
 
 // toolCall is an assistant-requested tool call. Unlike OpenAI, Ollama carries
 // arguments as a JSON object, not a JSON string.
 type toolCall struct {
+	ID       string           `json:"id,omitempty"` // absent from older Ollama versions
 	Function toolCallFunction `json:"function"`
 }
 
 type toolCallFunction struct {
+	Index     *int           `json:"index,omitempty"` // position among the reply's tool calls
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
 }

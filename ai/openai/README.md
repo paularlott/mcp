@@ -134,7 +134,7 @@ if err := stream.Err(); err != nil {
 
 ### Responses API
 
-The client supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) for both single-shot and streaming modes. When connected to the official OpenAI API (`api.openai.com`), the native `/responses` endpoint is used. For all other providers (Ollama, LM Studio, Mistral, etc.) the behaviour is **transparently emulated** via Chat Completions — the caller sees identical types, event sequences, and field structures regardless of provider.
+The client supports the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) for both single-shot and streaming modes. When connected to the official OpenAI API (`api.openai.com`) or xAI API (`api.x.ai`, provider `grok`), the native `/responses` endpoint is used. For all other providers (Ollama, LM Studio, Mistral, etc.) the behaviour is **transparently emulated** via Chat Completions — the caller sees identical types, event sequences, and field structures regardless of provider.
 
 #### Single-shot
 
@@ -201,6 +201,17 @@ response.output_item.done
 response.completed
 ```
 
+When the request carries its own `Tools`, each tool call the model makes is streamed as a `function_call` output item (with emulation too), in the order items first appear:
+
+```
+response.output_item.added              (item.type "function_call", with call_id and name)
+response.function_call_arguments.delta  (one or more)
+response.function_call_arguments.done
+response.output_item.done
+```
+
+Calls to tools from attached MCP servers are run by the client and never appear in the stream. On the native endpoint each round of that tool loop is a separate upstream response; the client merges them into one lifecycle, as emulation produces: a single `response.created` and `response.in_progress`, output items and sequence numbers numbered continuously across rounds, and a single `response.completed` holding every visible output item and the combined usage. That completed response carries the last round's ID, which is the one to pass as `PreviousResponseID`; `response.created` carries the first round's, since the last one doesn't exist yet when the stream starts, so take the ID from `response.completed`. The completed response's `Output` holds the `function_call` items: run the tools and send `function_call_output` items with `PreviousResponseID` to continue.
+
 #### ResponseStreamEvent helpers
 
 | Method | Returns |
@@ -215,7 +226,12 @@ response.completed
 | Provider | Endpoint used | Streaming |
 |---|---|---|
 | `api.openai.com` | native `/responses` SSE | ✅ native SSE |
+| `api.x.ai` (provider `grok`) | native `/responses` SSE | ✅ native SSE |
 | Any other (Ollama, LM Studio, Mistral, …) | emulated via `/chat/completions` | ✅ emulated SSE, identical event sequence |
+
+With the native endpoint, background responses run at the provider, except when the client runs MCP tools itself or the provider doesn't support them (xAI): then the client runs the response in the background and returns a local ID. That ID works everywhere a response ID does: get, cancel, and once it completes, `PreviousResponseID`, compaction and delete, which the client maps to the provider's ID for the result.
+
+`client.SupportsCapability("responses")` is true when the native endpoint is used, and `client.SupportsCapability("responses_emulated")` when the client emulates it.
 
 To force emulation even on OpenAI (e.g. for testing):
 
@@ -224,6 +240,93 @@ false := false
 client, _ := openai.New(openai.Config{
     APIKey:             "sk-...",
     UseNativeResponses: &false,
+})
+```
+
+#### Multi-turn conversations
+
+Pass `PreviousResponseID` to continue a conversation without resending it. Emulated providers store each response's turn (its new input, the reply and any caller-handled tool calls, but not `Instructions`, which as on the native API apply to one request only) and rebuild the conversation by following the chain of previous responses. Streamed and non-streamed responses can be chained either way.
+
+```go
+first, _ := client.CreateResponse(ctx, openai.CreateResponseRequest{
+    Model: "gpt-4.1-mini",
+    Input: []any{map[string]any{"role": "user", "content": "My name is Zorblat."}},
+})
+next, _ := client.CreateResponse(ctx, openai.CreateResponseRequest{
+    Model:              "gpt-4.1-mini",
+    PreviousResponseID: first.ID,
+    Input:              []any{map[string]any{"role": "user", "content": "What is my name?"}},
+})
+```
+
+**Ownership.** Responses are scoped like native ones. Native responses are stored by the provider and scoped to your API key; emulated ones are scoped to the client's provider, base URL and API key, so a client with other credentials gets "response not found" for every operation (get, cancel, delete, continue, compact). Owners are stored hashed. When one client serves several users, response IDs are not scoped per user in either mode: track which user owns which response ID in your application, and check it before passing an ID on.
+
+**Limits.** Continuing a conversation larger than `Config.MaxConversationBytes` (default 8 MiB, `-1` for no limit) or longer than 1000 turns fails with an error suggesting compaction, before the model is called. The default in-memory store keeps at most 10,000 responses and 256 MiB, evicting the least recently used, and expires responses after 15 minutes idle; in-progress responses are never evicted. Set your own limits with `openai.NewMemoryResponseStore(openai.MemoryResponseStoreOptions{...})`.
+
+**Storage.** By default responses live in process memory, shared by all clients in the process (each sees only its own). To share them between instances, or keep them across restarts, set `Config.ResponseStore`: implement `openai.ResponseStore`, or wrap any key-value store with `openai.NewKVResponseStore`. For Redis, with `github.com/redis/go-redis/v9`:
+
+```go
+type redisKV struct{ rdb *redis.Client }
+
+func (r redisKV) Get(ctx context.Context, keys ...string) ([][]byte, error) {
+    vals, err := r.rdb.MGet(ctx, keys...).Result()
+    if err != nil {
+        return nil, err
+    }
+    out := make([][]byte, len(vals))
+    for i, v := range vals {
+        if s, ok := v.(string); ok {
+            out[i] = []byte(s)
+        }
+    }
+    return out, nil
+}
+func (r redisKV) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+    return r.rdb.Set(ctx, key, value, ttl).Err()
+}
+func (r redisKV) Delete(ctx context.Context, keys ...string) error {
+    return r.rdb.Del(ctx, keys...).Err()
+}
+func (r redisKV) Expire(ctx context.Context, ttl time.Duration, keys ...string) error {
+    pipe := r.rdb.Pipeline()
+    for _, key := range keys {
+        pipe.Expire(ctx, key, ttl)
+    }
+    _, err := pipe.Exec(ctx)
+    return err
+}
+
+store := openai.NewKVResponseStore(redisKV{rdb}, openai.KVResponseStoreOptions{TTL: time.Hour})
+client, _ := openai.New(openai.Config{
+    APIKey:        "...",
+    ResponseStore: store,
+    OnResponseStoreError: func(responseID string, err error) {
+        log.Printf("saving response %s: %v", responseID, err)
+    },
+})
+```
+
+Use the same store for every client in a process. Conversation content is stored as JSON, unencrypted, so secure the store accordingly.
+
+- **Any instance can cancel or delete** a response running on another: the request goes through the store, and the running instance stops it within a second (set `KVResponseStoreOptions.CancelPollInterval`; negative turns the polling off for single-instance deployments, and cross-instance cancel with it). Deleting waits for it to stop, so it can't be written back. If the running instance has gone, cancel and delete fail after a few seconds with an error saying so, and the response expires after `InProgressTTL`.
+- **Continuing a conversation costs two batched reads and one batched expiry refresh**, however many turns it has: each record lists the earlier responses in its conversation.
+- **A store failure never fails a response.** If saving a finished response fails, the response is still returned (or streamed to completion), the failure is reported to `OnResponseStoreError`, and the save is retried with backoff for up to an hour; meanwhile the response stays readable on the instance that produced it. Failures before the model is called (starting a background response, loading a conversation) are returned as errors.
+- **Emulated background responses** run for at most `Config.RequestTimeout` (default 10 minutes).
+
+**Retention.** `Store: false` keeps nothing: the response can't be retrieved or continued, and background responses require storage. Deleting a response removes its turn, which also ends any conversation continuing from it.
+
+#### Compaction
+
+`CompactResponse` shrinks a long conversation (the stored conversation of `PreviousResponseID`, if set, followed by `Input`) into a short `Output` that you pass as the input of the next request in its place. Natively it calls `POST /responses/compact` and the output holds an encrypted compaction item; xAI requires `Input` and doesn't accept `PreviousResponseID`. Emulated providers have the model summarise the conversation (without MCP tools) and return the summary as a single user message.
+
+```go
+compacted, _ := client.CompactResponse(ctx, openai.CompactResponseRequest{
+    Model:              "gpt-4.1-mini",
+    PreviousResponseID: next.ID,
+})
+reply, _ := client.CreateResponse(ctx, openai.CreateResponseRequest{
+    Model: "gpt-4.1-mini",
+    Input: append(compacted.Output, map[string]any{"role": "user", "content": "Carry on."}),
 })
 ```
 

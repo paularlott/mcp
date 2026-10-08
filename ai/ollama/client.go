@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -102,7 +103,7 @@ func New(config openai.Config) (*Client, error) {
 		temperature:        config.Temperature,
 		topP:               config.TopP,
 		requestTimeout:     config.RequestTimeout,
-		responseManager:    openai.GetManager(),
+		responseManager:    openai.NewClientResponseManager(config, providerName, config.BaseURL),
 		maxRetries:         maxRetries,
 		retryBackoff:       retryBackoff,
 		retryOnRateLimit:   retryOnRateLimit,
@@ -134,7 +135,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req openai.ChatCompletionRe
 	currentMessages := req.Messages
 	requestHasTools := len(req.Tools) > 0
 
-	if !requestHasTools {
+	if !requestHasTools && !openai.MCPToolsDisabled(ctx) {
 		tools, err := c.getAllTools(ctx)
 		if err == nil && len(tools) > 0 {
 			req.Tools = openai.MCPToolsToOpenAI(tools)
@@ -233,7 +234,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 		requestHasTools := len(req.Tools) > 0
 		hasServers := c.localServer != nil || len(c.remoteServers) > 0
 
-		if !requestHasTools {
+		if !requestHasTools && !openai.MCPToolsDisabled(ctx) {
 			tools, err := c.getAllTools(ctx)
 			if err == nil && hasServers && len(tools) > 0 {
 				req.Tools = openai.MCPToolsToOpenAI(tools)
@@ -256,7 +257,7 @@ func (c *Client) StreamChatCompletion(ctx context.Context, req openai.ChatComple
 			req.Messages = currentMessages
 			ollamaReq := c.buildChatRequest(req, true)
 
-			finalResponse, retryMeta, err := c.streamChatCompletion(ctx, ollamaReq, responseChan)
+			finalResponse, retryMeta, err := c.streamChatCompletion(ctx, ollamaReq, responseChan, hasServers && !requestHasTools)
 			stream.SetRetryMetadata(retryMeta)
 			if err != nil {
 				errorChan <- err
@@ -360,7 +361,10 @@ func (c *Client) callTool(ctx context.Context, name string, args map[string]any)
 // newline-delimited Ollama object as an OpenAI chunk on responseChan. It also
 // reassembles the streamed message so the caller can detect trailing tool
 // calls and loop.
-func (c *Client) streamChatCompletion(ctx context.Context, req chatRequest, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, *openai.RetryMetadata, error) {
+// streamChatCompletion streams one completion to responseChan. When
+// handleTools is set, tool calls are handled internally (MCP servers), so
+// tool-call deltas are withheld from the caller.
+func (c *Client) streamChatCompletion(ctx context.Context, req chatRequest, responseChan chan<- openai.ChatCompletionResponse, handleTools bool) (*openai.ChatCompletionResponse, *openai.RetryMetadata, error) {
 	maxAttempts := c.maxRetries + 1
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -422,7 +426,7 @@ func (c *Client) streamChatCompletion(ctx context.Context, req chatRequest, resp
 			return nil, nil, lastErr
 		}
 
-		assembled, err := c.readChatStream(ctx, body, req.Model, responseChan)
+		assembled, err := c.readChatStream(ctx, body, req.Model, responseChan, handleTools)
 		body.Close()
 		resp.Body.Close()
 
@@ -437,13 +441,20 @@ func (c *Client) streamChatCompletion(ctx context.Context, req chatRequest, resp
 
 // readChatStream parses the NDJSON response body, forwarding each object as an
 // OpenAI chunk and reassembling the final assistant message (for tool-call
-// detection by the loop above).
-func (c *Client) readChatStream(ctx context.Context, r io.Reader, model string, responseChan chan<- openai.ChatCompletionResponse) (*openai.ChatCompletionResponse, error) {
+// detection by the loop above). Ollama sends each tool call complete, often
+// one per object; calls are told apart by id, then by function.index, and
+// otherwise each is taken as a new call. When handleTools is set, tool-call
+// deltas are not forwarded.
+func (c *Client) readChatStream(ctx context.Context, r io.Reader, model string, responseChan chan<- openai.ChatCompletionResponse, handleTools bool) (*openai.ChatCompletionResponse, error) {
 	var sb strings.Builder
-	// toolCalls accumulates per-index; Ollama sends complete tool calls, so
-	// last write per index wins.
-	toolArgs := map[int]map[string]any{}
-	toolNames := map[int]string{}
+	type assembledCall struct {
+		id   string
+		name string
+		args map[string]any
+	}
+	calls := map[int]*assembledCall{}
+	indexByID := map[string]int{}
+	nextIndex := 0
 	finish := ""
 
 	scanner := bufio.NewScanner(r)
@@ -461,17 +472,50 @@ func (c *Client) readChatStream(ctx context.Context, r io.Reader, model string, 
 		if obj.Message.Content != "" {
 			sb.WriteString(obj.Message.Content)
 		}
-		for i, call := range obj.Message.ToolCalls {
-			toolNames[i] = call.Function.Name
-			if len(call.Function.Arguments) > 0 {
-				toolArgs[i] = call.Function.Arguments
+		var deltas []openai.DeltaToolCall
+		for _, call := range obj.Message.ToolCalls {
+			index, seen := indexByID[call.ID]
+			if !seen || call.ID == "" {
+				index = nextIndex
+				if call.Function.Index != nil {
+					index = *call.Function.Index
+				}
 			}
+			if index >= nextIndex {
+				nextIndex = index + 1
+			}
+			ac := calls[index]
+			if ac == nil {
+				ac = &assembledCall{id: toolCallID(call, index)}
+				calls[index] = ac
+			} else if call.ID != "" {
+				ac.id = call.ID
+			}
+			if call.ID != "" {
+				indexByID[call.ID] = index
+			}
+			ac.name = call.Function.Name
+			if len(call.Function.Arguments) > 0 {
+				ac.args = call.Function.Arguments
+			}
+			args, _ := openai.ArgumentsJSON(call.Function.Arguments)
+			deltas = append(deltas, openai.DeltaToolCall{
+				Index: index, ID: ac.id, Type: "function",
+				Function: openai.DeltaFunction{Name: call.Function.Name, Arguments: string(args)},
+			})
 		}
 		if obj.Done && obj.DoneReason != "" {
 			finish = obj.DoneReason
 		}
 
 		chunk := streamChunkToOpenAI(model, &obj)
+		chunk.Choices[0].Delta.ToolCalls = deltas
+		if handleTools && len(deltas) > 0 {
+			chunk.Choices[0].Delta.ToolCalls = nil
+			if chunk.Choices[0].Delta.Content == "" && chunk.Choices[0].FinishReason == "" && chunk.Usage == nil {
+				continue
+			}
+		}
 		select {
 		case responseChan <- *chunk:
 		case <-ctx.Done():
@@ -492,20 +536,28 @@ func (c *Client) readChatStream(ctx context.Context, r io.Reader, model string, 
 	}
 	msg := openai.Message{Role: "assistant"}
 	msg.SetContentAsString(sb.String())
-	if len(toolNames) > 0 {
-		calls := make([]openai.ToolCall, 0, len(toolNames))
-		for i := 0; i < len(toolNames); i++ {
-			calls = append(calls, openai.ToolCall{
+	if len(calls) > 0 {
+		// Iterate the calls received, not 0..nextIndex: the index comes from
+		// the server
+		indices := make([]int, 0, len(calls))
+		for i := range calls {
+			indices = append(indices, i)
+		}
+		sort.Ints(indices)
+		toolCalls := make([]openai.ToolCall, 0, len(calls))
+		for _, i := range indices {
+			ac := calls[i]
+			toolCalls = append(toolCalls, openai.ToolCall{
 				Index: i,
-				ID:    toolNames[i],
+				ID:    ac.id,
 				Type:  "function",
 				Function: openai.ToolCallFunction{
-					Name:      toolNames[i],
-					Arguments: toolArgs[i],
+					Name:      ac.name,
+					Arguments: ac.args,
 				},
 			})
 		}
-		msg.ToolCalls = calls
+		msg.ToolCalls = toolCalls
 		if sb.Len() == 0 {
 			out.Choices[0].FinishReason = "tool_calls"
 		}
@@ -657,12 +709,11 @@ func decompressBody(resp *http.Response) io.ReadCloser {
 // Provider returns the provider name.
 func (c *Client) Provider() string { return c.provider }
 
-// SupportsCapability reports Ollama's client-level capabilities: embeddings
-// and decision models (System One) yes, native Responses API no (it is
-// emulated).
+// SupportsCapability reports Ollama's client-level capabilities: embeddings,
+// decision models (System One) and the emulated Responses API.
 func (c *Client) SupportsCapability(cap string) bool {
 	switch cap {
-	case "embeddings", "decision":
+	case "embeddings", "decision", "responses_emulated":
 		return true
 	}
 	return false

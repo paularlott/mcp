@@ -28,7 +28,7 @@ type Client interface {
 	GetResponse(ctx context.Context, id string) (*ResponseObject, error)
 	CancelResponse(ctx context.Context, id string) (*ResponseObject, error)
 	DeleteResponse(ctx context.Context, id string) error
-	CompactResponse(ctx context.Context, id string) (*ResponseObject, error)
+	CompactResponse(ctx context.Context, req CompactResponseRequest) (*CompactedResponse, error)
 
 	// Close/cleanup
 	Close() error

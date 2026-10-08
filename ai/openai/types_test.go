@@ -290,3 +290,19 @@ func TestToolCallFunction_UnmarshalJSON_Malformed(t *testing.T) {
 		t.Fatal("expected error for malformed outer JSON")
 	}
 }
+
+func TestToolCallFunction_NoArgumentsMarshalAsEmptyObject(t *testing.T) {
+	data, err := json.Marshal(ToolCallFunction{Name: "f"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"name":"f","arguments":"{}"}` {
+		t.Errorf("JSON = %s", data)
+	}
+	resp := ConvertChatToResponseObject(&ChatCompletionResponse{Choices: []Choice{{Message: Message{
+		Role: "assistant", ToolCalls: []ToolCall{{ID: "c", Type: "function", Function: ToolCallFunction{Name: "f"}}},
+	}}}}, "m")
+	if item := resp.Output[0].(map[string]any); item["arguments"] != "{}" {
+		t.Errorf("function_call arguments = %v", item["arguments"])
+	}
+}

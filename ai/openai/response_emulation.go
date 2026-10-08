@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,9 @@ type ChatStreamCompleter interface {
 // CreateResponseEmulated creates an emulated response using chat completions
 // If background: true, returns immediately with in_progress status and processes async
 // If background: false, processes synchronously and returns completed result
+//
+// Responses are stored in manager unless req.Store is false, in which case
+// nothing is kept and the response can't be retrieved or continued.
 func CreateResponseEmulated(ctx context.Context, completer ChatCompleter, manager *ResponseManager, req CreateResponseRequest) (*ResponseObject, error) {
 	if req.Background {
 		return createResponseBackground(ctx, completer, manager, req)
@@ -28,16 +32,34 @@ func CreateResponseEmulated(ctx context.Context, completer ChatCompleter, manage
 	return createResponseSync(ctx, completer, manager, req)
 }
 
+// storeRequested reports whether a request allows storing its response.
+func storeRequested(req CreateResponseRequest) bool {
+	return req.Store == nil || *req.Store
+}
+
 // createResponseBackground creates an async response that processes in background
 func createResponseBackground(ctx context.Context, completer ChatCompleter, manager *ResponseManager, req CreateResponseRequest) (*ResponseObject, error) {
-	// Create detached context with timeout for async processing
-	asyncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	if !storeRequested(req) {
+		return nil, fmt.Errorf("background responses must be stored: store cannot be false")
+	}
+	chatReq, conv, err := emulatedChatRequest(ctx, manager, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Detached from the caller's cancellation (the call returns at once),
+	// keeping its values, e.g. the tool handler
+	asyncCtx, cancel := detachedContext(ctx, manager.backgroundTimeout)
 
 	// Create response state
-	state := manager.Create(cancel, req.Model)
+	state, err := manager.begin(ctx, cancel, req.Model, conv)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	// Start async processing
-	go processResponseAsync(asyncCtx, state, req, completer)
+	go processResponseAsync(asyncCtx, state, chatReq, req.Model, completer)
 
 	// Return immediately with in_progress status
 	return &ResponseObject{
@@ -49,12 +71,10 @@ func createResponseBackground(ctx context.Context, completer ChatCompleter, mana
 	}, nil
 }
 
-// createResponseSync processes the response synchronously and registers the
-// result in the manager under a stable response ID so it is retrievable via
-// GetResponseEmulated afterwards.
+// createResponseSync processes the response synchronously and stores it so
+// it can be retrieved or continued by ID afterwards.
 func createResponseSync(ctx context.Context, completer ChatCompleter, manager *ResponseManager, req CreateResponseRequest) (*ResponseObject, error) {
-	// Convert CreateResponseRequest to ChatCompletionRequest
-	chatReq, err := ConvertResponseToChatRequest(req)
+	chatReq, conv, err := emulatedChatRequest(ctx, manager, req)
 	if err != nil {
 		return nil, err
 	}
@@ -65,82 +85,94 @@ func createResponseSync(ctx context.Context, completer ChatCompleter, manager *R
 		return nil, err
 	}
 
-	// Convert ChatCompletionResponse to ResponseObject and register it so the
-	// caller can later GET/DELETE/CANCEL it by ID.
 	respObj := ConvertChatToResponseObject(chatResp, req.Model)
-	state := manager.Create(nil, req.Model)
-	respObj.ID = state.ID
-	state.SetResult(respObj)
+	respObj.ID = generateID()
+	if storeRequested(req) {
+		manager.saveCompleted(ctx, respObj, req.Model, conv, replyMessage(chatResp))
+	}
 	return respObj, nil
+}
+
+// replyMessage returns the assistant message of a chat response.
+func replyMessage(chatResp *ChatCompletionResponse) Message {
+	reply := Message{Role: "assistant"}
+	if chatResp != nil && len(chatResp.Choices) > 0 {
+		reply = chatResp.Choices[0].Message
+		reply.Role = "assistant"
+	}
+	return reply
+}
+
+// emulatedChatRequest converts a Responses request into a chat request whose
+// messages are the instructions (if any) followed by the conversation: the
+// stored history of PreviousResponseID, if set, then the new input.
+func emulatedChatRequest(ctx context.Context, manager *ResponseManager, req CreateResponseRequest) (ChatCompletionRequest, *emulatedConversation, error) {
+	conv, err := manager.conversation(ctx, req.PreviousResponseID, req.Input)
+	if err != nil {
+		return ChatCompletionRequest{}, nil, err
+	}
+	chatReq, err := ConvertResponseToChatRequest(req)
+	if err != nil {
+		return ChatCompletionRequest{}, nil, err
+	}
+	chatReq.Messages = nil
+	if req.Instructions != "" {
+		chatReq.Messages = append(chatReq.Messages, Message{Role: "system", Content: req.Instructions})
+	}
+	chatReq.Messages = append(chatReq.Messages, conv.messages()...)
+	return chatReq, conv, nil
 }
 
 // GetResponseEmulated retrieves a response by ID (blocking until complete or error)
 func GetResponseEmulated(ctx context.Context, manager *ResponseManager, id string) (*ResponseObject, error) {
-	state, ok := manager.Get(id)
-	if !ok {
-		return nil, fmt.Errorf("response not found: %s", id)
-	}
+	timeout := time.NewTimer(30 * time.Second)
+	defer timeout.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-	state.RLock()
-	status := state.Status
-	result := state.Result
-	err := state.Error
-	state.RUnlock()
+	for {
+		state, ok := manager.Get(id)
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", ErrResponseNotFound, id)
+		}
+		state.RLock()
+		status, result, err := state.Status, state.Result, state.Error
+		state.RUnlock()
 
-	// If still in progress, wait for it to complete or context timeout
-	if status == StatusInProgress || status == StatusQueued {
-		// Poll with timeout
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
+		switch {
+		case isInProgress(status):
+			// wait below
+		case status == StatusCancelled:
+			// Cancelled responses have no result; return a minimal cancelled object
+			// (matching the native API which returns the response in cancelled state).
+			return &ResponseObject{
+				ID:        id,
+				Object:    "response",
+				Status:    "cancelled",
+				CreatedAt: state.created_at.Unix(),
+				Model:     state.model,
+			}, nil
+		case err != nil:
+			return nil, err
+		case result == nil:
+			return nil, fmt.Errorf("response completed but result is nil")
+		default:
+			return result, nil
+		}
 
-		timeout := time.NewTimer(30 * time.Second)
-		defer timeout.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				state.RLock()
-				status = state.Status
-				result = state.Result
-				err = state.Error
-				state.RUnlock()
-
-				if status != StatusInProgress && status != StatusQueued {
-					goto done
-				}
-			case <-timeout.C:
-				return nil, fmt.Errorf("timeout waiting for response")
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
+		select {
+		case <-ticker.C:
+		case <-timeout.C:
+			return nil, fmt.Errorf("timeout waiting for response")
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
-
-done:
-	if status == StatusCancelled {
-		// Cancelled responses have no result; return a minimal cancelled object
-		// (matching the native API which returns the response in cancelled state).
-		return &ResponseObject{
-			ID:        id,
-			Object:    "response",
-			Status:    "cancelled",
-			CreatedAt: state.created_at.Unix(),
-			Model:     state.model,
-		}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if result == nil {
-		return nil, fmt.Errorf("response completed but result is nil")
-	}
-
-	return result, nil
 }
 
 // CancelResponseEmulated cancels an in-progress response
 func CancelResponseEmulated(ctx context.Context, manager *ResponseManager, id string) (*ResponseObject, error) {
-	if err := manager.Cancel(id); err != nil {
+	if err := manager.cancelResponse(ctx, id); err != nil {
 		return nil, err
 	}
 	return GetResponseEmulated(ctx, manager, id)
@@ -148,80 +180,118 @@ func CancelResponseEmulated(ctx context.Context, manager *ResponseManager, id st
 
 // DeleteResponseEmulated deletes an in-progress or completed response
 func DeleteResponseEmulated(ctx context.Context, manager *ResponseManager, id string) error {
-	state, ok := manager.Get(id)
-	if !ok {
-		return fmt.Errorf("response not found: %s", id)
-	}
-
-	// Cancel if still in progress
-	if state.GetStatus() == StatusInProgress || state.GetStatus() == StatusQueued {
-		state.Cancel()
-	}
-
-	// Delete from manager
-	manager.Delete(id)
-	return nil
+	return manager.deleteResponse(ctx, id)
 }
 
-// CompactResponseEmulated compacts a response by removing intermediate reasoning steps
-// For emulated responses, this returns the response with reasoning content removed
-func CompactResponseEmulated(ctx context.Context, manager *ResponseManager, id string) (*ResponseObject, error) {
-	// Get the response first
-	response, err := GetResponseEmulated(ctx, manager, id)
+// compactionPrompt asks the model to summarise a conversation transcript so
+// the summary can stand in for it.
+const compactionPrompt = `Summarise the conversation transcript below so that it can replace the transcript as context for continuing the conversation. Keep every fact, name, decision, open question, tool result and user preference that later turns may need; drop pleasantries and repetition. Write the summary in the third person, as plain prose or bullet points, with no preamble.`
+
+// CompactResponseEmulated compacts a conversation by having the model
+// summarise it. The conversation is the stored history of
+// req.PreviousResponseID (if set) followed by req.Input. The returned output
+// holds a single user message carrying the summary; pass it as the input of
+// the next request in place of the compacted conversation.
+func CompactResponseEmulated(ctx context.Context, completer ChatCompleter, manager *ResponseManager, req CompactResponseRequest) (*CompactedResponse, error) {
+	if req.Model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	conv, err := manager.conversation(ctx, req.PreviousResponseID, req.Input)
 	if err != nil {
 		return nil, err
 	}
-
-	// Remove reasoning items from output
-	if response.Output != nil {
-		compactedOutput := make([]any, 0)
-		for _, item := range response.Output {
-			if itemMap, ok := item.(map[string]any); ok {
-				itemType, _ := itemMap["type"].(string)
-				// Keep everything except reasoning type
-				if itemType != "reasoning" {
-					compactedOutput = append(compactedOutput, item)
-				}
-			}
-		}
-		response.Output = compactedOutput
+	conversation := conv.messages()
+	if len(conversation) == 0 {
+		return nil, fmt.Errorf("nothing to compact: input and previous_response_id are both empty")
 	}
 
-	return response, nil
+	system := compactionPrompt
+	if req.Instructions != "" {
+		system += "\n\nThe assistant in this conversation was working under these instructions:\n" + req.Instructions
+	}
+	chatReq := ChatCompletionRequest{
+		Model: req.Model,
+		Messages: []Message{
+			{Role: "system", Content: system},
+			{Role: "user", Content: renderTranscript(conversation)},
+		},
+	}
+	chatResp, err := completer.ChatCompletion(WithoutMCPTools(ctx), chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compact conversation: %w", err)
+	}
+	if len(chatResp.Choices) == 0 {
+		return nil, fmt.Errorf("failed to compact conversation: empty response")
+	}
+
+	summary := chatResp.Choices[0].Message.GetContentAsString()
+	return &CompactedResponse{
+		ID:        "cmp_" + strings.TrimPrefix(generateID(), "resp_"),
+		Object:    "response.compaction",
+		CreatedAt: time.Now().Unix(),
+		Model:     req.Model,
+		Output: []any{map[string]any{
+			"type":    "message",
+			"role":    "user",
+			"content": "Summary of the earlier conversation:\n\n" + summary,
+		}},
+		Usage: toResponseUsage(chatResp.Usage),
+	}, nil
 }
 
-// processResponseAsync processes the response request asynchronously
-func processResponseAsync(ctx context.Context, state *ResponseState, req CreateResponseRequest, completer ChatCompleter) {
+// renderTranscript renders a conversation as plain text for summarisation,
+// so tool calls and results need no provider-specific message structure.
+func renderTranscript(conversation []Message) string {
+	var b strings.Builder
+	for _, msg := range conversation {
+		text := msg.GetContentAsString()
+		switch {
+		case msg.Role == "tool":
+			fmt.Fprintf(&b, "[tool result %s]\n%s\n\n", msg.ToolCallID, text)
+		case len(msg.ToolCalls) > 0:
+			if text != "" {
+				fmt.Fprintf(&b, "[%s]\n%s\n\n", msg.Role, text)
+			}
+			for _, tc := range msg.ToolCalls {
+				args, _ := json.Marshal(tc.Function.Arguments)
+				fmt.Fprintf(&b, "[%s called tool %s (%s)]\n%s\n\n", msg.Role, tc.Function.Name, tc.ID, args)
+			}
+		default:
+			fmt.Fprintf(&b, "[%s]\n%s\n\n", msg.Role, text)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// processResponseAsync runs a background response's chat request and
+// records the outcome on its state.
+func processResponseAsync(ctx context.Context, state *ResponseState, chatReq ChatCompletionRequest, model string, completer ChatCompleter) {
 	defer func() {
 		if r := recover(); r != nil {
 			state.SetError(fmt.Errorf("panic during response processing: %v", r))
 		}
 	}()
 
-	// Convert CreateResponseRequest to ChatCompletionRequest
-	chatReq, err := ConvertResponseToChatRequest(req)
-	if err != nil {
-		state.SetError(err)
-		return
-	}
-
 	// Use the completer's ChatCompletion which handles tools automatically
 	chatResp, err := completer.ChatCompletion(ctx, chatReq)
+	// If the response was cancelled while in flight, keep the cancelled status
+	if state.GetStatus() == StatusCancelled {
+		return
+	}
 	if err != nil {
-		// If the response was cancelled while in flight, don't overwrite the
-		// cancelled status with this error.
-		if state.GetStatus() == StatusCancelled {
-			return
-		}
 		state.SetError(err)
 		return
 	}
 
 	// Convert ChatCompletionResponse to ResponseObject, preserving the response
 	// ID assigned at creation so callers can retrieve it by that ID.
-	respObj := ConvertChatToResponseObject(chatResp, req.Model)
+	respObj := ConvertChatToResponseObject(chatResp, model)
 	respObj.ID = state.ID
 
+	reply := replyMessage(chatResp)
+	state.Lock()
+	state.reply = &reply
+	state.Unlock()
 	state.SetResult(respObj)
 }
 
@@ -244,8 +314,11 @@ func ConvertResponseToChatRequest(req CreateResponseRequest) (ChatCompletionRequ
 		chatReq.TopP = req.TopP
 	}
 
-	// Convert input to messages
-	chatReq.Messages = ConvertInputToMessages(req.Input)
+	// Convert input to messages, with instructions as a leading system message
+	if req.Instructions != "" {
+		chatReq.Messages = append(chatReq.Messages, Message{Role: "system", Content: req.Instructions})
+	}
+	chatReq.Messages = append(chatReq.Messages, ConvertInputToMessages(req.Input)...)
 
 	// Copy tools if provided
 	if len(req.Tools) > 0 {
@@ -265,6 +338,10 @@ func ConvertInputToMessages(input []any) []Message {
 	for _, item := range input {
 		if itemMap, ok := item.(map[string]any); ok {
 			itemType, _ := itemMap["type"].(string)
+			// The type is optional on input messages: {"role": ..., "content": ...}
+			if itemType == "" && getString(itemMap, "role") != "" {
+				itemType = "message"
+			}
 
 			switch itemType {
 			case "message", "user_message", "system_message", "assistant_message":
@@ -412,12 +489,15 @@ func ConvertChatToResponseObject(resp *ChatCompletionResponse, model string) *Re
 				},
 			},
 		}
-		output = append(output, msgOutput)
+		// A reply that is only tool calls has no message item, as natively
+		if choice.Message.GetContentAsString() != "" || len(choice.Message.ToolCalls) == 0 {
+			output = append(output, msgOutput)
+		}
 
 		// Add tool calls if any
 		for _, tc := range choice.Message.ToolCalls {
 			// Native Responses API returns arguments as a JSON string.
-			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			argsJSON, _ := ArgumentsJSON(tc.Function.Arguments)
 			toolCallOutput := map[string]any{
 				"type":      "function_call",
 				"id":        tc.ID,

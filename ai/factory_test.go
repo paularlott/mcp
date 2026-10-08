@@ -33,7 +33,7 @@ func TestNewClientOllamaUsesOllamaClient(t *testing.T) {
 // TestNewClientOpenAIUsesOpenAIClient is the complementary guard: non-ollama
 // OpenAI-compatible providers still use the OpenAI client.
 func TestNewClientOpenAIUsesOpenAIClient(t *testing.T) {
-	for _, p := range []Provider{ProviderOpenAI, ProviderZAi, ProviderMistral} {
+	for _, p := range []Provider{ProviderOpenAI, ProviderZAi, ProviderMistral, ProviderGrok} {
 		c, err := NewClient(Config{Provider: p, Config: openai.Config{APIKey: "k"}})
 		if err != nil {
 			t.Fatalf("NewClient(%s) error: %v", p, err)
@@ -97,6 +97,7 @@ func TestValidateConfig(t *testing.T) {
 		{"ollama", Config{Provider: ProviderOllama}, false},
 		{"zai", Config{Provider: ProviderZAi}, false},
 		{"mistral", Config{Provider: ProviderMistral}, false},
+		{"grok", Config{Provider: ProviderGrok}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,7 +113,7 @@ func TestRequiresAPIKey(t *testing.T) {
 	if requiresAPIKey(ProviderOllama) {
 		t.Error("ollama should not require an API key")
 	}
-	for _, p := range []Provider{ProviderOpenAI, ProviderClaude, ProviderGemini, ProviderZAi, ProviderMistral} {
+	for _, p := range []Provider{ProviderOpenAI, ProviderClaude, ProviderGemini, ProviderZAi, ProviderMistral, ProviderGrok} {
 		if !requiresAPIKey(p) {
 			t.Errorf("%s should require an API key", p)
 		}
@@ -130,5 +131,38 @@ func TestBoolPtr(t *testing.T) {
 	}
 	if p == p2 {
 		t.Fatal("BoolPtr should return a fresh pointer each call")
+	}
+}
+
+// Every client serves the Responses API one way or the other, and reports
+// which: natively ("responses") or emulated ("responses_emulated").
+func TestNewClientReportsHowResponsesAreServed(t *testing.T) {
+	tests := []struct {
+		provider Provider
+		baseURL  string
+		native   bool
+	}{
+		{ProviderOpenAI, "", true},
+		{ProviderOpenAI, "http://127.0.0.1:11434/v1", false},
+		{ProviderGrok, "", true},
+		{ProviderGrok, "https://proxy.example.com/v1", false},
+		{ProviderClaude, "", false},
+		{ProviderGemini, "", false},
+		{ProviderOllama, "", false},
+		{ProviderZAi, "", false},
+		{ProviderMistral, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.provider)+" "+tt.baseURL, func(t *testing.T) {
+			c, err := NewClient(Config{Provider: tt.provider, Config: openai.Config{APIKey: "k", BaseURL: tt.baseURL}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			native := c.SupportsCapability(string(ProviderCapabilityResponses))
+			emulated := c.SupportsCapability(string(ProviderCapabilityResponsesEmulated))
+			if native != tt.native || emulated == tt.native {
+				t.Errorf("responses = %v, responses_emulated = %v; want native = %v", native, emulated, tt.native)
+			}
+		})
 	}
 }

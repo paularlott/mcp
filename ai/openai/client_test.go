@@ -72,20 +72,43 @@ func TestClient_Provider(t *testing.T) {
 }
 
 func TestClient_SupportsCapability(t *testing.T) {
-	openaiClient, _ := New(Config{Provider: providerOpenAI, BaseURL: "http://example.invalid"})
-	if !openaiClient.SupportsCapability("responses") {
-		t.Error("expected OpenAI provider to support responses")
+	native, emulated := true, false
+	tests := []struct {
+		name string
+		cfg  Config
+		want map[string]bool
+	}{
+		{"openai official", Config{Provider: providerOpenAI},
+			map[string]bool{"responses": true, "responses_emulated": false, "embeddings": true}},
+		// An OpenAI-compatible endpoint elsewhere (e.g. Ollama's /v1) emulates
+		{"openai elsewhere", Config{Provider: providerOpenAI, BaseURL: "http://127.0.0.1:11434/v1"},
+			map[string]bool{"responses": false, "responses_emulated": true, "embeddings": true}},
+		{"openai forced emulation", Config{Provider: providerOpenAI, UseNativeResponses: &emulated},
+			map[string]bool{"responses": false, "responses_emulated": true}},
+		{"openai-compatible forced native", Config{Provider: providerMistral, UseNativeResponses: &native},
+			map[string]bool{"responses": true, "responses_emulated": false}},
+		{"mistral", Config{Provider: providerMistral},
+			map[string]bool{"responses": false, "responses_emulated": true, "embeddings": true}},
+		{"zai", Config{Provider: providerZAi},
+			map[string]bool{"responses": false, "responses_emulated": true, "embeddings": true}},
 	}
-	if !openaiClient.SupportsCapability("anything") {
-		t.Error("expected OpenAI provider to support anything")
-	}
-
-	ollamaClient, _ := New(Config{Provider: providerOllama, BaseURL: "http://example.invalid"})
-	if ollamaClient.SupportsCapability("responses") {
-		t.Error("expected non-OpenAI provider to NOT support responses")
-	}
-	if !ollamaClient.SupportsCapability("embeddings") {
-		t.Error("expected non-OpenAI provider to support embeddings")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := New(tt.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for cap, want := range tt.want {
+				if got := c.SupportsCapability(cap); got != want {
+					t.Errorf("SupportsCapability(%q) = %v, want %v", cap, got, want)
+				}
+			}
+			for _, cap := range []string{"decision", "anything", ""} {
+				if c.SupportsCapability(cap) {
+					t.Errorf("SupportsCapability(%q) = true, want false", cap)
+				}
+			}
+		})
 	}
 }
 
@@ -909,11 +932,11 @@ func TestClient_ResponseCRUD_Native(t *testing.T) {
 		t.Errorf("method/path = %s %s", lastMethod, lastPath)
 	}
 
-	if _, err := c.CompactResponse(context.Background(), "resp_1"); err != nil {
+	if _, err := c.CompactResponse(context.Background(), CompactResponseRequest{Model: "gpt-x", PreviousResponseID: "resp_1"}); err != nil {
 		t.Fatalf("CompactResponse() error: %v", err)
 	}
-	if lastPath != "/responses/resp_1/compact" {
-		t.Errorf("path = %q", lastPath)
+	if lastMethod != http.MethodPost || lastPath != "/responses/compact" {
+		t.Errorf("method/path = %s %s", lastMethod, lastPath)
 	}
 
 	if err := c.DeleteResponse(context.Background(), "resp_1"); err != nil {
@@ -936,9 +959,6 @@ func TestClient_ResponseCRUD_Native_InvalidID(t *testing.T) {
 	}
 	if _, err := c.CancelResponse(context.Background(), "a/b"); err == nil {
 		t.Error("expected error for invalid ID in CancelResponse")
-	}
-	if _, err := c.CompactResponse(context.Background(), "a/b"); err == nil {
-		t.Error("expected error for invalid ID in CompactResponse")
 	}
 	if err := c.DeleteResponse(context.Background(), "a/b"); err == nil {
 		t.Error("expected error for invalid ID in DeleteResponse")
@@ -969,11 +989,10 @@ func TestClient_ResponseCRUD_UsesLocalStateWhenPresent(t *testing.T) {
 	defer srv.Close()
 
 	native := true
-	manager := GetManager()
-	state := manager.Create(func() {}, "gpt-x")
+	c, _ := New(Config{BaseURL: srv.URL, UseNativeResponses: &native})
+	state := c.responses.Create(func() {}, "gpt-x")
 	state.SetResult(&ResponseObject{ID: state.ID, Object: "response", Status: "completed", Model: "gpt-x"})
 
-	c, _ := New(Config{BaseURL: srv.URL, UseNativeResponses: &native})
 	resp, err := c.GetResponse(context.Background(), state.ID)
 	if err != nil {
 		t.Fatalf("GetResponse() error: %v", err)

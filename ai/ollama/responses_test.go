@@ -123,18 +123,18 @@ func TestCompactResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateResponse() error: %v", err)
 	}
-	compacted, err := c.CompactResponse(context.Background(), resp.ID)
+	compacted, err := c.CompactResponse(context.Background(), openai.CompactResponseRequest{Model: "llama3", PreviousResponseID: resp.ID})
 	if err != nil {
 		t.Fatalf("CompactResponse() error: %v", err)
 	}
-	if compacted.ID != resp.ID {
-		t.Errorf("ID = %q, want %q", compacted.ID, resp.ID)
+	if compacted.Object != "response.compaction" || len(compacted.Output) != 1 {
+		t.Errorf("compacted = %+v", compacted)
 	}
 }
 
 func TestCompactResponseNotFound(t *testing.T) {
 	c := &Client{responseManager: openai.GetManager()}
-	if _, err := c.CompactResponse(context.Background(), "resp_missing_compact"); err == nil {
+	if _, err := c.CompactResponse(context.Background(), openai.CompactResponseRequest{Model: "m", PreviousResponseID: "resp_missing_compact"}); err == nil {
 		t.Error("expected error for missing response")
 	}
 }
@@ -179,5 +179,8 @@ func TestSupportsCapabilityResponsesFalse(t *testing.T) {
 	c := &Client{}
 	if c.SupportsCapability("responses") {
 		t.Error("SupportsCapability(responses) = true, want false (emulated, not native)")
+	}
+	if !c.SupportsCapability("responses_emulated") {
+		t.Error("SupportsCapability(responses_emulated) = false, want true")
 	}
 }

@@ -315,6 +315,27 @@ type Tool struct {
 	Function ToolFunction `json:"function"`
 }
 
+// UnmarshalJSON accepts both the Chat Completions form, with the function
+// nested under "function", and the flat Responses API form.
+func (t *Tool) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Type        string          `json:"type"`
+		Function    json.RawMessage `json:"function"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  map[string]any  `json:"parameters"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	t.Type = raw.Type
+	if len(raw.Function) > 0 && string(raw.Function) != "null" {
+		return json.Unmarshal(raw.Function, &t.Function)
+	}
+	t.Function = ToolFunction{Name: raw.Name, Description: raw.Description, Parameters: raw.Parameters}
+	return nil
+}
+
 // ToolFunction represents a function definition for a tool
 type ToolFunction struct {
 	Name        string         `json:"name"`
@@ -339,7 +360,7 @@ type ToolCallFunction struct {
 // MarshalJSON implements custom JSON marshaling for ToolCallFunction.
 // OpenAI expects arguments as a JSON string, not an object.
 func (tcf ToolCallFunction) MarshalJSON() ([]byte, error) {
-	argsJSON, err := json.Marshal(tcf.Arguments)
+	argsJSON, err := ArgumentsJSON(tcf.Arguments)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal arguments: %w", err)
 	}
@@ -351,6 +372,15 @@ func (tcf ToolCallFunction) MarshalJSON() ([]byte, error) {
 		Name:      tcf.Name,
 		Arguments: string(argsJSON),
 	})
+}
+
+// ArgumentsJSON encodes tool call arguments, as "{}" when there are none
+// (rather than "null", which providers reject).
+func ArgumentsJSON(args map[string]any) ([]byte, error) {
+	if len(args) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(args)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for ToolCallFunction.

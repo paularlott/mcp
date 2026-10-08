@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/paularlott/mcp/ai/openai"
@@ -260,8 +261,12 @@ func TestToolCallsToOpenAIMultiple(t *testing.T) {
 	if out[0].Index != 0 || out[1].Index != 1 {
 		t.Errorf("indices = %d,%d, want 0,1", out[0].Index, out[1].Index)
 	}
-	if out[0].ID != "a" || out[1].ID != "b" {
-		t.Errorf("ids = %q,%q, want a,b (Ollama has no call id, name is reused)", out[0].ID, out[1].ID)
+	if out[0].ID == "" || out[0].ID == out[1].ID {
+		t.Errorf("ids = %q,%q, want distinct generated ids when Ollama sends none", out[0].ID, out[1].ID)
+	}
+	withIDs := toolCallsToOpenAI([]toolCall{{ID: "call_x", Function: toolCallFunction{Name: "a"}}})
+	if withIDs[0].ID != "call_x" {
+		t.Errorf("id = %q, want Ollama's call_x", withIDs[0].ID)
 	}
 }
 
@@ -292,4 +297,47 @@ func TestStreamChunkToOpenAIDoneNoUsageWhenBothZero(t *testing.T) {
 	if chunk.Choices[0].FinishReason != "stop" {
 		t.Errorf("FinishReason = %q, want stop", chunk.Choices[0].FinishReason)
 	}
+}
+
+// Tool results are sent back with the name of the tool they answer, looked
+// up from the assistant's tool calls by call id.
+func TestConvertMessagesToolResultsCarryToolName(t *testing.T) {
+	c := &Client{}
+	msgs := c.convertMessages([]openai.Message{
+		{Role: "user", Content: "weather in Paris and Tokyo?"},
+		{Role: "assistant", ToolCalls: []openai.ToolCall{
+			{ID: "call_a", Type: "function", Function: openai.ToolCallFunction{Name: "weather", Arguments: map[string]any{"city": "Paris"}}},
+			{ID: "call_b", Type: "function", Function: openai.ToolCallFunction{Name: "time", Arguments: map[string]any{"city": "Tokyo"}}},
+		}},
+		{Role: "tool", ToolCallID: "call_b", Content: "09:00"},
+		{Role: "tool", ToolCallID: "call_a", Content: "sunny"},
+		{Role: "tool", ToolCallID: "legacy_name", Content: "x"}, // ids used to be tool names
+	})
+	if len(msgs) != 5 {
+		t.Fatalf("messages = %+v", msgs)
+	}
+	if ids := []string{msgs[1].ToolCalls[0].ID, msgs[1].ToolCalls[1].ID}; ids[0] != "call_a" || ids[1] != "call_b" {
+		t.Errorf("assistant tool call ids = %v", ids)
+	}
+	for i, want := range map[int]string{2: "time", 3: "weather", 4: "legacy_name"} {
+		if msgs[i].ToolName != want {
+			t.Errorf("message %d tool_name = %q, want %q", i, msgs[i].ToolName, want)
+		}
+	}
+	data, _ := json.Marshal(msgs[3])
+	if !strings.Contains(string(data), `"tool_name":"weather"`) {
+		t.Errorf("tool message JSON = %s", data)
+	}
+	if strings.Contains(string(mustJSON(t, msgs[0])), "tool_name") {
+		t.Error("tool_name set on a non-tool message")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

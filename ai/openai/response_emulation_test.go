@@ -482,39 +482,60 @@ func TestCancelResponseEmulated_CompletesThenGets(t *testing.T) {
 	}
 }
 
-func TestCompactResponseEmulated_RemovesReasoning(t *testing.T) {
+func TestCompactResponseEmulated_SummarisesStoredConversation(t *testing.T) {
 	manager := NewResponseManager()
 	mc := &mockCompleter{}
-	req := CreateResponseRequest{
-		Model: "gpt-x", Background: true,
-		Input: []any{map[string]any{"type": "message", "role": "user", "content": "hi"}},
-	}
-	resp, _ := CreateResponseEmulated(context.Background(), mc, manager, req)
-
-	// Inject a reasoning item into the stored result to verify compact strips it.
-	if s, ok := manager.Get(resp.ID); ok {
-		s.Lock()
-		if s.Result != nil {
-			s.Result.Output = append(s.Result.Output, map[string]any{"type": "reasoning", "summary": "thinking..."})
-		}
-		s.Unlock()
+	resp, err := CreateResponseEmulated(context.Background(), mc, manager, CreateResponseRequest{
+		Model: "gpt-x", Input: []any{map[string]any{"role": "user", "content": "My name is Zorblat"}},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	compacted, err := CompactResponseEmulated(context.Background(), manager, resp.ID)
+	mc.resp = &ChatCompletionResponse{Choices: []Choice{{Message: Message{Role: "assistant", Content: "The user is called Zorblat."}}}}
+	compacted, err := CompactResponseEmulated(context.Background(), mc, manager, CompactResponseRequest{
+		Model: "gpt-x", PreviousResponseID: resp.ID,
+		Input: []any{map[string]any{"role": "user", "content": "Remember that"}},
+	})
 	if err != nil {
 		t.Fatalf("CompactResponseEmulated: %v", err)
 	}
-	for _, item := range compacted.Output {
-		if m, ok := item.(map[string]any); ok && m["type"] == "reasoning" {
-			t.Errorf("reasoning item not removed: %+v", m)
+	if compacted.Object != "response.compaction" || len(compacted.Output) != 1 {
+		t.Fatalf("compacted = %+v", compacted)
+	}
+	item := compacted.Output[0].(map[string]any)
+	if item["role"] != "user" || !strings.Contains(item["content"].(string), "Zorblat") {
+		t.Errorf("output item = %v", item)
+	}
+
+	// The transcript sent for summarisation covers the history, the reply and the new input
+	transcript := mc.lastReq.Messages[len(mc.lastReq.Messages)-1].GetContentAsString()
+	for _, want := range []string{"My name is Zorblat", "[assistant]\nok", "Remember that"} {
+		if !strings.Contains(transcript, want) {
+			t.Errorf("transcript missing %q:\n%s", want, transcript)
 		}
+	}
+
+	// The output can replace the conversation as the next request's input
+	if msgs := ConvertInputToMessages(compacted.Output); len(msgs) != 1 || msgs[0].Role != "user" {
+		t.Errorf("output as input = %+v", msgs)
 	}
 }
 
-func TestCompactResponseEmulated_NotFound(t *testing.T) {
+func TestCompactResponseEmulated_Errors(t *testing.T) {
 	manager := NewResponseManager()
-	if _, err := CompactResponseEmulated(context.Background(), manager, "nope"); err == nil {
-		t.Fatal("expected error for missing response")
+	mc := &mockCompleter{}
+	for name, req := range map[string]CompactResponseRequest{
+		"no model":         {Input: []any{map[string]any{"role": "user", "content": "x"}}},
+		"nothing":          {Model: "m"},
+		"unknown previous": {Model: "m", PreviousResponseID: "nope"},
+	} {
+		if _, err := CompactResponseEmulated(context.Background(), mc, manager, req); err == nil {
+			t.Errorf("%s: expected error", name)
+		}
+	}
+	if mc.calls != 0 {
+		t.Errorf("model called %d times for invalid requests", mc.calls)
 	}
 }
 

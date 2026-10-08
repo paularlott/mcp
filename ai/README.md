@@ -10,6 +10,7 @@ A unified interface for multiple LLM providers with OpenAI-compatible API.
 - **Ollama** - Local models with OpenAI-compatible API, emulated Responses API
 - **ZAi** - OpenAI-compatible endpoint, emulated Responses API
 - **Mistral** - OpenAI-compatible endpoint, emulated Responses API
+- **Grok** (xAI) - OpenAI-compatible endpoint, native Responses API
 
 ## Features
 
@@ -112,7 +113,7 @@ type Client interface {
     GetResponse(ctx context.Context, id string) (*ResponseObject, error)
     CancelResponse(ctx context.Context, id string) (*ResponseObject, error)
     DeleteResponse(ctx context.Context, id string) error
-    CompactResponse(ctx context.Context, id string) (*ResponseObject, error)
+    CompactResponse(ctx context.Context, req CompactResponseRequest) (*CompactedResponse, error)
 
     Close() error
 }
@@ -133,17 +134,27 @@ if dc, ok := client.(ai.DecisionCaller); ok {
 
 ## Provider Capabilities
 
-| Feature             | OpenAI        | Claude      | Gemini      | Ollama        | ZAi         | Mistral     |
-| ------------------- | ------------- | ----------- | ----------- | ------------- | ----------- | ----------- |
-| Chat                | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          |
-| Streaming           | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          |
-| Tools               | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          |
-| Embeddings          | ✅            | ❌          | ✅          | ✅            | ✅          | ✅          |
-| Responses API       | ✅ native     | ✅ emulated | ✅ emulated | ✅ emulated   | ✅ emulated | ✅ emulated |
-| Streaming Responses | ✅ native SSE | ✅ emulated | ✅ emulated | ✅ emulated   | ✅ emulated | ✅ emulated |
-| Decision models     | ❌            | ❌          | ❌          | ✅ System One | ❌          | ❌          |
+| Feature             | OpenAI        | Claude      | Gemini      | Ollama        | ZAi         | Mistral     | Grok          |
+| ------------------- | ------------- | ----------- | ----------- | ------------- | ----------- | ----------- | ------------- |
+| Chat                | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          | ✅            |
+| Streaming           | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          | ✅            |
+| Tools               | ✅            | ✅          | ✅          | ✅            | ✅          | ✅          | ✅            |
+| Embeddings          | ✅            | ❌          | ✅          | ✅            | ✅          | ✅          | ❌            |
+| Responses API       | ✅ native     | ✅ emulated | ✅ emulated | ✅ emulated   | ✅ emulated | ✅ emulated | ✅ native     |
+| Streaming Responses | ✅ native SSE | ✅ emulated | ✅ emulated | ✅ emulated   | ✅ emulated | ✅ emulated | ✅ native SSE |
+| Decision models     | ❌            | ❌          | ❌          | ✅ System One | ❌          | ❌          | ❌            |
 
-The Responses API is **natively** supported on `api.openai.com` (real `/responses` SSE endpoint). For all other providers it is **transparently emulated** via chat completions — callers see identical types, event sequences, and field structures regardless of provider.
+Check how a client serves the Responses API with `SupportsCapability`: `"responses"` is true when it uses the provider's native API, `"responses_emulated"` when it emulates it, and every client reports exactly one of the two. Emulated responses are stored by the client (in process memory by default, see `Config.ResponseStore`), so a caller that needs provider-side storage can refuse emulated clients:
+
+```go
+if !client.SupportsCapability(string(ai.ProviderCapabilityResponses)) {
+    return errors.New("this provider has no native Responses API")
+}
+```
+
+`SupportsCapability` only reports the capabilities listed in this table (`"embeddings"`, `"responses"`, `"responses_emulated"`, `"decision"`); anything else is false.
+
+The Responses API is **natively** supported on `api.openai.com` and `api.x.ai` (real `/responses` SSE endpoint). For all other providers it is **transparently emulated** via chat completions — callers see identical types, event sequences, and field structures regardless of provider.
 
 ## Configuration
 
@@ -159,8 +170,13 @@ type Config struct {
     HTTPPool          pool.HTTPPool        // Optional: custom HTTP client pool
     LocalServer       MCPServer            // Optional: local MCP server
     MCPServerConfigs  []RemoteServerConfig // Optional: remote MCP servers
+    ResponseStore     ResponseStore        // Optional: storage for emulated Responses API responses (default: shared in-process memory)
+    MaxConversationBytes int               // Optional: largest conversation previous_response_id may continue (default: 8 MiB, -1 = unlimited)
+    OnResponseStoreError func(id string, err error) // Optional: called when saving a finished background or streamed response fails (saves are retried)
 }
 ```
+
+Emulated Responses API storage is scoped per client (provider, base URL and API key), as native responses are scoped to the API key. See [openai/README.md](openai/README.md#multi-turn-conversations) for ownership, limits and Redis-backed storage.
 
 Chat completion requests also support provider-specific body fields through
 `ExtraBody`. These keys are merged into the top-level JSON request body:
@@ -246,6 +262,16 @@ client, err := ai.NewClient(ai.Config{
 
 - Default base URL: `https://api.mistral.ai/v1`
 - OpenAI-compatible API
+
+### Grok
+
+- Default base URL: `https://api.x.ai/v1`
+- OpenAI-compatible API (`/chat/completions` is legacy on xAI but still supported)
+- Native Responses API auto-enabled when the base URL host is `api.x.ai`; set `UseNativeResponses: ai.BoolPtr(false)` to force emulation
+- xAI's Responses API ignores `frequency_penalty`, `presence_penalty`, `truncation` and `metadata`
+- xAI rejects `background`, so background responses run in the client, which can then also cancel them; `CancelResponse` on other responses returns an error, as xAI has no cancel endpoint
+- `CompactResponse` requires `Input`; xAI doesn't support `PreviousResponseID` for compaction
+- No embeddings
 
 ## Error Handling
 

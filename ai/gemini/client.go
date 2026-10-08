@@ -63,8 +63,8 @@ func New(config openai.Config) (*Client, error) {
 		return nil, err
 	}
 
-	// Get the global response manager
-	responseManager := openai.GetManager()
+	// Responses are stored scoped to this client
+	responseManager := openai.NewClientResponseManager(config, providerName, config.BaseURL)
 
 	// Retry defaults (mirror the openai client defaults)
 	maxRetries := config.MaxRetries
@@ -111,8 +111,8 @@ func (c *Client) Provider() string {
 
 // SupportsCapability checks if the provider supports a capability
 func (c *Client) SupportsCapability(cap string) bool {
-	// Gemini supports embeddings via custom API, but not responses API
-	return cap != "responses"
+	// Embeddings via Gemini's own API; the Responses API is emulated
+	return cap == "embeddings" || cap == "responses_emulated"
 }
 
 // ChatCompletion delegates to OpenAI client (uses /openai/ endpoint)
@@ -349,7 +349,7 @@ func (c *Client) StreamResponse(ctx context.Context, req openai.CreateResponseRe
 	go func() {
 		defer close(eventChan)
 		defer close(errorChan)
-		openai.StreamResponseEmulated(ctx, c.chatClient, req, eventChan, errorChan)
+		openai.StreamResponseEmulatedWithManager(ctx, c.chatClient, c.responseManager, req, eventChan, errorChan)
 	}()
 	return openai.NewResponseStream(ctx, eventChan, errorChan)
 }
@@ -375,9 +375,9 @@ func (c *Client) DeleteResponse(ctx context.Context, id string) error {
 	return openai.DeleteResponseEmulated(ctx, c.responseManager, id)
 }
 
-// CompactResponse compacts a response by removing intermediate reasoning steps
-func (c *Client) CompactResponse(ctx context.Context, id string) (*openai.ResponseObject, error) {
-	return openai.CompactResponseEmulated(ctx, c.responseManager, id)
+// CompactResponse compacts a conversation by having the model summarise it
+func (c *Client) CompactResponse(ctx context.Context, req openai.CompactResponseRequest) (*openai.CompactedResponse, error) {
+	return openai.CompactResponseEmulated(ctx, c, c.responseManager, req)
 }
 
 // Close closes the client

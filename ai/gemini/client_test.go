@@ -31,10 +31,11 @@ func TestSupportsCapability(t *testing.T) {
 		want bool
 	}{
 		{"responses", false},
-		{"chat", true},
+		{"responses_emulated", true},
 		{"embeddings", true},
-		{"streaming", true},
-		{"", true},
+		{"decision", false},
+		{"streaming", false},
+		{"", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cap, func(t *testing.T) {
@@ -646,8 +647,8 @@ func TestStreamChatCompletion_ErrorDelegates(t *testing.T) {
 // Responses-API emulation: StreamResponse / CreateResponse / GetResponse /
 // CancelResponse / DeleteResponse / CompactResponse.
 //
-// Gemini does not have a native Responses API, but SupportsCapability("responses")
-// returning false does not make these stubs — client.go emulates the full
+// Gemini does not have a native Responses API, so SupportsCapability reports
+// "responses_emulated" rather than "responses" — client.go emulates the full
 // lifecycle on top of the chat completions endpoint via openai's *Emulated
 // helpers. We exercise the real emulation path end-to-end against an httptest
 // chat/completions server.
@@ -805,7 +806,7 @@ func TestDeleteResponse_NotFound(t *testing.T) {
 }
 
 func TestCompactResponse(t *testing.T) {
-	c, closeSrv := newTestGeminiClient(t, chatCompletionHandler(t, "reasoned answer"))
+	c, closeSrv := newTestGeminiClient(t, chatCompletionHandler(t, "the summary"))
 	defer closeSrv()
 
 	created, err := c.CreateResponse(context.Background(), openai.CreateResponseRequest{
@@ -816,26 +817,18 @@ func TestCompactResponse(t *testing.T) {
 		t.Fatalf("CreateResponse() error: %v", err)
 	}
 
-	// Inject a synthetic reasoning item so CompactResponse has something to strip.
-	if state, ok := c.responseManager.Get(created.ID); ok {
-		result := state.GetResult()
-		result.Output = append(result.Output, map[string]any{"type": "reasoning", "summary": "thinking"})
-	}
-
-	compacted, err := c.CompactResponse(context.Background(), created.ID)
+	compacted, err := c.CompactResponse(context.Background(), openai.CompactResponseRequest{Model: "gemini-test", PreviousResponseID: created.ID})
 	if err != nil {
 		t.Fatalf("CompactResponse() error: %v", err)
 	}
-	for _, item := range compacted.Output {
-		if m, ok := item.(map[string]any); ok && m["type"] == "reasoning" {
-			t.Errorf("reasoning item was not stripped: %+v", m)
-		}
+	if compacted.Object != "response.compaction" || len(compacted.Output) != 1 {
+		t.Errorf("compacted = %+v", compacted)
 	}
 }
 
 func TestCompactResponse_NotFound(t *testing.T) {
 	c := &Client{responseManager: openai.NewResponseManager()}
-	if _, err := c.CompactResponse(context.Background(), "resp_missing"); err == nil {
+	if _, err := c.CompactResponse(context.Background(), openai.CompactResponseRequest{Model: "m", PreviousResponseID: "resp_missing"}); err == nil {
 		t.Fatal("expected error for missing response")
 	}
 }

@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/paularlott/mcp"
 	"github.com/paularlott/mcp/ai/openai"
 )
 
@@ -24,8 +26,9 @@ func TestProviderAndSupportsCapability(t *testing.T) {
 	}{
 		{"embeddings", false},
 		{"responses", false},
-		{"chat", true},
-		{"anything-else", true},
+		{"responses_emulated", true},
+		{"decision", false},
+		{"anything-else", false},
 	}
 	for _, tt := range tests {
 		if got := c.SupportsCapability(tt.cap); got != tt.want {
@@ -225,12 +228,12 @@ func TestCompactResponse(t *testing.T) {
 		t.Fatalf("CreateResponse() error: %v", err)
 	}
 
-	got, err := c.CompactResponse(context.Background(), resp.ID)
+	got, err := c.CompactResponse(context.Background(), openai.CompactResponseRequest{Model: "claude-test", PreviousResponseID: resp.ID})
 	if err != nil {
 		t.Fatalf("CompactResponse() error: %v", err)
 	}
-	if got.ID != resp.ID {
-		t.Errorf("CompactResponse ID = %q, want %q", got.ID, resp.ID)
+	if got.Object != "response.compaction" || len(got.Output) != 1 {
+		t.Errorf("CompactResponse = %+v", got)
 	}
 }
 
@@ -437,3 +440,55 @@ func TestStreamRequest_NonRetryableError(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// With MCP servers attached, a caller passing its own tools must still get
+// the streamed tool calls, as function_call items in the Responses stream.
+func TestStreamResponse_CallerToolCallsWithServers(t *testing.T) {
+	sse := strings.Join([]string{
+		`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-test","content":[]}}`,
+		`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"mine"}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":"}}`,
+		`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"1}"}}`,
+		`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+		`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}`,
+		`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+	}, "\n\n") + "\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(sse))
+	}))
+	defer srv.Close()
+
+	local := &openai.MCPServerFuncs{
+		ListToolsFunc: func() []mcp.MCPTool { return []mcp.MCPTool{{Name: "server_tool"}} },
+	}
+	c, err := New(openai.Config{BaseURL: srv.URL + "/", LocalServer: local})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := c.StreamResponse(context.Background(), openai.CreateResponseRequest{
+		Model: "claude-test",
+		Input: []any{map[string]any{"role": "user", "content": "hi"}},
+		Tools: []openai.Tool{{Type: "function", Function: openai.ToolFunction{Name: "mine"}}},
+	})
+	var done map[string]any
+	for stream.Next() {
+		evt := stream.Current()
+		if evt.Type == "response.output_item.done" {
+			var v struct {
+				Item map[string]any `json:"item"`
+			}
+			json.Unmarshal(evt.Data, &v)
+			if v.Item["type"] == "function_call" {
+				done = v.Item
+			}
+		}
+	}
+	if err := stream.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if done == nil || done["call_id"] != "toolu_1" || done["name"] != "mine" || done["arguments"] != `{"a":1}` {
+		t.Fatalf("function_call item = %v", done)
+	}
+}
