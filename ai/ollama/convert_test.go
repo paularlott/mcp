@@ -341,3 +341,32 @@ func mustJSON(t *testing.T, v any) []byte {
 	}
 	return data
 }
+
+func TestBuildChatRequestThink(t *testing.T) {
+	c := &Client{}
+	body := func(req openai.ChatCompletionRequest) string {
+		b, err := json.Marshal(c.buildChatRequest(req, false))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	// Not given: the field is omitted, so the model's default applies.
+	if got := body(openai.ChatCompletionRequest{Model: "m"}); strings.Contains(got, `"think"`) {
+		t.Errorf("think sent when not requested: %s", got)
+	}
+	for _, tc := range []struct {
+		req  openai.ChatCompletionRequest
+		want string
+	}{
+		{openai.ChatCompletionRequest{Model: "m", ReasoningEffort: "none"}, `"think":false`},
+		{openai.ChatCompletionRequest{Model: "m", ReasoningEffort: "minimal"}, `"think":false`},
+		{openai.ChatCompletionRequest{Model: "m", ReasoningEffort: "high"}, `"think":true`},
+		{openai.ChatCompletionRequest{Model: "m", ExtraBody: map[string]any{"think": false}}, `"think":false`},
+		{openai.ChatCompletionRequest{Model: "m", ExtraBody: map[string]any{"think": "low"}, ReasoningEffort: "none"}, `"think":"low"`},
+	} {
+		if got := body(tc.req); !strings.Contains(got, tc.want) {
+			t.Errorf("effort %q extra %v: %s, want %s", tc.req.ReasoningEffort, tc.req.ExtraBody, got, tc.want)
+		}
+	}
+}

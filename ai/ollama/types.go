@@ -52,6 +52,10 @@ type chatRequest struct {
 	Options   options   `json:"options,omitempty"`
 	Format    any       `json:"format,omitempty"` // "json", or a JSON schema object
 	KeepAlive *string   `json:"keep_alive,omitempty"`
+	// Think turns a thinking model's reasoning on or off (true/false, or
+	// "low"/"medium"/"high" for models that grade it). Nil leaves the
+	// model's default and is not sent.
+	Think any `json:"think,omitempty"`
 }
 
 // chatResponse is one object in the /api/chat response — the whole response

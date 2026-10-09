@@ -162,6 +162,7 @@ func (c *Client) buildChatRequest(req openai.ChatCompletionRequest, stream bool)
 		Messages: c.convertMessages(req.Messages),
 		Stream:   stream,
 		Options:  opts,
+		Think:    thinkSetting(req),
 	}
 	if len(req.Tools) > 0 {
 		out.Tools = convertTools(req.Tools)
@@ -295,4 +296,26 @@ func streamChunkToOpenAI(model string, resp *chatResponse) *openai.ChatCompletio
 		}
 	}
 	return chunk
+}
+
+// thinkSetting maps a request's reasoning controls onto Ollama's think
+// field: an explicit ExtraBody "think" wins; otherwise reasoning_effort
+// "none" (or "minimal") turns thinking off and any other effort turns it
+// on. With neither, nil: the field is omitted and the model's default
+// applies.
+func thinkSetting(req openai.ChatCompletionRequest) any {
+	if v, ok := req.ExtraBody["think"]; ok {
+		switch t := v.(type) {
+		case bool, string:
+			return t
+		}
+	}
+	switch strings.ToLower(req.ReasoningEffort) {
+	case "":
+		return nil
+	case "none", "minimal":
+		return false
+	default:
+		return true
+	}
 }
