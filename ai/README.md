@@ -173,6 +173,7 @@ type Config struct {
     ResponseStore     ResponseStore        // Optional: storage for emulated Responses API responses (default: shared in-process memory)
     MaxConversationBytes int               // Optional: largest conversation previous_response_id may continue (default: 8 MiB, -1 = unlimited)
     OnResponseStoreError func(id string, err error) // Optional: called when saving a finished background or streamed response fails (saves are retried)
+    OnBackgroundResponseDone func(ctx context.Context, resp *ResponseObject, err error) // Optional: called when a background response run in this process finishes, e.g. to record its usage
 }
 ```
 

@@ -58,8 +58,12 @@ func createResponseBackground(ctx context.Context, completer ChatCompleter, mana
 		return nil, err
 	}
 
-	// Start async processing
-	go processResponseAsync(asyncCtx, state, chatReq, req.Model, completer)
+	// Start async processing; its context is released when it ends rather
+	// than held until the timeout
+	go func() {
+		defer cancel()
+		processResponseAsync(asyncCtx, state, chatReq, req.Model, completer)
+	}()
 
 	// Return immediately with in_progress status
 	return &ResponseObject{
@@ -130,18 +134,19 @@ func GetResponseEmulated(ctx context.Context, manager *ResponseManager, id strin
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+	state, ok := manager.Get(id)
 	for {
-		state, ok := manager.Get(id)
 		if !ok {
 			return nil, fmt.Errorf("%w: %s", ErrResponseNotFound, id)
 		}
 		state.RLock()
-		status, result, err := state.Status, state.Result, state.Error
+		status, result, err, done := state.Status, state.Result, state.Error, state.done
 		state.RUnlock()
 
 		switch {
-		case isInProgress(status):
-			// wait below
+		case isInProgress(status) || !closed(done):
+			// wait below: a response in flight here counts as finished
+			// once its outcome is saved
 		case status == StatusCancelled:
 			// Cancelled responses have no result; return a minimal cancelled object
 			// (matching the native API which returns the response in cancelled state).
@@ -160,13 +165,31 @@ func GetResponseEmulated(ctx context.Context, manager *ResponseManager, id strin
 			return result, nil
 		}
 
+		// A response in flight here holds its outcome once done; one running
+		// on another instance is re-read from the store
 		select {
+		case <-done:
 		case <-ticker.C:
+			state, ok = manager.Get(id)
 		case <-timeout.C:
 			return nil, fmt.Errorf("timeout waiting for response")
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
+	}
+}
+
+// closed reports whether done is closed; a nil channel (a response read
+// from the store) counts as closed.
+func closed(done <-chan struct{}) bool {
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -266,27 +289,35 @@ func renderTranscript(conversation []Message) string {
 // processResponseAsync runs a background response's chat request and
 // records the outcome on its state.
 func processResponseAsync(ctx context.Context, state *ResponseState, chatReq ChatCompletionRequest, model string, completer ChatCompleter) {
+	var respObj *ResponseObject
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			state.SetError(fmt.Errorf("panic during response processing: %v", r))
+			err = fmt.Errorf("panic during response processing: %v", r)
+			state.SetError(err)
 		}
+		state.manager.backgroundDone(ctx, respObj, err)
 	}()
 
 	// Use the completer's ChatCompletion which handles tools automatically
 	chatResp, err := completer.ChatCompletion(ctx, chatReq)
+	if err == nil {
+		// Convert ChatCompletionResponse to ResponseObject, preserving the
+		// response ID assigned at creation so callers can retrieve it by that ID.
+		respObj = ConvertChatToResponseObject(chatResp, model)
+		respObj.ID = state.ID
+	}
 	// If the response was cancelled while in flight, keep the cancelled status
 	if state.GetStatus() == StatusCancelled {
+		if err == nil {
+			err = context.Canceled
+		}
 		return
 	}
 	if err != nil {
 		state.SetError(err)
 		return
 	}
-
-	// Convert ChatCompletionResponse to ResponseObject, preserving the response
-	// ID assigned at creation so callers can retrieve it by that ID.
-	respObj := ConvertChatToResponseObject(chatResp, model)
-	respObj.ID = state.ID
 
 	reply := replyMessage(chatResp)
 	state.Lock()

@@ -64,14 +64,15 @@ type ResponseState struct {
 	cancel     context.CancelFunc
 	created_at time.Time
 
-	manager  *ResponseManager // nil for states not registered with a manager
-	owner    string
-	conv     *emulatedConversation // conversation this response continues
-	reply    *Message              // assistant reply to store as part of the turn
-	done     chan struct{}         // closed when the response finishes
-	finished bool
-	deleted  bool       // deleted while in flight: never save it again
-	saveMu   sync.Mutex // serialises store writes for this response with its deletion
+	manager    *ResponseManager // nil for states not registered with a manager
+	owner      string
+	conv       *emulatedConversation // conversation this response continues
+	reply      *Message              // assistant reply to store as part of the turn
+	done       chan struct{}         // closed when the response finishes
+	finished   bool
+	cancelling bool       // a cancel has begun: any outcome recorded now is cancelled
+	deleted    bool       // deleted while in flight: never save it again
+	saveMu     sync.Mutex // serialises store writes for this response with its deletion
 }
 
 // SetStatus updates the status of the response
@@ -112,11 +113,13 @@ func (r *ResponseState) GetError() error {
 	return r.Error
 }
 
-// Cancel cancels the response
+// Cancel cancels the response. A run that ends because of the cancel, and
+// records its outcome before Cancel does, is recorded as cancelled too.
 func (r *ResponseState) Cancel() {
-	r.RLock()
+	r.Lock()
+	r.cancelling = true
 	cancel := r.cancel
-	r.RUnlock()
+	r.Unlock()
 	if cancel != nil {
 		cancel()
 	}
@@ -135,14 +138,19 @@ func (r *ResponseState) finish(status ResponseStatus, result *ResponseObject, er
 		return nil
 	}
 	r.finished = true
+	if r.cancelling {
+		status, result, err = StatusCancelled, nil, nil
+	}
 	r.Status = status
 	r.Result = result
 	r.Error = err
-	m := r.manager
-	if r.done != nil {
-		close(r.done)
-	}
+	m, done := r.manager, r.done
 	r.Unlock()
+	// done is closed once the outcome is saved (or the save has failed), so
+	// whoever waits for it can continue the response straight away
+	if done != nil {
+		defer close(done)
+	}
 	if m == nil {
 		return nil
 	}
@@ -196,6 +204,7 @@ type ResponseManager struct {
 	owner                string // hashed owner scope; "" when unscoped
 	maxConversationBytes int    // 0 = DefaultMaxConversationBytes, <0 = unlimited
 	onStoreError         func(responseID string, err error)
+	onBackgroundDone     func(ctx context.Context, resp *ResponseObject, err error)
 	timings              responseTimings
 	backgroundTimeout    time.Duration // limit on an emulated background response's run (<= 0 = none)
 }
@@ -223,6 +232,7 @@ func NewClientResponseManager(config Config, provider, baseURL string) *Response
 	m := base.withOwner(provider + "\x00" + baseURL + "\x00" + config.APIKey)
 	m.maxConversationBytes = config.MaxConversationBytes
 	m.onStoreError = config.OnResponseStoreError
+	m.onBackgroundDone = config.OnBackgroundResponseDone
 	if config.RequestTimeout != 0 {
 		m.backgroundTimeout = config.RequestTimeout // negative: no limit, as for other requests
 	}
@@ -237,6 +247,16 @@ func (m *ResponseManager) WithStoreErrorHandler(fn func(responseID string, err e
 	scoped := *m
 	scoped.onStoreError = fn
 	return &scoped
+}
+
+// backgroundDone reports a finished background response to the
+// OnBackgroundResponseDone hook, if any. A panicking hook is contained.
+func (m *ResponseManager) backgroundDone(ctx context.Context, resp *ResponseObject, err error) {
+	if m == nil || m.onBackgroundDone == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	m.onBackgroundDone(ctx, resp, err)
 }
 
 func (m *ResponseManager) reportStoreError(id string, err error) {

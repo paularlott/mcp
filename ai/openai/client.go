@@ -118,6 +118,14 @@ type Config struct {
 	ResponseStore        ResponseStore                      // Storage for emulated Responses API responses (nil = shared in-process memory store)
 	MaxConversationBytes int                                // Emulated Responses API: largest conversation previous_response_id may continue (0 = 8 MiB, -1 = unlimited)
 	OnResponseStoreError func(responseID string, err error) // Emulated Responses API: called when saving a finished background or streamed response fails (saves are retried)
+	// OnBackgroundResponseDone is called when a background response run by
+	// this process finishes: emulated ones, and native ones run here for
+	// tool processing or because the provider can't (xAI). ctx keeps the
+	// creating request's values; resp carries the output and usage when the
+	// model produced a reply (also for a response cancelled after replying),
+	// err is set when it failed or was cancelled. Background responses run by
+	// the provider itself are not reported: their usage is read with GetResponse.
+	OnBackgroundResponseDone func(ctx context.Context, resp *ResponseObject, err error)
 }
 
 // New creates a new OpenAI client using the shared HTTP pool
@@ -668,8 +676,10 @@ func (c *Client) createResponseBackground(ctx context.Context, req CreateRespons
 		return nil, err
 	}
 
-	// Start async processing
+	// Start async processing; its context is released when it ends rather
+	// than held until the timeout
 	go func() {
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				state.SetError(fmt.Errorf("panic during response processing: %v", r))
@@ -680,10 +690,10 @@ func (c *Client) createResponseBackground(ctx context.Context, req CreateRespons
 		resp, err := c.createResponseSync(asyncCtx, req)
 		if err != nil {
 			state.SetError(err)
-			return
+		} else {
+			state.SetResult(resp)
 		}
-
-		state.SetResult(resp)
+		c.responses.backgroundDone(asyncCtx, resp, err)
 	}()
 
 	// Return immediately with in_progress status
