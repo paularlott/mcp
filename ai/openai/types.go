@@ -241,6 +241,22 @@ type Usage struct {
 	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 }
 
+// UnmarshalJSON decodes usage, counting reasoning tokens in CompletionTokens
+// as OpenAI does. Some providers (xAI) report them only in
+// completion_tokens_details, with total_tokens = prompt + completion +
+// reasoning; counting them keeps CompletionTokens the full billed output.
+func (u *Usage) UnmarshalJSON(data []byte) error {
+	type usage Usage
+	if err := json.Unmarshal(data, (*usage)(u)); err != nil {
+		return err
+	}
+	if d := u.CompletionTokensDetails; d != nil && d.ReasoningTokens > 0 &&
+		u.PromptTokens+u.CompletionTokens+d.ReasoningTokens == u.TotalTokens {
+		u.CompletionTokens += d.ReasoningTokens
+	}
+	return nil
+}
+
 // ResponseUsage represents token usage (Responses API)
 type ResponseUsage struct {
 	InputTokens         int                          `json:"input_tokens"`
