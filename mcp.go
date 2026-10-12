@@ -241,6 +241,22 @@ func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolR
 	if len(remoteResults) > 0 {
 		results = append(results, remoteResults...)
 
+		// A tool can be both listed here and found by the remote's search
+		// (an unprefixed remote's listed tools); keep its best match once
+		best := make(map[string]int, len(results))
+		merged := results[:0]
+		for _, r := range results {
+			if i, seen := best[r.Name]; seen {
+				if r.Score > merged[i].Score {
+					merged[i] = r
+				}
+				continue
+			}
+			best[r.Name] = len(merged)
+			merged = append(merged, r)
+		}
+		results = merged
+
 		// Re-sort to merge remote results with local by score
 		sort.Slice(results, func(i, j int) bool {
 			if results[i].Score != results[j].Score {
@@ -434,17 +450,32 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 
 	// Fallback: match by namespace prefix to find the remote server,
 	// then call via execute_tool on that server (for tools discovered via remote tool_search)
+	var unprefixed []*registeredClient
 	for _, rc := range s.remoteClients {
 		if _, excluded := s.excludedTools[name]; excluded {
 			continue
 		}
-		if rc.namespace != "" && strings.HasPrefix(name, rc.namespace+rc.client.separator) {
+		if rc.namespace == "" {
+			unprefixed = append(unprefixed, rc)
+			continue
+		}
+		if strings.HasPrefix(name, rc.namespace+rc.client.separator) {
 			client := rc.client
 			separator := rc.client.separator
 			s.mu.RUnlock()
 			toolName := strings.TrimPrefix(name, rc.namespace+separator)
 			return client.ExecuteDiscoveredTool(ctx, toolName, args)
 		}
+	}
+
+	// A single remote registered without a namespace (a proxy for one
+	// server) shares this server's tool names, so a name nothing else claims
+	// may be one of its tools hidden from tools/list but found by tool_search.
+	// With several, the owner can't be told from the name alone.
+	if _, fromProvider := providerForTool(ctx, name); len(unprefixed) == 1 && !fromProvider {
+		client := unprefixed[0].client
+		s.mu.RUnlock()
+		return client.ExecuteDiscoveredTool(ctx, name, args)
 	}
 
 	s.mu.RUnlock()
