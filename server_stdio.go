@@ -332,6 +332,7 @@ func (s *Server) serveStdioMessage(ctx context.Context, srv *jsonrpc.Server, str
 			stream.write(line)
 			return true
 		})
+		rs.requestID, _ = decodeJSONRPCID(head.ID)
 		reqCtx = withRequestStream(reqCtx, rs)
 		stream.track(key, cancel, head.Method == "subscriptions/listen", rs)
 		if id, ok := decodeJSONRPCID(head.ID); ok {

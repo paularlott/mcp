@@ -306,7 +306,8 @@ func (c *Client) readEventStream(ctx context.Context, legacy bool, connect event
 			// these on the GET stream and the client must answer; the Modern
 			// era forbids them, so they are ignored there.
 			if legacy {
-				c.replyToServerRequest(ctx, msg.ID, msg.Method)
+				// Answered off the reader: an elicitation may wait for a person.
+				go c.answerStreamRequest(ctx, nil, false, &msg)
 			}
 			continue
 		}

@@ -13,6 +13,11 @@ type MCPRequest struct {
 	// so values Params loses precision on (an integer progressToken above
 	// 2^53) can still be read exactly.
 	rawParams json.RawMessage
+
+	// declareElicitation adds form-mode elicitation to a Modern request's
+	// _meta clientCapabilities: set when the caller a federated request is
+	// forwarded for can be asked (client_elicitation.go).
+	declareElicitation bool
 }
 
 // MCPNotification is a JSON-RPC 2.0 notification — a message that carries no

@@ -289,11 +289,74 @@ func elicitationFrom(ctx context.Context) *elicitationRun {
 // elicitationRun is one handler run's elicitation state: exactly one of
 // legacy (2025-x) or mrtr (2026-07-28) is set.
 type elicitationRun struct {
-	mu     sync.Mutex
-	seq    int
-	used   map[string]bool
-	legacy *legacyElicitation
-	mrtr   *mrtrElicitation
+	mu       sync.Mutex
+	seq      int
+	relaySeq int
+	used     map[string]bool
+	legacy   *legacyElicitation
+	mrtr     *mrtrElicitation
+}
+
+// Slots: state a federated call (client_elicitation.go) keeps across the
+// re-runs of a 2026-07-28 handler, inside this server's own signed
+// requestState. A slot is named by the order of the federated calls in the
+// handler ("relay-1", "relay-2", ...), deterministic like default keys.
+
+// nextRelaySlot names the next federated call of this run.
+func (run *elicitationRun) nextRelaySlot() string {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	run.relaySeq++
+	return fmt.Sprintf("relay-%d", run.relaySeq)
+}
+
+// recall returns what an earlier round stored in slot (2026-07-28 only).
+func (run *elicitationRun) recall(slot string) (json.RawMessage, bool) {
+	if run == nil || run.mrtr == nil {
+		return nil, false
+	}
+	m := run.mrtr
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dropped[slot] {
+		return nil, false
+	}
+	if v, ok := m.stashed[slot]; ok {
+		return v, true
+	}
+	v, ok := m.carriedSlots[slot]
+	return v, ok
+}
+
+// remember stores v in slot for the next round, should the request be
+// answered with an InputRequiredResult (2026-07-28 only).
+func (run *elicitationRun) remember(slot string, v json.RawMessage) {
+	if run == nil || run.mrtr == nil {
+		return
+	}
+	m := run.mrtr
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stashed == nil {
+		m.stashed = map[string]json.RawMessage{}
+	}
+	m.stashed[slot] = v
+	delete(m.dropped, slot)
+}
+
+// drop forgets slot: its federated call finished.
+func (run *elicitationRun) drop(slot string) {
+	if run == nil || run.mrtr == nil {
+		return
+	}
+	m := run.mrtr
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.dropped == nil {
+		m.dropped = map[string]bool{}
+	}
+	m.dropped[slot] = true
+	delete(m.stashed, slot)
 }
 
 // preparedForm is a validated ElicitForm with its key and a JSON-normalised
@@ -610,7 +673,14 @@ func (l *legacyElicitation) one(ctx context.Context, f preparedForm) (*ElicitRes
 	ch := l.peer.await(string(key))
 	defer l.peer.forget(string(key))
 
-	switch err := l.rs.sendRequest(id, "elicitation/create", f.params(l.version >= "2025-11-25")); err {
+	params := f.params(l.version >= "2025-11-25")
+	if l.rs.requestID != nil {
+		// Which of the client's requests this one serves. The spec gives a
+		// stdio client no way to tell; a federating Client of this library
+		// uses it to reach the right caller (client_elicitation.go).
+		params["_meta"] = map[string]any{metaKeyRelatedRequest: l.rs.requestID}
+	}
+	switch err := l.rs.sendRequest(id, "elicitation/create", params); err {
 	case nil:
 	case errStreamUnavailable:
 		return nil, ErrElicitationUnsupported
@@ -663,11 +733,15 @@ type mrtrElicitation struct {
 	caps      map[string]any
 	carried   map[string]json.RawMessage // answers of earlier rounds, from verified requestState
 	responses map[string]json.RawMessage // this retry's inputResponses
+	// carriedSlots are federated calls' slots from verified requestState.
+	carriedSlots map[string]json.RawMessage
 
 	mu       sync.Mutex
 	answered map[string]json.RawMessage
 	pending  map[string]any
 	failure  *MCPError
+	stashed  map[string]json.RawMessage // slots written this run
+	dropped  map[string]bool            // slots finished this run
 }
 
 func (m *mrtrElicitation) elicit(forms []preparedForm) ([]*ElicitResult, error) {
@@ -721,6 +795,7 @@ type requestStatePayload struct {
 	P string                     `json:"p,omitempty"` // authenticated principal
 	E int64                      `json:"e"`           // expiry, Unix seconds
 	R map[string]json.RawMessage `json:"r,omitempty"` // answers so far
+	X map[string]json.RawMessage `json:"x,omitempty"` // federated calls' slots
 }
 
 const requestStateMACLabel = "mcp/requestState/v1."
@@ -813,7 +888,7 @@ func (s *Server) newMRTR(ctx context.Context, method string, raw json.RawMessage
 		case state.P != m.principal:
 			return nil, invalid("Invalid requestState", "requestState was issued to a different principal")
 		}
-		m.carried = state.R
+		m.carried, m.carriedSlots = state.R, state.X
 	}
 	return m, nil
 }
@@ -833,10 +908,25 @@ func (m *mrtrElicitation) inputRequired() map[string]any {
 	for k, v := range m.answered {
 		answers[k] = v
 	}
+	var slots map[string]json.RawMessage
+	for k, v := range m.carriedSlots {
+		if !m.dropped[k] {
+			if slots == nil {
+				slots = map[string]json.RawMessage{}
+			}
+			slots[k] = v
+		}
+	}
+	for k, v := range m.stashed {
+		if slots == nil {
+			slots = map[string]json.RawMessage{}
+		}
+		slots[k] = v
+	}
 	key, ttl := m.s.requestStateConfig()
 	state := signRequestState(key, requestStatePayload{
 		V: 1, M: m.method, D: m.digest, P: m.principal,
-		E: time.Now().Add(ttl).Unix(), R: answers,
+		E: time.Now().Add(ttl).Unix(), R: answers, X: slots,
 	})
 	return map[string]any{
 		"resultType":    "input_required",

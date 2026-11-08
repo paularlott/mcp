@@ -210,15 +210,58 @@ becomes a tool execution error (`isError: true`) like any other handler error.
 Use `mcp.ElicitationSupported(ctx)` to choose a different path up front, for
 example a tool argument instead of a question.
 
+## Federated remote servers
+
+When this server proxies a remote MCP server (`RegisterRemoteServer`,
+`RegisterRemoteServerDiscoverable`, the namespace and unprefixed
+`execute_tool` fallbacks, a request-scoped `NewRemoteProvider`), a remote
+tool, prompt or resource that asks for input reaches **your** caller, and the
+answer goes back to the remote. Nothing needs configuring: the forwarding
+`Client` runs with your handler's context and puts each question to your
+caller with `Elicit`, so any mix of eras works on the two hops.
+
+| Remote (upstream) | Your caller (downstream) | What happens |
+| --- | --- | --- |
+| 2025-x | 2025-x | The remote's `elicitation/create` is forwarded to your caller as an `elicitation/create` of yours; the answer is sent back to the remote. |
+| 2025-x | 2026-07-28 | The question goes into your `InputRequiredResult` and the forwarded call is cancelled. On your caller's retry the remote is called again and, when it asks the same question, gets the answer from your caller's `inputResponses`. |
+| 2026-07-28 | 2025-x | Each of the remote's `elicitation/create` input requests is put to your caller; the remote is retried with `inputResponses` and its exact `requestState`, round after round, until it completes. |
+| 2026-07-28 | 2026-07-28 | The remote's questions go into your `InputRequiredResult`. The remote's `requestState` and open questions travel inside **your** signed `requestState`, so your caller's retry resumes the remote's exchange instead of starting it over. |
+
+Details:
+
+- **Capabilities.** A Legacy (2025-x) connection declares form-mode
+  elicitation in `initialize`, once for every caller. A Modern (2026-07-28)
+  request declares it only when the caller it is forwarded for can be asked
+  (`ElicitationSupported`); sampling and roots are never declared.
+- **One connection, many callers.** A `Client` is shared by every caller, so
+  each `elicitation/create` is answered for the forwarded call it belongs to:
+  on HTTP, the call whose response stream carried it; on stdio, the call
+  named by the request's `io.github.paularlott/relatedRequestId` `_meta`
+  hint (this library's servers send it), or else the only call in flight.
+  Concurrent callers never get each other's questions.
+- **A caller that cannot be asked.** When the call cannot be identified, or
+  its caller cannot be asked (no elicitation capability, no SSE stream), a
+  2025-x remote is answered `{"action": "cancel"}` at once: no user made a
+  choice, and the remote never waits. A 2026-07-28 remote is not told the
+  client can elicit; if it asks anyway, the call fails with
+  `ErrInputRequired`.
+- **Repeated work.** With a 2025-x remote and a 2026-07-28 caller the remote
+  is called again on each of your caller's rounds, so it repeats its work up
+  to the question, as any 2025-x server must allow a client to.
+- **Keys.** Relayed questions get keys like `relay-1.0.name` (the federated
+  call's position in your handler, the remote's round, the remote's key) or
+  `relay-1.legacy.1` for a 2025-x remote, deterministic across re-runs.
+- **Sampling and roots** input requests from a remote are not relayed: a
+  2025-x remote's `sampling/createMessage` or `roots/list` is answered with
+  Method not found, and a 2026-07-28 remote asking for either fails the call
+  with `ErrInputRequired`.
+
 ## Not implemented
 
 - **URL mode** (`mode: "url"`, the `-32042` URLElicitationRequiredError and
   `notifications/elicitation/complete`). It exists only in 2025-11-25 and
   2026-07-28 forbids it; a client that declared only URL mode is treated as
-  not supporting elicitation.
-- **Elicitation through federated remote servers.** A remote server's own
-  `elicitation/create` or `InputRequiredResult` is not relayed to this
-  server's client.
+  not supporting elicitation, and a remote's URL-mode request is refused.
 - **Sampling and roots**, the other server-to-client requests, are
   deliberately not implemented in either era: 2026-07-28 deprecates them
   (SEP-2577).

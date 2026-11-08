@@ -144,11 +144,12 @@ func isFatalModernProbeError(e *MCPError) bool {
 }
 
 // ErrInputRequired is returned when a Modern-era server answers a request
-// with resultType "input_required": it needs input from the client
-// (sampling, elicitation or roots, via Multi Round-Trip Requests) before it
-// can complete the request. This client implements none of those, so it
-// cannot continue the exchange.
-var ErrInputRequired = errors.New("server requires client input (resultType \"input_required\"): multi round-trip requests are not supported by this client")
+// with resultType "input_required" and the client cannot supply the input
+// (Multi Round-Trip Requests). Elicitation is relayed to the caller of the
+// server handler a call is forwarded for (client_elicitation.go); this is
+// returned when there is no such caller, it cannot be asked, or the server
+// asks for sampling or roots, which this library does not implement.
+var ErrInputRequired = errors.New("server requires client input (resultType \"input_required\") that this client cannot supply")
 
 // checkResultType validates a Modern-era result's resultType (2026-07-28):
 // absent or "complete" is a final result; "input_required" is
@@ -240,7 +241,11 @@ func (c *Client) withModernMeta(req *MCPRequest) *MCPRequest {
 		"name":    mcpClientName,
 		"version": mcpClientVersion,
 	}
-	meta[metaKeyClientCapabilities] = c.capabilitiesMap()
+	caps := c.capabilitiesMap()
+	if req.declareElicitation {
+		caps["elicitation"] = map[string]any{}
+	}
+	meta[metaKeyClientCapabilities] = caps
 	paramsCopy["_meta"] = meta
 	out := *req
 	out.Params = paramsCopy

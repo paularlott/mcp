@@ -203,6 +203,7 @@ func (s *Server) dispatchResponse(w http.ResponseWriter, r *http.Request, req *M
 			return false
 		}
 	})
+	rs.requestID = req.ID
 	r = r.WithContext(withRequestStream(r.Context(), rs))
 
 	// The handler writes only into capture, and only this goroutine touches
