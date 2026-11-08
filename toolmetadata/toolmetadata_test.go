@@ -466,3 +466,32 @@ func TestBuildMCPTool_NoUI_OmitsMeta(t *testing.T) {
 		t.Errorf("expected no _meta field for a tool without UI, got %s", b)
 	}
 }
+
+func TestBuildMCPTool_TitleAndAnnotations(t *testing.T) {
+	yes, no := true, false
+	tool, err := BuildMCPTool("delete_file", &ToolMetadata{
+		Description: "Delete a file",
+		Title:       "Delete file",
+		Destructive: &yes,
+		OpenWorld:   &no,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt := tool.ToMCPTool()
+	if mt.Title != "Delete file" {
+		t.Errorf("title = %q", mt.Title)
+	}
+	a := mt.Annotations
+	if a == nil || a.DestructiveHint == nil || !*a.DestructiveHint || a.OpenWorldHint == nil || *a.OpenWorldHint || a.ReadOnlyHint != nil || a.IdempotentHint != nil {
+		t.Errorf("annotations = %+v, want destructive=true, openWorld=false and the others unset", a)
+	}
+
+	plain, err := BuildMCPTool("plain", &ToolMetadata{Description: "Plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt := plain.ToMCPTool(); mt.Title != "" || mt.Annotations != nil {
+		t.Errorf("a tool without title or hints got title=%q annotations=%+v", mt.Title, mt.Annotations)
+	}
+}
