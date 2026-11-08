@@ -603,7 +603,10 @@ func (s *Server) toolsCallWireError(ctx context.Context, name string, err error)
 	}
 	if errors.Is(err, ErrUnknownTool) {
 		msg := fmt.Sprintf("Unknown tool: %s", name)
-		if s.hasDiscoverableToolsNow(ctx) {
+		// Point at discovery only when the request's tools/list shows the
+		// discovery tools (not in show-all mode, and not when the unknown
+		// tool is one of them).
+		if name != ToolSearchName && name != ExecuteToolName && s.discoveryToolListed(ctx, ToolSearchName) {
 			msg += fmt.Sprintf(". Use %s to discover available tools, then %s to invoke them.", ToolSearchName, ExecuteToolName)
 		}
 		return &MCPError{Code: ErrorCodeInvalidParams, Message: msg, Data: map[string]any{"name": name}}

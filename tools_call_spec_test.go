@@ -264,3 +264,21 @@ func TestRelayedMissingClientCapabilityNotPassedOn(t *testing.T) {
 		t.Fatalf("got %+v, want it sent as an internal error", wireErr)
 	}
 }
+
+// The unknown-tool error suggests tool_search only when the request can
+// call it: not in show-all mode, and not for tool_search itself.
+func TestUnknownToolHintOnlyWhenDiscoveryListed(t *testing.T) {
+	s := discoveryServer()
+	hint := func(ctx context.Context, name string) bool {
+		return strings.Contains(s.toolsCallWireError(ctx, name, ErrUnknownTool).Message, "Use tool_search")
+	}
+	if !hint(context.Background(), "nope") {
+		t.Error("normal mode: unknown tool should suggest tool_search")
+	}
+	if hint(WithShowAllTools(context.Background()), "nope") {
+		t.Error("show-all mode: tool_search is not callable, so it must not be suggested")
+	}
+	if hint(WithShowAllTools(context.Background()), ToolSearchName) {
+		t.Error("an unknown tool_search must not suggest itself")
+	}
+}
