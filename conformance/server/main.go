@@ -173,7 +173,12 @@ func registerResources(s *mcp.Server) {
 		func(ctx context.Context, req *mcp.ResourceRequest) (*mcp.ResourceResponse, error) {
 			return mcp.NewResourceResponseText(req.URI(), "Watched resource content.", "text/plain"), nil
 		})
-	s.RegisterResourceTemplate(mcp.NewResourceTemplate("test://template/{id}/data", "Template data", "Data for an id", "application/json"),
+	// The id completer gives completion/complete a resource template to
+	// complete as well as a prompt.
+	s.RegisterResourceTemplate(mcp.NewResourceTemplate("test://template/{id}/data", "Template data", "Data for an id", "application/json").
+		Complete("id", func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+			return mcp.FilterPrefix([]string{"1", "2", "3", "42", "100"}, req.Value()), nil
+		}),
 		func(ctx context.Context, req *mcp.ResourceRequest) (*mcp.ResourceResponse, error) {
 			id := req.StringOr("id", "")
 			body := fmt.Sprintf(`{"id":%q,"templateTest":true,"data":%q}`, id, "Data for ID: "+id)
@@ -187,9 +192,18 @@ func registerPrompts(s *mcp.Server) {
 			return mcp.NewPromptResponseText("This is a simple prompt for testing."), nil
 		})
 
+	// completion-complete asks for arg1 completions; arg2's completer
+	// shows context.arguments carrying the arg1 already chosen.
 	s.RegisterPrompt(mcp.NewPrompt("test_prompt_with_arguments", "A prompt with two required arguments").
 		Argument("arg1", "First argument", true).
-		Argument("arg2", "Second argument", true),
+		Complete(func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+			return mcp.FilterPrefix([]string{"paris", "park", "party", "test", "testing"}, req.Value()), nil
+		}).
+		Argument("arg2", "Second argument", true).
+		Complete(func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+			arg1, _ := req.ContextArg("arg1")
+			return mcp.FilterPrefix([]string{arg1 + "-one", arg1 + "-two"}, req.Value()), nil
+		}),
 		func(ctx context.Context, req *mcp.PromptRequest) (*mcp.PromptResponse, error) {
 			return mcp.NewPromptResponseText(fmt.Sprintf("Prompt with arguments: arg1='%s', arg2='%s'", req.StringOr("arg1", ""), req.StringOr("arg2", ""))), nil
 		})

@@ -11,6 +11,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Resources**: Serve addressable data by URI (`resources/list`, `resources/read`, resource templates), including per-user/session resources via `ResourceProvider`
 - **MCP Apps**: Link a tool to an interactive HTML UI resource (SEP-1865), with CSP/permission metadata, extension capability negotiation, and host/view auto-resize via `containerDimensions`
 - **Prompts**: Reusable message templates with arguments (`prompts/list`, `prompts/get`), including per-user/session prompts via `PromptProvider`
+- **Completion**: Argument suggestions for prompts and resource templates (`completion/complete`) from a completer per argument, with the spec's 100-value cap, `context.arguments`, and the `completions` capability declared only when completers exist
 - **Skills**: Agent Skills directories served per SEP-2640 (`skills/list`, `skills/get`): every skill file is an ordinary `skill://` resource with digests, frontmatter served verbatim from the SKILL.md; per-user/session skills via a `SkillProvider` on the request context
 - **ListChanged Notifications**: Push-based tool/resource/prompt refresh over HTTP (SSE) and stdio, with automatic propagation through federated servers
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts

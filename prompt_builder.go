@@ -15,6 +15,7 @@ type PromptBuilder struct {
 	description string
 	arguments   []MCPPromptArgument
 	icons       []Icon
+	completers  map[string]Completer // argument name → completer; see Complete
 }
 
 // NewPrompt creates a prompt descriptor. Chain Argument calls to declare the

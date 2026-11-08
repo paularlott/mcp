@@ -415,7 +415,7 @@ func (s *Server) handleModernRequest(w http.ResponseWriter, r *http.Request, req
 	case "subscriptions/listen":
 		s.handleSubscriptionsListen(w, r, req)
 	default:
-		if !dispatchableMethods[req.Method] {
+		if !s.isDispatchable(r.Context(), req.Method) {
 			// Per the spec: an unrecognized method gets HTTP 404, distinct
 			// from the 200 used for an ordinary JSON-RPC method-level error
 			// (e.g. tools/call with an unknown tool name) — the JSON-RPC
@@ -640,7 +640,7 @@ func (s *Server) buildDiscoverResult(ctx context.Context, showAll bool) map[stri
 	result := map[string]any{
 		"resultType":        "complete",
 		"supportedVersions": allSupportedProtocolVersions(),
-		"capabilities":      s.buildCapabilities(MCPProtocolVersionModern),
+		"capabilities":      s.capabilitiesFor(ctx, MCPProtocolVersionModern),
 		"_meta":             map[string]any{metaKeyServerInfo: s.serverInfoMap()},
 		"ttlMs":             0,
 		"cacheScope":        cacheScope,

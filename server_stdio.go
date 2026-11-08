@@ -525,7 +525,7 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 	srv := jsonrpc.NewServer()
 
 	srv.Handle("initialize", rejectStdioModern("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
-		return s.stdioInitialize(params)
+		return s.stdioInitialize(ctx, params)
 	}))
 
 	srv.Handle("ping", rejectStdioModern("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -594,6 +594,10 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 		return s.stdioPromptsGet(ctx, params)
 	}))
 
+	// completion/complete answers -32601 itself when the server has no
+	// completers (see completionComplete), so registering it always is safe.
+	srv.Handle("completion/complete", s.wrapStdioModern("completion/complete", s.stdioCompletionComplete))
+
 	// server/discover is the Modern-era (protocol revision 2026-07-28+)
 	// discovery RPC — see modern.go. Routed through wrapStdioModern like
 	// every other Modern method, for the same reason HTTP's
@@ -616,7 +620,7 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 	return srv
 }
 
-func (s *Server) stdioInitialize(raw json.RawMessage) (any, error) {
+func (s *Server) stdioInitialize(ctx context.Context, raw json.RawMessage) (any, error) {
 	var params initializeParams
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -648,7 +652,7 @@ func (s *Server) stdioInitialize(raw json.RawMessage) (any, error) {
 
 	return initializeResult{
 		ProtocolVersion: protocolVersion,
-		Capabilities:    s.buildCapabilities(protocolVersion),
+		Capabilities:    s.capabilitiesFor(ctx, protocolVersion),
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,

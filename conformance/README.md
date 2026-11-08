@@ -39,7 +39,8 @@ npx -y @modelcontextprotocol/conformance@0.2.0-alpha.12 server --url http://loca
 [`server/main.go`](server/main.go) serves, on one endpoint and with only the
 library's public API, the tools, resources and prompts the suite's scenarios
 call by name (`test_simple_text`, `test://static-text`, `test_simple_prompt`,
-…), plus the diagnostic tools the 2026-07-28 scenarios probe with
+…), completers for `test_prompt_with_arguments` and `test://template/{id}/data`,
+plus the diagnostic tools the 2026-07-28 scenarios probe with
 (`test_missing_capability`, `test_headers`, the list-change triggers). Every
 scenario also checks that each message the server sends is valid against the
 spec's JSON Schema for that revision.
@@ -60,7 +61,6 @@ new implementations SHOULD NOT adopt them:
 
 Not implemented yet:
 
-- the completion utility (`completion/complete`)
 - progress notifications during a tool call
 - elicitation: `elicitation/create` through 2025-11-25, and
   `InputRequiredResult` (multi round-trip requests) on 2026-07-28

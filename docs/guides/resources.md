@@ -87,6 +87,34 @@ Matching rules:
 - On `resources/read`, static resources (exact match) are tried first, then templates in registration order (first match wins), then request-scoped providers.
 - Static resources have no variables; only `req.URI()` is meaningful for them.
 
+### Variable completion
+
+A client filling in a template's variables can ask for suggestions with `completion/complete`, naming the template by its URI template (`{"type": "ref/resource", "uri": "repo://{owner}/{repo}"}`). Attach a `Completer` to a variable with `Complete`:
+
+```go
+server.RegisterResourceTemplate(
+    mcp.NewResourceTemplate("repo://{owner}/{repo}", "Repository", "", "application/json").
+        Complete("owner", func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+            return mcp.FilterPrefix(listOwners(ctx), req.Value()), nil
+        }).
+        Complete("repo", func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+            owner, _ := req.ContextArg("owner") // already-resolved variables
+            return mcp.FilterPrefix(listRepos(ctx, owner), req.Value()), nil
+        }),
+    handler,
+)
+```
+
+`Complete` panics if the template has no such variable. Completers work exactly as for prompt arguments (see the [Prompts guide](prompts.md#argument-completion)): return all matches, most relevant first, and the library applies the spec's 100-value cap with `total`/`hasMore`. The server declares the `completions` capability only when some completer exists. An unknown template, or a name that isn't one of its variables, is `-32602`; a variable with no completer gets an empty list. A static resource URI is a valid reference but has nothing to complete.
+
+A `ResourceProvider` completes the variables of templates it lists by also implementing `ResourceCompletionProvider`:
+
+```go
+func (p *UserResourceProvider) CompleteResourceTemplate(ctx context.Context, uriTemplate string, req *mcp.CompletionRequest) (*mcp.CompletionResult, error) {
+    return mcp.NewCompletionResult(p.user.DocumentsMatching(req.Value())), nil
+}
+```
+
 ### Parsing template URIs yourself
 
 `ResourceProvider` implementations (which the server can't match for you) and other advanced cases can extract variables from a template URI with the standalone helper:
@@ -208,11 +236,12 @@ See the [stdio-server](../../examples/stdio-server) and [stdio-client](../../exa
 
 ## Capabilities
 
-The server always advertises the `resources` capability in `initialize` (`listChanged` is `true` from 2025-03-26 on — see the [Notifications guide](notifications.md); `subscribe` is `false`, since per-resource update subscriptions are not implemented). Clients can therefore rely on `resources/*` methods being available regardless of how many resources are registered.
+The server always advertises the `resources` capability in `initialize` (`listChanged` is `true` from 2025-03-26 on — see the [Notifications guide](notifications.md); `subscribe` is `false`, since per-resource update subscriptions are not implemented). Clients can therefore rely on `resources/*` methods being available regardless of how many resources are registered. The separate `completions` capability is declared only when a template has a completer (see [Variable completion](#variable-completion)).
 
 ## Security
 
 - **Providers are per-request**: create them fresh with the authenticated user/session each time.
+- **Completions disclose too**: suggestions from a completer are data the caller sees; filter them by the caller's access just like `ReadResource`.
 - **Hiding ≠ access control**: a resource not listed for a user can still be read if you don't check ownership inside `ReadResource`. Always validate inside the handler/provider.
 - **No shared state**: the server stores no user/session data; all isolation lives in the provider.
 

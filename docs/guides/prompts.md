@@ -39,6 +39,47 @@ The handler receives a `*PromptRequest` with string accessors:
 - `req.StringOr(name, default)` — returns the value or a default
 - `req.Args()` — the full argument map
 
+## Argument Completion
+
+A client filling in a prompt's arguments can ask the server for suggestions with `completion/complete` (the MCP completion utility). Attach a `Completer` to an argument with `Complete`, right after the `Argument` it completes:
+
+```go
+server.RegisterPrompt(
+    mcp.NewPrompt("code_review", "Review code").
+        Argument("language", "Programming language", true).
+        Complete(func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+            return mcp.FilterPrefix([]string{"go", "python", "rust"}, req.Value()), nil
+        }).
+        Argument("framework", "Framework", false).
+        Complete(func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+            // Arguments the user already filled in arrive as context.arguments.
+            if lang, _ := req.ContextArg("language"); lang == "python" {
+                return mcp.FilterPrefix([]string{"django", "fastapi", "flask"}, req.Value()), nil
+            }
+            return nil, nil
+        }),
+    handler,
+)
+```
+
+The completer receives a `*CompletionRequest`:
+
+- `req.Argument()` — the argument being completed
+- `req.Value()` — what the user has typed so far (may be empty)
+- `req.ContextArg(name)` / `req.ContextArgs()` — arguments already resolved (`context.arguments`, sent by 2025-06-18+ clients)
+
+Return every match, most relevant first. The spec caps a response at 100 values; the library sends the first 100, sets `total` to the number you returned and `hasMore` when some were cut. `mcp.FilterPrefix` is a ready-made prefix matcher for a fixed list. Return a `ToolError` (e.g. `mcp.NewToolErrorInvalidParams`) to send a specific JSON-RPC error; any other error becomes `-32603`.
+
+Rules the server applies for you, on every protocol revision, over HTTP and stdio:
+
+- The `completions` capability is declared (in `initialize` and in the 2026-07-28 `server/discover`) only when at least one prompt or resource template has a completer, or a request-scoped provider implements completion. Without one, `completion/complete` doesn't exist: `-32601`, or HTTP 404 for a 2026-07-28 request.
+- An unknown prompt, or an argument the prompt doesn't declare, is `-32602`. A declared argument with no completer gets an empty list.
+- On 2026-07-28 the result carries `resultType` and the server-info `_meta` like every other result.
+
+Completion inputs come from the client, and the spec requires servers to keep completions from disclosing anything the caller may not see: filter suggestions by the caller's access the same way the prompt itself is protected. Rate-limit expensive completers in your HTTP middleware.
+
+Resource templates take completers too; see the [Resources guide](resources.md#variable-completion). Call `server.Complete(ctx, ref, req)` to run a completion directly, and `client.Complete(ctx, ref, argument, value, contextArgs)` to request one from a server.
+
 ## Response Constructors
 
 Handlers return a `*PromptResponse` made of one or more messages. Each message has a role (`user` or `assistant`) and a content block.
@@ -133,6 +174,18 @@ Providers stack — `prompts/list` returns static prompts **plus** provider prom
 
 When a provider does not handle a name, return `(nil, mcp.ErrUnknownPrompt)`. The server moves on to the next provider. Reserve real errors for genuine failures; a non-nil, non-`ErrUnknownPrompt` error aborts dispatch immediately.
 
+### Completing provider prompts
+
+A provider completes the arguments of the prompts it lists by also implementing `PromptCompletionProvider`:
+
+```go
+func (p *UserPromptProvider) CompletePrompt(ctx context.Context, name string, req *mcp.CompletionRequest) (*mcp.CompletionResult, error) {
+    return mcp.NewCompletionResult(p.user.ProjectsMatching(req.Value())), nil
+}
+```
+
+`completion/complete` for a provider prompt goes to the first provider that lists it. Return an `InvalidParams` `ToolError` for an argument the prompt doesn't declare; the library still applies the 100-value cap. A provider that lists a prompt but doesn't implement the interface answers every declared argument with no suggestions, and doesn't turn on the `completions` capability.
+
 ## Client Usage
 
 ```go
@@ -154,7 +207,7 @@ Prompts are not cached on the client — each call performs a fresh request.
 
 ## Capabilities
 
-The server always advertises the `prompts` capability in `initialize` (`listChanged` is `true` from 2025-03-26 on — see the [Notifications guide](notifications.md)).
+The server always advertises the `prompts` capability in `initialize` (`listChanged` is `true` from 2025-03-26 on — see the [Notifications guide](notifications.md)). It advertises `completions` only when it has completers (see [Argument Completion](#argument-completion)).
 
 ## See Also
 
