@@ -5,7 +5,9 @@
       "Bash(go build:*)",
       "Bash(cat:*)",
       "Bash(go run:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(npx @modelcontextprotocol/conformance:*)",
+      "Bash(npx -y @modelcontextprotocol/conformance:*)"
     ]
   }
 }
