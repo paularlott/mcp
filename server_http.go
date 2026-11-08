@@ -87,6 +87,8 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// The session is gone, and its resource subscriptions with it.
+		s.notifications.dropSessionResources(r.Header.Get(headerSessionID))
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -420,6 +422,11 @@ func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCP
 		s.handleResourcesRead(w, r, req)
 	case "resources/templates/list":
 		s.handleResourcesTemplatesList(w, r, req)
+	case "resources/subscribe", "resources/unsubscribe":
+		// Legacy only: 2026-07-28 removed both in favour of
+		// subscriptions/listen, so they are deliberately absent from
+		// dispatchableMethods and a Modern request naming them 404s.
+		s.handleResourcesSubscribe(w, r, req)
 	case "prompts/list":
 		s.handlePromptsList(w, r, req)
 	case "prompts/get":
@@ -553,7 +560,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
-		Capabilities:    s.capabilitiesFor(r.Context(), protocolVersion),
+		Capabilities:    s.capabilitiesFor(r.Context(), protocolVersion, s.getSessionManager() != nil),
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,
@@ -582,7 +589,13 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request, req *MCPRequ
 	s.sendMCPResponse(w, req.ID, map[string]any{})
 }
 
-func (s *Server) buildCapabilities(protocolVersion string) capabilities {
+// buildCapabilities builds the server capabilities for protocolVersion.
+// resourceSubscribe says whether the transport serving this client can honour
+// resource subscriptions (resources.subscribe): a Legacy stdio connection and
+// a Modern client (subscriptions/listen) always can; a Legacy HTTP client can
+// only with session management, which ties its resources/subscribe to its
+// GET stream (see handleResourcesSubscribe).
+func (s *Server) buildCapabilities(protocolVersion string, resourceSubscribe bool) capabilities {
 	caps := capabilities{
 		Tools: map[string]any{},
 	}
@@ -593,7 +606,7 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 		"listChanged": true,
 	}
 	caps.Resources = map[string]any{
-		"subscribe":   false,
+		"subscribe":   resourceSubscribe,
 		"listChanged": true,
 	}
 	caps.Prompts = map[string]any{

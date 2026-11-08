@@ -11,6 +11,3 @@ server:
   # Not implemented yet.
   # Elicitation (server-to-client elicitation/create)
   - tools-call-elicitation
-  # Resource subscriptions
-  - resources-subscribe
-  - resources-unsubscribe

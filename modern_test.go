@@ -1399,14 +1399,16 @@ func TestSubscriptionsListen_MalformedFilter_ReturnsError(t *testing.T) {
 // TestSubscriptionsListen_UnsupportedOnlyFilter_AcksEmpty covers the spec's
 // "every field of params.notifications is optional" and "Notification types
 // the server does not support are omitted": a filter selecting none of the
-// list_changed types (only resourceSubscriptions, all false, unknown keys,
-// or {}) opens the stream and acknowledges an empty notifications object.
+// list_changed types and no resource URIs (an empty resourceSubscriptions,
+// all false, unknown keys, or {}) opens the stream and acknowledges an empty
+// notifications object.
 func TestSubscriptionsListen_UnsupportedOnlyFilter_AcksEmpty(t *testing.T) {
 	cases := []struct {
 		name          string
 		notifications map[string]any
 	}{
-		{"resourceSubscriptions only", map[string]any{"resourceSubscriptions": []any{"file:///a.txt"}}},
+		{"empty resourceSubscriptions", map[string]any{"resourceSubscriptions": []any{}}},
+		{"blank resource URI", map[string]any{"resourceSubscriptions": []any{""}}},
 		{"empty object", map[string]any{}},
 		{"all false", map[string]any{"toolsListChanged": false}},
 		{"unrecognized keys only", map[string]any{"somethingElse": true}},

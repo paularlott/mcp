@@ -342,7 +342,7 @@ func notifToolNames(tools []MCPTool) []string {
 // transports — covered by the round-trip tests above).
 func TestCapabilitiesAdvertiseListChangedTrue(t *testing.T) {
 	s := NewServer("ns", "1")
-	caps := s.buildCapabilities(MCPProtocolVersionLatest)
+	caps := s.buildCapabilities(MCPProtocolVersionLatest, true)
 	if caps.Tools["listChanged"] != true {
 		t.Fatalf("tools.listChanged should be true, got %v", caps.Tools["listChanged"])
 	}

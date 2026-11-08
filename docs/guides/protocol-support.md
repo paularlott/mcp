@@ -144,6 +144,14 @@ answers it with a completion result. A Modern stdio client receives no
 unsolicited notifications; a Legacy stdio client receives them once its
 `initialize` negotiated a revision that advertises `listChanged`.
 
+`notifications.resourceSubscriptions` is honoured too. The acknowledgement
+echoes the URIs the server agreed to watch, and `NotifyResourceUpdated(uri)`
+sends `notifications/resources/updated` (with `uri` and the `subscriptionId`)
+only on streams that listed that URI. `resources/subscribe` and
+`resources/unsubscribe` were removed in 2026-07-28, so a Modern request for
+either gets Method not found. See
+[Resources: Subscriptions](resources.md#subscriptions).
+
 ### Icons
 
 Tools, resources, resource templates, prompts, and a server's own identity can
@@ -203,9 +211,9 @@ server.RegisterTool(
 - Logging, sampling and roots are not implemented in either era, on
   purpose: 2026-07-28 deprecates them (SEP-2577) and says new
   implementations SHOULD NOT adopt them.
-- Elicitation and resource subscriptions are not implemented yet. The
+- Elicitation is not implemented yet. The
   [conformance baselines](../../conformance/README.md#expected-failures)
-  list the scenarios each one will clear.
+  list the scenarios it will clear.
 
 ## Streamed responses (both eras)
 

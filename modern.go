@@ -640,7 +640,7 @@ func (s *Server) buildDiscoverResult(ctx context.Context, showAll bool) map[stri
 	result := map[string]any{
 		"resultType":        "complete",
 		"supportedVersions": allSupportedProtocolVersions(),
-		"capabilities":      s.capabilitiesFor(ctx, MCPProtocolVersionModern),
+		"capabilities":      s.capabilitiesFor(ctx, MCPProtocolVersionModern, true),
 		"_meta":             map[string]any{metaKeyServerInfo: s.serverInfoMap()},
 		"ttlMs":             0,
 		"cacheScope":        cacheScope,
@@ -787,20 +787,34 @@ func (s *Server) handleServerDiscoverHTTP(w http.ResponseWriter, r *http.Request
 // modernSubscriptionSink is a notificationSink that only forwards the
 // notification methods a subscriptions/listen caller asked for, per the
 // spec's "MUST NOT send notification types the client has not explicitly
-// requested" rule. Like sseSink, sending is non-blocking.
+// requested" rule, and notifications/resources/updated only for the URIs it
+// listed in resourceSubscriptions. Like sseSink, sending is non-blocking.
 type modernSubscriptionSink struct {
-	ch     chan sseEvent
-	wanted map[string]bool
+	ch        chan sseEvent
+	wanted    map[string]bool
+	resources map[string]struct{} // read-only after construction
 }
 
-func newModernSubscriptionSink(buffer int, wanted map[string]bool) *modernSubscriptionSink {
-	return &modernSubscriptionSink{ch: make(chan sseEvent, buffer), wanted: wanted}
+func newModernSubscriptionSink(buffer int, filter listenFilter) *modernSubscriptionSink {
+	return &modernSubscriptionSink{ch: make(chan sseEvent, buffer), wanted: filter.wanted, resources: filter.resources}
 }
 
 func (s *modernSubscriptionSink) send(method string, params any) {
 	if !s.wanted[method] {
 		return
 	}
+	s.enqueue(method, params)
+}
+
+// resourceUpdated forwards notifications/resources/updated only when this
+// stream listed uri in its resourceSubscriptions.
+func (s *modernSubscriptionSink) resourceUpdated(uri string) {
+	if _, ok := s.resources[uri]; ok {
+		s.enqueue(NotificationResourceUpdated, map[string]any{"uri": uri})
+	}
+}
+
+func (s *modernSubscriptionSink) enqueue(method string, params any) {
 	select {
 	case s.ch <- sseEvent{method: method, params: params}:
 	default:
@@ -846,45 +860,17 @@ func (s *Server) handleSubscriptionsListen(w http.ResponseWriter, r *http.Reques
 	}
 
 	// params.notifications must be present and an object; every field inside
-	// it is optional. Types this server does not support (anything but the
-	// three list_changed ones, e.g. resourceSubscriptions) are omitted from
-	// the acknowledgement, which may therefore be empty; the stream still
-	// stays open (heartbeats only) until the client closes it or Shutdown.
-	params, _ := modernRequestParams(req)
-	if _, ok := params["notifications"].(map[string]any); !ok {
+	// it is optional and a field of the wrong type (a non-boolean
+	// toolsListChanged, say) is rejected rather than silently read as false.
+	// The acknowledgement echoes the honoured subset (parseListenFilter); it
+	// may be empty, and the stream still stays open (heartbeats only) until
+	// the client closes it or Shutdown.
+	raw, _ := json.Marshal(req.Params)
+	filter, errDetails := parseListenFilter(raw)
+	if errDetails != "" {
 		s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeInvalidParams,
-			"Invalid params", map[string]any{"details": "params.notifications must be an object"})
+			"Invalid params", map[string]any{"details": errDetails})
 		return
-	}
-
-	var filter struct {
-		Notifications struct {
-			ToolsListChanged     bool `json:"toolsListChanged"`
-			PromptsListChanged   bool `json:"promptsListChanged"`
-			ResourcesListChanged bool `json:"resourcesListChanged"`
-		} `json:"notifications"`
-	}
-	// A field of the wrong type (a non-boolean toolsListChanged, say) is
-	// rejected rather than silently read as false.
-	if err := s.parseParams(req, &filter); err != nil {
-		s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeInvalidParams,
-			"Invalid params", map[string]any{"details": err.Error()})
-		return
-	}
-
-	wanted := map[string]bool{}
-	acked := map[string]any{}
-	if filter.Notifications.ToolsListChanged {
-		wanted[NotificationToolsChanged] = true
-		acked["toolsListChanged"] = true
-	}
-	if filter.Notifications.PromptsListChanged {
-		wanted[NotificationPromptsChanged] = true
-		acked["promptsListChanged"] = true
-	}
-	if filter.Notifications.ResourcesListChanged {
-		wanted[NotificationResourcesChanged] = true
-		acked["resourcesListChanged"] = true
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -894,7 +880,7 @@ func (s *Server) handleSubscriptionsListen(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	sink := newModernSubscriptionSink(64, wanted)
+	sink := newModernSubscriptionSink(64, filter)
 	subID := s.notifications.subscribe(sink)
 	defer s.notifications.unsubscribe(subID)
 
@@ -903,7 +889,7 @@ func (s *Server) handleSubscriptionsListen(w http.ResponseWriter, r *http.Reques
 		Method:  "notifications/subscriptions/acknowledged",
 		Params: map[string]any{
 			"_meta":         map[string]any{metaKeySubscriptionID: req.ID},
-			"notifications": acked,
+			"notifications": filter.acked,
 		},
 	}); err != nil {
 		return
@@ -919,7 +905,7 @@ func (s *Server) handleSubscriptionsListen(w http.ResponseWriter, r *http.Reques
 			if err := writeSSEData(w, MCPNotification{
 				JSONRPC: "2.0",
 				Method:  ev.method,
-				Params:  map[string]any{"_meta": map[string]any{metaKeySubscriptionID: req.ID}},
+				Params:  modernNotificationParams(map[string]any{metaKeySubscriptionID: req.ID}, ev.params),
 			}); err != nil {
 				return
 			}
