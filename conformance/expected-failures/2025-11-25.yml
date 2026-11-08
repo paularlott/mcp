@@ -9,10 +9,6 @@ server:
   - tools-call-with-logging
   - tools-call-sampling
   # Not implemented yet.
-  # Elicitation (server-to-client elicitation/create)
-  - tools-call-elicitation
-  - elicitation-sep1034-defaults
-  - elicitation-sep1330-enums
   # Resource subscriptions
   - resources-subscribe
   - resources-unsubscribe

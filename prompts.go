@@ -115,7 +115,19 @@ func (s *Server) handlePromptsGet(w http.ResponseWriter, r *http.Request, req *M
 		return
 	}
 
-	resp, err := s.GetPrompt(r.Context(), params.Name, params.Arguments)
+	ctx, run, perr := s.httpElicitation(r, req)
+	if perr != nil {
+		s.sendMCPError(w, req.ID, perr.Code, perr.Message, perr.Data)
+		return
+	}
+	resp, err := s.GetPrompt(ctx, params.Name, params.Arguments)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
+		return
+	} else if inputRequired != nil {
+		s.sendMCPResponse(w, req.ID, inputRequired)
+		return
+	}
 	if err != nil {
 		e := promptsGetWireError(params.Name, err)
 		s.sendMCPError(w, req.ID, e.Code, e.Message, e.Data)

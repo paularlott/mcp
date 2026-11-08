@@ -104,6 +104,16 @@ type Server struct {
 	progressIntervalSet bool
 	progressInterval    time.Duration
 
+	// Elicitation (elicitation.go): the 2025-x response timeout, the
+	// 2026-07-28 requestState key and lifetime, and the Legacy HTTP
+	// sessions' peers that elicitation/create responses are routed through.
+	elicitTimeoutSet bool
+	elicitTimeout    time.Duration
+	stateKey         []byte
+	stateTTL         time.Duration
+	peersMu          sync.Mutex
+	peers            map[string]*clientPeer
+
 	name                   string
 	version                string
 	instructions           string

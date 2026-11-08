@@ -103,6 +103,15 @@ always Dual-era), capabilities, server identity, and instructions.
 }
 ```
 
+### Multi round-trip requests
+
+`tools/call`, `prompts/get` and `resources/read` may answer with an
+`InputRequiredResult` (`resultType: "input_required"`) when a handler calls
+`mcp.Elicit` and the answer is not in the request yet; the client retries with
+`inputResponses` and the echoed, HMAC-protected `requestState`. This is how
+2026-07-28 replaces server-to-client requests. See the
+[Elicitation guide](elicitation.md).
+
 ### Per-request `_meta` and headers
 
 Every other Modern request carries the same `_meta.protocolVersion` /
@@ -203,9 +212,11 @@ server.RegisterTool(
 - Logging, sampling and roots are not implemented in either era, on
   purpose: 2026-07-28 deprecates them (SEP-2577) and says new
   implementations SHOULD NOT adopt them.
-- Elicitation and resource subscriptions are not implemented yet. The
+- Elicitation is form mode only: URL mode (2025-11-25 only; 2026-07-28
+  forbids it) is not implemented. See the [Elicitation guide](elicitation.md).
+- Resource subscriptions are not implemented yet. The
   [conformance baselines](../../conformance/README.md#expected-failures)
-  list the scenarios each one will clear.
+  list the scenarios they will clear.
 
 ## Streamed responses (both eras)
 
@@ -229,8 +240,9 @@ client's `Accept` header lists `text/event-stream`:
 - No SSE event ids are sent: the stream is not resumable (2026-07-28 removes
   resumability; this server never offered replay for Legacy).
 - A handler that sends a message of its own on the request (a progress
-  notification, below) switches the response to SSE at once, whatever the
-  delay: the message goes out, then any others, then the response.
+  notification, below, or a Legacy `elicitation/create` request, see the
+  [Elicitation guide](elicitation.md)) switches the response to SSE at once,
+  whatever the delay: the message goes out, then any others, then the response.
 
 ```go
 server.SetResponseStreaming(5*time.Second, 20*time.Second) // delay, keep-alive

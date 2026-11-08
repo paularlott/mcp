@@ -27,9 +27,10 @@ import (
 // the existing Legacy code, completely unchanged. See isModernRequest. See https://modelcontextprotocol.io/specification/2026-07-28
 // and docs/guides/protocol-support.md for the full picture.
 //
-// Known gaps, deliberately out of scope (see the guide):
-//   - MRTR (server-initiated sampling/elicitation/roots) — this library
-//     implements none of these in either era, so there is nothing to migrate.
+// Multi round-trip requests (MRTR) serve elicitation: a tools/call,
+// prompts/get or resources/read handler that calls Elicit gets an
+// InputRequiredResult sent for it (elicitation.go). Sampling and roots are
+// deliberately not implemented in either era (deprecated, SEP-2577).
 //
 // stdio serves subscriptions/listen too (server_stdio.go's
 // stdioSubscriptionsListen): ServeStream's own read loop hands each request
@@ -538,8 +539,13 @@ func (s *Server) modernShape(method string, capture *modernResponseCapture, perU
 		if !ok {
 			resultMap = map[string]any{}
 		}
-		resultMap["resultType"] = "complete"
-		if ttlMs, cacheScope, ok := cacheHintsForRequest(method, perUser); ok {
+		// An InputRequiredResult (elicitation.go) keeps its resultType and,
+		// being no answer to cache, gets no caching hints.
+		inputRequired := resultMap["resultType"] == "input_required"
+		if !inputRequired {
+			resultMap["resultType"] = "complete"
+		}
+		if ttlMs, cacheScope, ok := cacheHintsForRequest(method, perUser); ok && !inputRequired {
 			resultMap["ttlMs"] = ttlMs
 			resultMap["cacheScope"] = cacheScope
 		}
@@ -762,8 +768,11 @@ func (s *Server) shapeModernResult(ctx context.Context, method string, result an
 	if json.Unmarshal(data, &resultMap) != nil {
 		return result
 	}
-	resultMap["resultType"] = "complete"
-	if ttlMs, cacheScope, ok := cacheHintsForRequest(method, hasContextProviders(ctx)); ok {
+	inputRequired := resultMap["resultType"] == "input_required"
+	if !inputRequired {
+		resultMap["resultType"] = "complete"
+	}
+	if ttlMs, cacheScope, ok := cacheHintsForRequest(method, hasContextProviders(ctx)); ok && !inputRequired {
 		resultMap["ttlMs"] = ttlMs
 		resultMap["cacheScope"] = cacheScope
 	}

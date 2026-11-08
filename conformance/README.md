@@ -40,8 +40,11 @@ npx -y @modelcontextprotocol/conformance@0.2.0-alpha.12 server --url http://loca
 library's public API, the tools, resources and prompts the suite's scenarios
 call by name (`test_simple_text`, `test://static-text`, `test_simple_prompt`,
 …), completers for `test_prompt_with_arguments` and `test://template/{id}/data`,
-plus the diagnostic tools the 2026-07-28 scenarios probe with
-(`test_missing_capability`, `test_headers`, the list-change triggers). Every
+the elicitation tools and prompt (`test_elicitation`, the SEP-1034 and SEP-1330
+variants, the `test_input_required_result_*` fixtures; in
+[`server/elicitation.go`](server/elicitation.go)), plus the diagnostic tools the
+2026-07-28 scenarios probe with (`test_missing_capability`, `test_headers`, the
+list-change triggers). Every
 scenario also checks that each message the server sends is valid against the
 spec's JSON Schema for that revision.
 
@@ -59,11 +62,17 @@ new implementations SHOULD NOT adopt them:
 - roots (`roots/list`); pass paths as tool arguments, resource URIs or
   configuration
 
+Two 2026-07-28 scenarios fail for the same reason even though elicitation
+works: `input-required-result-multiple-input-requests` wants elicitation,
+sampling and roots input requests in one result, and
+`input-required-result-capability-check` wants a sampling input request for a
+client that declares only sampling.
+
 Not implemented yet:
 
-- elicitation: `elicitation/create` through 2025-11-25, and
-  `InputRequiredResult` (multi round-trip requests) on 2026-07-28
 - resource subscriptions
+- URL-mode elicitation (2025-11-25 only; 2026-07-28 forbids it), which no
+  scenario exercises
 
 The spec lets a server leave all of these out. Anything else that fails is a
 regression. A listed scenario that starts passing also fails the run, so
