@@ -264,7 +264,7 @@ func TestPromptProviderDedupStaticWins(t *testing.T) {
 func TestPromptsCapabilityAdvertised(t *testing.T) {
 	s := NewServer("ps", "1") // no prompts registered
 
-	caps := s.buildCapabilities(MCPProtocolVersionLatest)
+	caps := s.buildCapabilities(MCPProtocolVersionLatest, true)
 	if _, ok := caps.Prompts["listChanged"]; !ok {
 		t.Fatal("expected listChanged in prompts capability")
 	}

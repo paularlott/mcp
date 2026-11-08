@@ -70,8 +70,6 @@ func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, o
 		ctx = WithShowAllTools(ctx)
 	}
 
-	srv := s.newStdioDispatcher()
-
 	// A shared write mutex guards out so responses and notifications serialize.
 	var writeMu sync.Mutex
 	var wg sync.WaitGroup
@@ -92,6 +90,8 @@ func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, o
 	subID := s.notifications.subscribe(sink)
 	defer s.notifications.unsubscribe(subID)
 	defer sink.stop()
+
+	srv := s.newStdioDispatcher(sink)
 
 	stream := &stdioStream{write: write, inflight: map[string]*stdioInflight{}}
 
@@ -402,12 +402,12 @@ func (s *Server) stdioSubscriptionsListen(ctx context.Context, params json.RawMe
 	if req == nil {
 		return nil, jsonrpc.NewError(ErrorCodeInternalError, "subscriptions/listen needs a request id", nil)
 	}
-	wanted, acked, errDetails := parseListenFilter(params)
+	filter, errDetails := parseListenFilter(params)
 	if errDetails != "" {
 		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "Invalid params", map[string]any{"details": errDetails})
 	}
 
-	sink := newModernSubscriptionSink(64, wanted)
+	sink := newModernSubscriptionSink(64, filter)
 	subID := s.notifications.subscribe(sink)
 	defer s.notifications.unsubscribe(subID)
 
@@ -415,14 +415,14 @@ func (s *Server) stdioSubscriptionsListen(ctx context.Context, params json.RawMe
 	ack, _ := json.Marshal(MCPNotification{
 		JSONRPC: "2.0",
 		Method:  "notifications/subscriptions/acknowledged",
-		Params:  map[string]any{"_meta": meta, "notifications": acked},
+		Params:  map[string]any{"_meta": meta, "notifications": filter.acked},
 	})
 	req.write(ack)
 
 	for {
 		select {
 		case ev := <-sink.ch:
-			line, err := json.Marshal(MCPNotification{JSONRPC: "2.0", Method: ev.method, Params: map[string]any{"_meta": meta}})
+			line, err := json.Marshal(MCPNotification{JSONRPC: "2.0", Method: ev.method, Params: modernNotificationParams(meta, ev.params)})
 			if err == nil {
 				req.write(line)
 			}
@@ -437,41 +437,66 @@ func (s *Server) stdioSubscriptionsListen(ctx context.Context, params json.RawMe
 	}
 }
 
+// listenFilter is a parsed subscriptions/listen notifications filter: the
+// list-changed methods to forward, the resource URIs to forward
+// notifications/resources/updated for, and the acknowledgement's honoured
+// subset of the request.
+type listenFilter struct {
+	wanted    map[string]bool
+	resources map[string]struct{}
+	acked     map[string]any
+}
+
 // parseListenFilter reads a subscriptions/listen params object: notifications
-// must be an object (every field optional, wrongly typed fields rejected);
-// the result is the set of methods to forward and the acknowledgement's
-// honoured subset (types this server does not support are omitted).
-func parseListenFilter(params json.RawMessage) (wanted map[string]bool, acked map[string]any, errDetails string) {
+// must be an object (every field optional, wrongly typed fields rejected).
+// Types this server does not support are omitted from the acknowledgement,
+// per the spec. resourceSubscriptions is honoured for every non-empty URI, up
+// to maxResourceSubscriptions, in the order given and without duplicates;
+// the acknowledgement echoes exactly those, and omits the field when none
+// was honoured.
+func parseListenFilter(params json.RawMessage) (filter listenFilter, errDetails string) {
 	var shape struct {
 		Notifications any `json:"notifications"`
 	}
 	if json.Unmarshal(params, &shape) != nil {
-		return nil, nil, "params must be an object"
+		return filter, "params must be an object"
 	}
 	if _, ok := shape.Notifications.(map[string]any); !ok {
-		return nil, nil, "params.notifications must be an object"
+		return filter, "params.notifications must be an object"
 	}
-	var filter struct {
+	var raw struct {
 		Notifications struct {
-			ToolsListChanged     bool `json:"toolsListChanged"`
-			PromptsListChanged   bool `json:"promptsListChanged"`
-			ResourcesListChanged bool `json:"resourcesListChanged"`
+			ToolsListChanged      bool     `json:"toolsListChanged"`
+			PromptsListChanged    bool     `json:"promptsListChanged"`
+			ResourcesListChanged  bool     `json:"resourcesListChanged"`
+			ResourceSubscriptions []string `json:"resourceSubscriptions"`
 		} `json:"notifications"`
 	}
-	if err := json.Unmarshal(params, &filter); err != nil {
-		return nil, nil, err.Error()
+	if err := json.Unmarshal(params, &raw); err != nil {
+		return filter, err.Error()
 	}
-	wanted, acked = map[string]bool{}, map[string]any{}
-	if filter.Notifications.ToolsListChanged {
-		wanted[NotificationToolsChanged], acked["toolsListChanged"] = true, true
+	filter = listenFilter{wanted: map[string]bool{}, resources: map[string]struct{}{}, acked: map[string]any{}}
+	if raw.Notifications.ToolsListChanged {
+		filter.wanted[NotificationToolsChanged], filter.acked["toolsListChanged"] = true, true
 	}
-	if filter.Notifications.PromptsListChanged {
-		wanted[NotificationPromptsChanged], acked["promptsListChanged"] = true, true
+	if raw.Notifications.PromptsListChanged {
+		filter.wanted[NotificationPromptsChanged], filter.acked["promptsListChanged"] = true, true
 	}
-	if filter.Notifications.ResourcesListChanged {
-		wanted[NotificationResourcesChanged], acked["resourcesListChanged"] = true, true
+	if raw.Notifications.ResourcesListChanged {
+		filter.wanted[NotificationResourcesChanged], filter.acked["resourcesListChanged"] = true, true
 	}
-	return wanted, acked, ""
+	var honoured []string
+	for _, uri := range raw.Notifications.ResourceSubscriptions {
+		if _, dup := filter.resources[uri]; dup || uri == "" || len(honoured) >= maxResourceSubscriptions {
+			continue
+		}
+		filter.resources[uri] = struct{}{}
+		honoured = append(honoured, uri)
+	}
+	if len(honoured) > 0 {
+		filter.acked["resourceSubscriptions"] = honoured
+	}
+	return filter, ""
 }
 
 // streamNotifySink is a notificationSink that writes JSON-RPC notifications to a
@@ -485,6 +510,9 @@ type streamNotifySink struct {
 	mu      *sync.Mutex
 	done    chan struct{}
 	enabled atomic.Bool // set once a Legacy initialize negotiated listChanged
+	// resources are the URIs this connection subscribed to with
+	// resources/subscribe; NotifyResourceUpdated reaches it only for these.
+	resources resourceSet
 }
 
 func (sn *streamNotifySink) setEnabled(on bool) { sn.enabled.Store(on) }
@@ -507,6 +535,14 @@ func (sn *streamNotifySink) send(method string, params any) {
 	select {
 	case sn.ch <- sseEvent{method: method, params: params}:
 	default: // buffer full: drop (listChanged is an idempotent re-fetch hint)
+	}
+}
+
+// resourceUpdated queues notifications/resources/updated when this
+// connection subscribed to uri (and completed a Legacy initialize).
+func (sn *streamNotifySink) resourceUpdated(uri string) {
+	if sn.resources.has(uri) {
+		sn.send(NotificationResourceUpdated, map[string]any{"uri": uri})
 	}
 }
 
@@ -535,7 +571,11 @@ func (sn *streamNotifySink) stop() { close(sn.done) }
 // handlers here reuse the same dispatch logic (ListToolsWithContext, CallTool)
 // as the HTTP transport. Unknown notifications (e.g. notifications/initialized)
 // are ignored automatically by the jsonrpc server.
-func (s *Server) newStdioDispatcher() *jsonrpc.Server {
+//
+// sink is this connection's Legacy notification sink, which also holds the
+// connection's resources/subscribe URIs: on stdio the connection is the
+// session.
+func (s *Server) newStdioDispatcher(sink *streamNotifySink) *jsonrpc.Server {
 	srv := jsonrpc.NewServer()
 
 	srv.Handle("initialize", rejectStdioModern("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -574,6 +614,12 @@ func (s *Server) newStdioDispatcher() *jsonrpc.Server {
 	srv.Handle("resources/read", s.wrapStdioModern("resources/read", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return s.stdioResourcesRead(ctx, params)
 	}))
+
+	// resources/subscribe and resources/unsubscribe are Legacy only:
+	// 2026-07-28 replaced them with subscriptions/listen's
+	// resourceSubscriptions, so a Modern request gets Method not found.
+	srv.Handle("resources/subscribe", rejectStdioModern("resources/subscribe", stdioResourcesSubscribe(sink, false)))
+	srv.Handle("resources/unsubscribe", rejectStdioModern("resources/unsubscribe", stdioResourcesSubscribe(sink, true)))
 
 	srv.Handle("prompts/list", s.wrapStdioModern("prompts/list", func(ctx context.Context, params json.RawMessage) (any, error) {
 		if cursorIn(params) {
@@ -666,7 +712,7 @@ func (s *Server) stdioInitialize(ctx context.Context, raw json.RawMessage) (any,
 
 	return initializeResult{
 		ProtocolVersion: protocolVersion,
-		Capabilities:    s.capabilitiesFor(ctx, protocolVersion),
+		Capabilities:    s.capabilitiesFor(ctx, protocolVersion, true),
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,

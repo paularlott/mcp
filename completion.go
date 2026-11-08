@@ -274,9 +274,10 @@ func (s *Server) HasCompletions(ctx context.Context) bool {
 // capabilitiesFor is buildCapabilities for one request: it adds the
 // completions capability when the server has completers for ctx (see
 // HasCompletions), since the spec makes declaring it the signal that
-// completion/complete is available.
-func (s *Server) capabilitiesFor(ctx context.Context, protocolVersion string) capabilities {
-	caps := s.buildCapabilities(protocolVersion)
+// completion/complete is available. resourceSubscribe is passed through to
+// buildCapabilities (whether this transport can honour resources.subscribe).
+func (s *Server) capabilitiesFor(ctx context.Context, protocolVersion string, resourceSubscribe bool) capabilities {
+	caps := s.buildCapabilities(protocolVersion, resourceSubscribe)
 	if s.HasCompletions(ctx) {
 		caps.Completions = &struct{}{}
 	}

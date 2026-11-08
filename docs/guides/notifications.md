@@ -12,6 +12,8 @@ The three notification methods:
 | `notifications/resources/list_changed` | The resource/template set changes |
 | `notifications/prompts/list_changed` | The prompt set changes |
 
+A fourth notification, `notifications/resources/updated`, tells a client that one resource it subscribed to has changed. It is not a broadcast. See [Resource updates](#server-resource-updates) below.
+
 ## Server: automatic emission
 
 `RegisterTool`/`RegisterTools`/`UnregisterTool`, the resource `Register*`/`Unregister*`, and `RegisterPrompt`/`UnregisterPrompt` all emit the relevant notification **automatically** when there are connected clients. The capability is advertised with `listChanged: true`.
@@ -30,6 +32,20 @@ server.NotifyPromptsChanged()
 ```
 
 These are no-ops (and cheap) when no clients are connected, so it is safe to call them eagerly. The emission is a broadcast: every connected client re-fetches and gets its own (e.g. per-user, provider-scoped) list.
+
+## Server: resource updates
+
+`NotifyResourceUpdated(uri)` sends `notifications/resources/updated {uri}` only to clients subscribed to that URI:
+
+```go
+server.NotifyResourceUpdated("file:///project/config.json")
+```
+
+- **Legacy HTTP**: sessions that sent `resources/subscribe` get it on their `GET` stream. This needs session management, because the subscription belongs to the `MCP-Session-Id`.
+- **Legacy stdio**: connections that sent `resources/subscribe` get it on the connection.
+- **Modern (2026-07-28)**: `subscriptions/listen` streams that listed the URI in `notifications.resourceSubscriptions` get it, with the stream's `subscriptionId` in `_meta`.
+
+A client that did not subscribe never receives it. See [Resources: Subscriptions](resources.md#subscriptions) for the details.
 
 ## Client: receiving notifications (HTTP)
 

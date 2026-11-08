@@ -63,7 +63,6 @@ Not implemented yet:
 
 - elicitation: `elicitation/create` through 2025-11-25, and
   `InputRequiredResult` (multi round-trip requests) on 2026-07-28
-- resource subscriptions
 
 The spec lets a server leave all of these out. Anything else that fails is a
 regression. A listed scenario that starts passing also fails the run, so

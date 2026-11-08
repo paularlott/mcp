@@ -229,14 +229,39 @@ Resources are not cached on the client (unlike tools) — each call performs a f
 
 Resources work identically over both transports:
 
-- **HTTP**: `resources/list`, `resources/read`, `resources/templates/list` are routed automatically by `HandleRequest`.
+- **HTTP**: `resources/list`, `resources/read`, `resources/templates/list` (and, for Legacy clients, `resources/subscribe` / `resources/unsubscribe`) are routed automatically by `HandleRequest`.
 - **Stdio**: the same methods are routed by the jsonrpc dispatcher in `ServeStdio`.
 
 See the [stdio-server](../../examples/stdio-server) and [stdio-client](../../examples/stdio-client) examples for a complete resource round-trip over stdio.
 
+## Subscriptions
+
+A client can subscribe to an individual resource and be told when it changes, with `notifications/resources/updated`. The server cannot see a resource's content change, so tell it when one does:
+
+```go
+// After the data behind test://config changes (a file watcher, a write, ...):
+server.NotifyResourceUpdated("test://config")
+```
+
+The update goes to every client subscribed to that URI and to nobody else:
+
+| Revision | How a client subscribes | Where the update is delivered |
+| --- | --- | --- |
+| 2025-03-26 to 2025-11-25, HTTP | `resources/subscribe` / `resources/unsubscribe` with `{uri}` (both return `{}`) | the session's `GET` SSE stream |
+| 2025-03-26 to 2025-11-25, stdio | the same methods | the connection |
+| 2026-07-28, HTTP and stdio | `subscriptions/listen` with `notifications.resourceSubscriptions: [uri, ...]` | that listen stream, tagged with its `_meta["io.modelcontextprotocol/subscriptionId"]` |
+
+- **Legacy HTTP subscriptions belong to the session** (its `MCP-Session-Id`), so they need session management (`SetSessionManager`). They outlive the `GET` stream reconnecting. While the session has no `GET` stream open, updates have nowhere to go and are not delivered. Terminating the session with `DELETE` drops its subscriptions. A session with no open stream is also dropped after an hour without activity, since the session manager doesn't report expiry. Without session management the server can't tie a subscription to a stream, so it declares `subscribe: false` and answers `resources/subscribe` with Method not found.
+- **Subscription state is held in process memory**, like the streams themselves. Behind a load balancer with several replicas, route a session's requests to one replica (sticky sessions).
+- **On stdio the connection is the session.** Its subscriptions end when it closes.
+- **On 2026-07-28, `resources/subscribe` and `resources/unsubscribe` don't exist** (404 / -32601). The acknowledgement echoes the URIs the server honours: every non-empty URI, in order, without duplicates. A stream's subscriptions last as long as the stream. Close it, or cancel it on stdio, to unsubscribe.
+- Matching is by exact URI. The spec lets the notified URI be a sub-resource of the subscribed one. If you want that, call `NotifyResourceUpdated` once for each URI clients may have subscribed to.
+- Any URI is accepted, including ones not currently registered. Each subscriber may hold up to 1024 URIs.
+- Resources from federated remote servers are not proxied, so there are no updates to relay for them.
+
 ## Capabilities
 
-The server always advertises the `resources` capability in `initialize` (`listChanged` is `true` from 2025-03-26 on — see the [Notifications guide](notifications.md); `subscribe` is `false`, since per-resource update subscriptions are not implemented). Clients can therefore rely on `resources/*` methods being available regardless of how many resources are registered. The separate `completions` capability is declared only when a template has a completer (see [Variable completion](#variable-completion)).
+The server always advertises the `resources` capability in `initialize` and `server/discover`. `listChanged` is `true` from 2025-03-26 on (see the [Notifications guide](notifications.md)). `subscribe` is `true` wherever the server can honour a subscription: a stdio connection, any 2026-07-28 client, and Legacy HTTP when session management is enabled. Clients can therefore rely on `resources/*` methods being available regardless of how many resources are registered. The separate `completions` capability is declared only when a template has a completer (see [Variable completion](#variable-completion)).
 
 ## Security
 
