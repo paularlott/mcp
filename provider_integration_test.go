@@ -229,7 +229,7 @@ func TestProviderIntegration_ShowAllMode(t *testing.T) {
 
 	// Test 4: tools/list leaves the discovery tools out in show-all mode
 	// (every tool is listed), so they are unknown tools here.
-	if _, err := server.CallTool(ctxShowAll, ToolSearchName, map[string]any{"query": ""}); !errors.Is(err, ErrUnknownTool) {
+	if _, err := server.callListedTool(ctxShowAll, ToolSearchName, map[string]any{"query": ""}); !errors.Is(err, ErrUnknownTool) {
 		t.Fatalf("tool_search in show-all mode: got %v, want ErrUnknownTool", err)
 	}
 }

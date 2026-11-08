@@ -72,7 +72,8 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 - `tool_search` and `execute_tool` appear if any discoverable tools exist for
   the request (static, from a remote server, or from that request's providers),
   and are callable only then; otherwise they are unknown tools, like any tool
-  `tools/list` doesn't show
+  `tools/list` doesn't show. This applies to clients' `tools/call`; `Server.CallTool`,
+  the direct Go API, can always call them (e.g. from a script library)
 
 ### Show-All Mode (for MCP chaining)
 

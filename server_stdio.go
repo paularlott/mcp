@@ -748,7 +748,7 @@ func (s *Server) stdioToolsCall(ctx context.Context, raw json.RawMessage) (any, 
 	if perr != nil {
 		return nil, jsonrpc.NewError(perr.Code, perr.Message, perr.Data)
 	}
-	response, err := s.CallTool(ctx, params.Name, params.Arguments)
+	response, err := s.callListedTool(ctx, params.Name, params.Arguments)
 	if inputRequired, wireErr := run.outcome(); wireErr != nil {
 		return nil, jsonrpc.NewError(wireErr.Code, wireErr.Message, wireErr.Data)
 	} else if inputRequired != nil {

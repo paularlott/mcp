@@ -699,7 +699,7 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 		s.sendMCPError(w, req.ID, perr.Code, perr.Message, perr.Data)
 		return
 	}
-	response, err := s.CallTool(ctx, params.Name, params.Arguments)
+	response, err := s.callListedTool(ctx, params.Name, params.Arguments)
 	if inputRequired, wireErr := run.outcome(); wireErr != nil {
 		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
 		return

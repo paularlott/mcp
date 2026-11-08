@@ -505,18 +505,23 @@ func (s *Server) discoveryToolListed(ctx context.Context, name string) bool {
 	return fromProvider
 }
 
+// callListedTool is CallTool for a tools/call from a client: the discovery
+// tools exist for a request only when its tools/list shows them, so
+// otherwise they are unknown tools, like any other tool the list doesn't
+// hold. CallTool itself, the direct Go API, can always use them.
+func (s *Server) callListedTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
+	if (name == ToolSearchName || name == ExecuteToolName) && !s.discoveryToolListed(ctx, name) {
+		return nil, ErrUnknownTool
+	}
+	return s.CallTool(ctx, name, args)
+}
+
 // CallTool executes a tool directly with namespace support (direct API)
 // It checks discovery tools first, then local tools, then remote tools, then providers from context.
 //
 // An error from a remote server's tools/call is relayed as that server sent
 // it (a *ToolError); see toolsCallResult for how each error reaches the wire.
 func (s *Server) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
-	// The discovery tools exist for a request only when its tools/list
-	// shows them; otherwise they are unknown tools, like any other tool the
-	// list doesn't hold.
-	if (name == ToolSearchName || name == ExecuteToolName) && !s.discoveryToolListed(ctx, name) {
-		return nil, ErrUnknownTool
-	}
 	if name == ToolSearchName {
 		return s.handleToolSearch(ctx, NewToolRequest(args))
 	}

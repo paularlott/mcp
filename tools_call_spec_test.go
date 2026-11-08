@@ -58,7 +58,7 @@ func TestDiscoveryToolsCallableExactlyWhenListed(t *testing.T) {
 			if got := listed(tc.s, tc.ctx, name); got != tc.want {
 				t.Errorf("%s: %s listed=%v, want %v", tc.name, name, got, tc.want)
 			}
-			_, err := tc.s.CallTool(tc.ctx, name, map[string]any{"name": "visible"})
+			_, err := tc.s.callListedTool(tc.ctx, name, map[string]any{"name": "visible"})
 			if unknown := errors.Is(err, ErrUnknownTool); unknown == tc.want {
 				t.Errorf("%s: %s callable=%v (err %v), want %v", tc.name, name, !unknown, err, tc.want)
 			}
@@ -280,5 +280,26 @@ func TestUnknownToolHintOnlyWhenDiscoveryListed(t *testing.T) {
 	}
 	if hint(WithShowAllTools(context.Background()), ToolSearchName) {
 		t.Error("an unknown tool_search must not suggest itself")
+	}
+}
+
+// Server.CallTool is the direct Go API: programs embedding the server (a
+// script library, say) can always search and execute, whatever a client's
+// tools/list shows. Only tools/call from a client is gated.
+func TestDirectCallToolDiscoveryUngated(t *testing.T) {
+	s := NewServer("plain", "1")
+	s.RegisterTool(NewTool("visible", "v"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ran"), nil
+	})
+	for _, ctx := range []context.Context{context.Background(), WithShowAllTools(context.Background())} {
+		if _, err := s.CallTool(ctx, ToolSearchName, map[string]any{"query": "visible"}); err != nil {
+			t.Errorf("tool_search: %v", err)
+		}
+		if resp, err := s.CallTool(ctx, ExecuteToolName, map[string]any{"name": "visible"}); err != nil || resp.Content[0].Text != "ran" {
+			t.Errorf("execute_tool: %+v %v", resp, err)
+		}
+		if _, err := s.callListedTool(ctx, ToolSearchName, map[string]any{"query": "visible"}); !errors.Is(err, ErrUnknownTool) {
+			t.Errorf("tools/call tool_search should be unknown here, got %v", err)
+		}
 	}
 }

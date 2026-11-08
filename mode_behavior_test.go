@@ -220,7 +220,7 @@ func TestToolSearchInShowAllMode(t *testing.T) {
 	// calling them is calling an unknown tool.
 	showAll := WithShowAllTools(context.Background())
 	for _, name := range []string{ToolSearchName, ExecuteToolName} {
-		if _, err := server.CallTool(showAll, name, map[string]any{"name": "discoverable_tool"}); !errors.Is(err, ErrUnknownTool) {
+		if _, err := server.callListedTool(showAll, name, map[string]any{"name": "discoverable_tool"}); !errors.Is(err, ErrUnknownTool) {
 			t.Errorf("%s in show-all mode: got %v, want ErrUnknownTool", name, err)
 		}
 	}
