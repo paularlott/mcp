@@ -47,15 +47,25 @@ spec's JSON Schema for that revision.
 ## Expected failures
 
 [`expected-failures/`](expected-failures) lists, per revision, the scenarios
-that fail because the library does not implement an optional capability:
+that fail because the library does not implement an optional capability.
 
-- the logging utility (`logging/setLevel`, `notifications/message`)
+Not implemented on purpose — 2026-07-28 deprecates these (SEP-2577) and says
+new implementations SHOULD NOT adopt them:
+
+- the logging utility (`logging/setLevel`, `notifications/message`); log to
+  stderr or OpenTelemetry instead
+- sampling (`sampling/createMessage`); call LLM provider APIs directly
+- roots (`roots/list`); pass paths as tool arguments, resource URIs or
+  configuration
+
+Not implemented yet:
+
 - the completion utility (`completion/complete`)
 - progress notifications during a tool call
-- server-to-client sampling and elicitation (through 2025-11-25)
-- resource subscriptions (through 2025-11-25)
-- multi round-trip requests, `InputRequiredResult` (2026-07-28)
+- elicitation: `elicitation/create` through 2025-11-25, and
+  `InputRequiredResult` (multi round-trip requests) on 2026-07-28
+- resource subscriptions
 
-The spec lets a server leave these out. Anything else that fails is a
+The spec lets a server leave all of these out. Anything else that fails is a
 regression. A listed scenario that starts passing also fails the run, so
 remove its entry when a feature lands.
