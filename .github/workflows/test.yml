@@ -1,0 +1,49 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  conformance:
+    name: MCP conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The official suite (github.com/modelcontextprotocol/conformance),
+      # pinned in conformance/run.sh, against the fixture server for every
+      # protocol revision, each with its expected-failures baseline.
+      - run: conformance/run.sh
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/conformance
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results
+          path: ${{ runner.temp }}/conformance
+          if-no-files-found: ignore

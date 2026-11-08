@@ -87,6 +87,34 @@ Matching rules:
 - On `resources/read`, static resources (exact match) are tried first, then templates in registration order (first match wins), then request-scoped providers.
 - Static resources have no variables; only `req.URI()` is meaningful for them.
 
+### Variable completion
+
+A client filling in a template's variables can ask for suggestions with `completion/complete`, naming the template by its URI template (`{"type": "ref/resource", "uri": "repo://{owner}/{repo}"}`). Attach a `Completer` to a variable with `Complete`:
+
+```go
+server.RegisterResourceTemplate(
+    mcp.NewResourceTemplate("repo://{owner}/{repo}", "Repository", "", "application/json").
+        Complete("owner", func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+            return mcp.FilterPrefix(listOwners(ctx), req.Value()), nil
+        }).
+        Complete("repo", func(ctx context.Context, req *mcp.CompletionRequest) ([]string, error) {
+            owner, _ := req.ContextArg("owner") // already-resolved variables
+            return mcp.FilterPrefix(listRepos(ctx, owner), req.Value()), nil
+        }),
+    handler,
+)
+```
+
+`Complete` panics if the template has no such variable. Completers work exactly as for prompt arguments (see the [Prompts guide](prompts.md#argument-completion)): return all matches, most relevant first, and the library applies the spec's 100-value cap with `total`/`hasMore`. The server declares the `completions` capability only when some completer exists. An unknown template, or a name that isn't one of its variables, is `-32602`; a variable with no completer gets an empty list. A static resource URI resolves as a reference but has no variables, so any argument name gets `-32602`.
+
+A `ResourceProvider` completes the variables of templates it lists by also implementing `ResourceCompletionProvider`:
+
+```go
+func (p *UserResourceProvider) CompleteResourceTemplate(ctx context.Context, uriTemplate string, req *mcp.CompletionRequest) (*mcp.CompletionResult, error) {
+    return mcp.NewCompletionResult(p.user.DocumentsMatching(req.Value())), nil
+}
+```
+
 ### Parsing template URIs yourself
 
 `ResourceProvider` implementations (which the server can't match for you) and other advanced cases can extract variables from a template URI with the standalone helper:
@@ -201,18 +229,44 @@ Resources are not cached on the client (unlike tools) — each call performs a f
 
 Resources work identically over both transports:
 
-- **HTTP**: `resources/list`, `resources/read`, `resources/templates/list` are routed automatically by `HandleRequest`.
+- **HTTP**: `resources/list`, `resources/read`, `resources/templates/list` (and, for Legacy clients, `resources/subscribe` / `resources/unsubscribe`) are routed automatically by `HandleRequest`.
 - **Stdio**: the same methods are routed by the jsonrpc dispatcher in `ServeStdio`.
 
 See the [stdio-server](../../examples/stdio-server) and [stdio-client](../../examples/stdio-client) examples for a complete resource round-trip over stdio.
 
+## Subscriptions
+
+A client can subscribe to an individual resource and be told when it changes, with `notifications/resources/updated`. The server cannot see a resource's content change, so tell it when one does:
+
+```go
+// After the data behind test://config changes (a file watcher, a write, ...):
+server.NotifyResourceUpdated("test://config")
+```
+
+The update goes to every client subscribed to that URI and to nobody else:
+
+| Revision | How a client subscribes | Where the update is delivered |
+| --- | --- | --- |
+| 2025-03-26 to 2025-11-25, HTTP | `resources/subscribe` / `resources/unsubscribe` with `{uri}` (both return `{}`) | the session's `GET` SSE stream |
+| 2025-03-26 to 2025-11-25, stdio | the same methods | the connection |
+| 2026-07-28, HTTP and stdio | `subscriptions/listen` with `notifications.resourceSubscriptions: [uri, ...]` | that listen stream, tagged with its `_meta["io.modelcontextprotocol/subscriptionId"]` |
+
+- **Legacy HTTP subscriptions belong to the session** (its `MCP-Session-Id`), so they need session management (`SetSessionManager`). They outlive the `GET` stream reconnecting. While the session has no `GET` stream open, updates have nowhere to go and are not delivered. Terminating the session with `DELETE` drops its subscriptions. A session with no open stream is also dropped after an hour without activity, since the session manager doesn't report expiry. Without session management the server can't tie a subscription to a stream, so it declares `subscribe: false` and answers `resources/subscribe` with Method not found.
+- **Subscription state is held in process memory**, like the streams themselves. Behind a load balancer with several replicas, route a session's requests to one replica (sticky sessions).
+- **On stdio the connection is the session.** Its subscriptions end when it closes.
+- **On 2026-07-28, `resources/subscribe` and `resources/unsubscribe` don't exist** (404 / -32601). The acknowledgement echoes the URIs the server honours: every non-empty URI, in order, without duplicates. A stream's subscriptions last as long as the stream. Close it, or cancel it on stdio, to unsubscribe.
+- Matching is by exact URI. The spec lets the notified URI be a sub-resource of the subscribed one. If you want that, call `NotifyResourceUpdated` once for each URI clients may have subscribed to.
+- Any URI is accepted, including ones not currently registered. Each subscriber may hold up to 1024 URIs.
+- Resources from federated remote servers are not proxied, so there are no updates to relay for them.
+
 ## Capabilities
 
-The server always advertises the `resources` capability in `initialize` (`listChanged` is `true` from 2025-03-26 on — see the [Notifications guide](notifications.md); `subscribe` is `false`, since per-resource update subscriptions are not implemented). Clients can therefore rely on `resources/*` methods being available regardless of how many resources are registered.
+The server always advertises the `resources` capability in `initialize` and `server/discover`. `listChanged` is `true` from 2025-03-26 on (see the [Notifications guide](notifications.md)). `subscribe` is `true` wherever the server can honour a subscription: a stdio connection, any 2026-07-28 client, and Legacy HTTP when session management is enabled. Clients can therefore rely on `resources/*` methods being available regardless of how many resources are registered. The separate `completions` capability is declared only when a template has a completer (see [Variable completion](#variable-completion)).
 
 ## Security
 
 - **Providers are per-request**: create them fresh with the authenticated user/session each time.
+- **Completions disclose too**: suggestions from a completer are data the caller sees; filter them by the caller's access just like `ReadResource`.
 - **Hiding ≠ access control**: a resource not listed for a user can still be read if you don't check ownership inside `ReadResource`. Always validate inside the handler/provider.
 - **No shared state**: the server stores no user/session data; all isolation lives in the provider.
 

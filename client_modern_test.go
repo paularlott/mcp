@@ -446,10 +446,15 @@ func TestPickRetryModernVersion(t *testing.T) {
 	if v, ok := pickRetryModernVersion(list("2027-03-26"), MCPProtocolVersionModern); !ok || v != "2027-03-26" {
 		t.Errorf("newer revision: got (%q, %v), want (\"2027-03-26\", true)", v, ok)
 	}
-	// The dual-era shape this server itself now emits: after trying the
-	// Modern version, only Legacy-dated entries remain — no retry.
-	if _, ok := pickRetryModernVersion(list(MCPProtocolVersionModern, "2025-11-25", "2024-11-05"), MCPProtocolVersionModern); ok {
-		t.Error("legacy-only remainder: want ok=false (Legacy fallback), got a retry version")
+	// Only Legacy-dated versions listed: no Modern retry, Legacy fallback.
+	if _, ok := pickRetryModernVersion(list("2025-11-25", "2024-11-05"), MCPProtocolVersionModern); ok {
+		t.Error("legacy-only list: want ok=false (Legacy fallback), got a retry version")
+	}
+	// The version just tried is listed: retry it once rather than fall back
+	// (2026-07-28: retry with an advertised version "rather than falling
+	// back"); the probe loop retries at most once.
+	if v, ok := pickRetryModernVersion(list(MCPProtocolVersionModern, "2025-11-25", "2024-11-05"), MCPProtocolVersionModern); !ok || v != MCPProtocolVersionModern {
+		t.Errorf("rejected version listed: got (%q, %v), want (%q, true)", v, ok, MCPProtocolVersionModern)
 	}
 	if _, ok := pickRetryModernVersion(nil, MCPProtocolVersionModern); ok {
 		t.Error("nil data: want ok=false")

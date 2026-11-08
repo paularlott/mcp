@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -192,8 +193,9 @@ func TestToolSearchInNormalMode(t *testing.T) {
 	}
 }
 
-// TestToolSearchInShowAllMode tests that tool_search finds both discoverable and native tools
-// in show-all mode
+// TestToolSearchInShowAllMode tests that tool_search finds both discoverable
+// and native tools, and that in show-all mode, where tools/list shows every
+// tool and leaves the discovery tools out, they are unknown tools.
 func TestToolSearchInShowAllMode(t *testing.T) {
 	server := NewServer("test", "1.0.0")
 
@@ -214,8 +216,19 @@ func TestToolSearchInShowAllMode(t *testing.T) {
 		},
 	)
 
-	// Call tool_search in show-all mode
-	ctx := WithShowAllTools(context.Background())
+	// Show-all mode lists every tool and not the discovery tools, so
+	// calling them is calling an unknown tool.
+	showAll := WithShowAllTools(context.Background())
+	for _, name := range []string{ToolSearchName, ExecuteToolName} {
+		if _, err := server.callListedTool(showAll, name, map[string]any{"name": "discoverable_tool"}); !errors.Is(err, ErrUnknownTool) {
+			t.Errorf("%s in show-all mode: got %v, want ErrUnknownTool", name, err)
+		}
+	}
+	if _, err := server.CallTool(showAll, "discoverable_tool", nil); err != nil {
+		t.Fatalf("discoverable_tool should be directly callable in show-all mode: %v", err)
+	}
+
+	ctx := context.Background()
 	response, err := server.CallTool(ctx, "tool_search", map[string]any{
 		"query":       "",
 		"max_results": 100,

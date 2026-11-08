@@ -29,6 +29,19 @@ type ToolMetadata struct {
 	// Icons attaches visual identifiers to the tool's tools/list descriptor.
 	// See mcp.Icon.
 	Icons []mcp.Icon
+
+	// Title is the tool's human-readable display name (the spec's
+	// Tool.title). Empty means none.
+	Title string
+
+	// The behaviour hints (the spec's Tool.annotations). Each is optional:
+	// nil leaves the hint out, so clients assume the spec default (not
+	// read-only, possibly destructive, not idempotent, open world). They
+	// are hints only; what a tool may do must be enforced by the server.
+	ReadOnly    *bool // readOnlyHint: the tool does not modify its environment
+	Destructive *bool // destructiveHint: it may perform destructive updates
+	Idempotent  *bool // idempotentHint: repeating a call has no further effect
+	OpenWorld   *bool // openWorldHint: it interacts with external entities
 }
 
 // validTypeList is a human-readable list of accepted parameter type strings,
@@ -80,6 +93,18 @@ func BuildMCPTool(toolName string, meta *ToolMetadata) (_ *mcp.ToolBuilder, err 
 
 	if len(meta.Icons) > 0 {
 		tool.Icons(meta.Icons...)
+	}
+
+	if meta.Title != "" {
+		tool.Title(meta.Title)
+	}
+	if meta.ReadOnly != nil || meta.Destructive != nil || meta.Idempotent != nil || meta.OpenWorld != nil {
+		tool.Annotations(mcp.ToolAnnotations{
+			ReadOnlyHint:    meta.ReadOnly,
+			DestructiveHint: meta.Destructive,
+			IdempotentHint:  meta.Idempotent,
+			OpenWorldHint:   meta.OpenWorld,
+		})
 	}
 
 	return tool, nil

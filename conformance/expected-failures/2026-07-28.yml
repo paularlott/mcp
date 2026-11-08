@@ -1,0 +1,16 @@
+# Expected failures for the official MCP conformance suite at 2026-07-28.
+# See ../README.md. A listed scenario that starts passing fails the run, so
+# remove its entry when the feature lands.
+server:
+  # Deliberately not implemented: logging, sampling and roots are
+  # deprecated by 2026-07-28 (SEP-2577), which says new implementations
+  # SHOULD NOT adopt them. The last two need sampling input requests too:
+  # multiple-input-requests asks for elicitation, sampling and roots/list at
+  # once, and capability-check needs a sampling request to send to a client
+  # that declares only sampling.
+  - input-required-result-basic-sampling
+  - input-required-result-basic-list-roots
+  - input-required-result-multiple-input-requests
+  - input-required-result-capability-check
+
+client: []

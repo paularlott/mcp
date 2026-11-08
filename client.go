@@ -84,8 +84,12 @@ type Client struct {
 
 	// Notification reader lifecycle. Kept on its own mutex so notification
 	// handling can't deadlock with c.mu (the request/cache lock).
-	readerMu          sync.Mutex
-	readerStarted     bool
+	readerMu      sync.Mutex
+	readerStarted bool
+	// streamUp is closed once the Legacy GET stream is connected (or the
+	// reader gave up on it); see awaitElicitationStream.
+	streamUp          chan struct{}
+	streamUpOnce      sync.Once
 	readerWG          sync.WaitGroup
 	wantNotifications bool // set by EnableNotifications; gates reader startup
 	ctx               context.Context
@@ -104,6 +108,25 @@ type Client struct {
 	// federated view and a public endpoint view of the same remote) and each
 	// registration's propagation must survive the next.
 	onNotification []func(method string, params any)
+
+	// progressRelays forwards notifications/progress for this client's
+	// in-flight tool calls, keyed by the progress token it sent (see
+	// client_progress.go). On its own mutex: stream readers deliver to it
+	// while a request may hold c.mu.
+	progressMu     sync.Mutex
+	progressRelays map[string]func(progress, total float64, message string)
+	nextProgress   atomic.Int64
+
+	// elicitRelays maps the wire id of each forwarded call in flight to the
+	// caller a remote's elicitation/create is put to (client_elicitation.go).
+	elicitMu     sync.Mutex
+	elicitRelays map[string]*elicitRelay
+	// elicitHandler answers a server's elicitation for the application
+	// (OnElicitation); nil when the application doesn't answer.
+	elicitHandler ElicitationHandler
+	// elicitRelay is set when a Server forwards calls through this client
+	// (RegisterRemoteServer, NewRemoteProvider), whose callers may be asked.
+	elicitRelay bool
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -386,6 +409,55 @@ func (c *Client) capabilitiesMap() map[string]any {
 // Client method is unaffected by which era was detected — they all still
 // just call sendRequest, which applies the right wire shape internally.
 func (c *Client) Initialize(ctx context.Context) error {
+	if err := c.initialize(ctx); err != nil {
+		return err
+	}
+	c.awaitElicitationStream(ctx)
+	return nil
+}
+
+// elicitationStreamWait bounds how long Initialize waits for the Legacy GET
+// stream of a Client that answers elicitation.
+const elicitationStreamWait = 2 * time.Second
+
+// awaitElicitationStream waits, briefly, for the Legacy GET stream of a
+// Client that answers elicitation (OnElicitation) to connect. A 2025-x
+// server may send its elicitation/create on that stream, and a server with
+// no stream connected drops it, so calls made right after Initialize must
+// not race the stream's connection.
+func (c *Client) awaitElicitationStream(ctx context.Context) {
+	c.mu.RLock()
+	legacyHTTP := c.transport == nil && c.era != eraModern
+	c.mu.RUnlock()
+	if !legacyHTTP || c.elicitationHandler() == nil {
+		return
+	}
+	c.readerMu.Lock()
+	up := c.streamUp
+	c.readerMu.Unlock()
+	if up == nil {
+		return
+	}
+	timer := time.NewTimer(elicitationStreamWait)
+	defer timer.Stop()
+	select {
+	case <-up:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// markStreamUp releases awaitElicitationStream.
+func (c *Client) markStreamUp() {
+	c.readerMu.Lock()
+	up := c.streamUp
+	c.readerMu.Unlock()
+	if up != nil {
+		c.streamUpOnce.Do(func() { close(up) })
+	}
+}
+
+func (c *Client) initialize(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -433,7 +505,10 @@ func (c *Client) Initialize(ctx context.Context) error {
 	c.readerMu.Lock()
 	want := c.wantNotifications
 	c.readerMu.Unlock()
-	if want {
+	// A Legacy server may send its elicitation/create on the GET stream
+	// rather than the call's own response stream (2025-11-25 transports), so
+	// a client that answers elicitation listens there too.
+	if want || (c.era != eraModern && c.elicitationHandler() != nil) {
 		c.startNotifications(c.era)
 	}
 	return nil
@@ -452,7 +527,7 @@ func (c *Client) initializeLegacy(ctx context.Context) error {
 		Method:  "initialize",
 		Params: map[string]any{
 			"protocolVersion": MCPProtocolVersionLatest,
-			"capabilities":    c.capabilitiesMap(),
+			"capabilities":    c.legacyCapabilities(),
 			"clientInfo": map[string]any{
 				"name":    mcpClientName,
 				"version": mcpClientVersion,
@@ -796,14 +871,16 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 		return nil, ErrToolFiltered
 	}
 
+	params := map[string]any{
+		"name":      toolName,
+		"arguments": args,
+	}
+	defer c.relayProgress(ctx, params)()
 	req := MCPRequest{
 		JSONRPC: "2.0",
 		ID:      c.newRequestID(),
 		Method:  "tools/call",
-		Params: map[string]any{
-			"name":      toolName,
-			"arguments": args,
-		},
+		Params:  params,
 	}
 
 	var resp MCPResponse
@@ -815,7 +892,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 		}
 		lookupErr = lErr
 		resp = MCPResponse{}
-		if err := c.sendRequest(callCtx, &req, &resp, nil); err != nil {
+		if err := c.sendWithInput(callCtx, &req, &resp, nil); err != nil {
 			return nil, fmt.Errorf("call tool failed: %w", err)
 		}
 		// HeaderMismatch on a Modern HTTP call means our view of the tool's
@@ -896,7 +973,7 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	}
 
 	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	if err := c.sendWithInput(ctx, &req, &resp, nil); err != nil {
 		return nil, fmt.Errorf("read resource failed: %w", err)
 	}
 
@@ -984,7 +1061,7 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	}
 
 	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	if err := c.sendWithInput(ctx, &req, &resp, nil); err != nil {
 		return nil, fmt.Errorf("get prompt failed: %w", err)
 	}
 
@@ -1133,7 +1210,7 @@ func (c *Client) sendLegacyHTTPRequest(ctx context.Context, req *MCPRequest, res
 		return fmt.Errorf("failed to get auth header: %w", err)
 	}
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doHTTP(httpReq)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}

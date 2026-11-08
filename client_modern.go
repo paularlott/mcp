@@ -74,6 +74,11 @@ func (c *Client) tryModernInitialize(ctx context.Context) (modern bool, err erro
 		}
 		if err != nil {
 			c.protocolVersion = ""
+			// The server asked for authorization and it failed: the Legacy
+			// initialize would only be refused the same way.
+			if errors.Is(err, ErrAuthorizationFailed) {
+				return false, fmt.Errorf("initialize failed: %w", err)
+			}
 			return false, nil
 		}
 		if resp.Error != nil {
@@ -144,11 +149,12 @@ func isFatalModernProbeError(e *MCPError) bool {
 }
 
 // ErrInputRequired is returned when a Modern-era server answers a request
-// with resultType "input_required": it needs input from the client
-// (sampling, elicitation or roots, via Multi Round-Trip Requests) before it
-// can complete the request. This client implements none of those, so it
-// cannot continue the exchange.
-var ErrInputRequired = errors.New("server requires client input (resultType \"input_required\"): multi round-trip requests are not supported by this client")
+// with resultType "input_required" and the client cannot supply the input
+// (Multi Round-Trip Requests). Elicitation is relayed to the caller of the
+// server handler a call is forwarded for (client_elicitation.go); this is
+// returned when there is no such caller, it cannot be asked, or the server
+// asks for sampling or roots, which this library does not implement.
+var ErrInputRequired = errors.New("server requires client input (resultType \"input_required\") that this client cannot supply")
 
 // checkResultType validates a Modern-era result's resultType (2026-07-28):
 // absent or "complete" is a final result; "input_required" is
@@ -184,12 +190,15 @@ func (c *Client) checkResultType(result any) error {
 //
 //  1. A version this client knows how to speak Modern (i.e. one of its own
 //     supportedModernProtocolVersions) other than alreadyTried.
+//
 //  2. Any version dated at or after the Modern era's first revision — a
 //     newer dated revision this client predates. Since this library's
 //     Modern wire shape is uniform across dated revisions (the version is
 //     just a negotiated label, not a structural difference this client
 //     parses differently), such a label is worth trying rather than
 //     assuming Legacy.
+//
+//  3. alreadyTried, if the list names it (see the comment on that tier).
 //
 // A list offering only versions dated before the Modern era (dual-era and
 // Legacy servers legitimately list their Legacy versions alongside — the
@@ -216,7 +225,20 @@ func pickRetryModernVersion(data any, alreadyTried string) (version string, ok b
 	if v, ok := pick(isSupportedModernProtocolVersion); ok {
 		return v, true
 	}
-	return pick(func(s string) bool { return s >= MCPProtocolVersionModern })
+	if v, ok := pick(func(s string) bool { return s >= MCPProtocolVersionModern }); ok {
+		return v, true
+	}
+	// 3. alreadyTried itself, when the server lists it. The server answered
+	//    with a Modern error, so it speaks Modern, and the spec says to retry
+	//    with an advertised version "rather than falling back"; a rejection
+	//    of a version the server says it supports may be transient. The
+	//    caller retries only once, so this cannot loop.
+	for _, v := range supported {
+		if s, ok := v.(string); ok && s == alreadyTried && isSupportedModernProtocolVersion(s) {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // withModernMeta returns a shallow copy of req with the Modern-era
@@ -228,14 +250,24 @@ func (c *Client) withModernMeta(req *MCPRequest) *MCPRequest {
 	for k, v := range params {
 		paramsCopy[k] = v
 	}
-	paramsCopy["_meta"] = map[string]any{
-		metaKeyProtocolVersion: c.modernProtocolVersion(),
-		metaKeyClientInfo: map[string]any{
-			"name":    mcpClientName,
-			"version": mcpClientVersion,
-		},
-		metaKeyClientCapabilities: c.capabilitiesMap(),
+	// Keep whatever _meta the request already carries (a progressToken).
+	meta := map[string]any{}
+	if existing, ok := params["_meta"].(map[string]any); ok {
+		for k, v := range existing {
+			meta[k] = v
+		}
 	}
+	meta[metaKeyProtocolVersion] = c.modernProtocolVersion()
+	meta[metaKeyClientInfo] = map[string]any{
+		"name":    mcpClientName,
+		"version": mcpClientVersion,
+	}
+	caps := c.capabilitiesMap()
+	if req.declareElicitation {
+		caps["elicitation"] = map[string]any{}
+	}
+	meta[metaKeyClientCapabilities] = caps
+	paramsCopy["_meta"] = meta
 	out := *req
 	out.Params = paramsCopy
 	return &out
@@ -306,7 +338,7 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 		return fmt.Errorf("failed to get auth header: %w", err)
 	}
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doHTTP(httpReq)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -376,6 +408,8 @@ func (c *Client) connectModernSubscription(ctx context.Context, lastEventID stri
 		return nil, nil, err
 	}
 
+	// Never an interactive authorization from the background reader: see
+	// connectLegacySSE.
 	resp, err := c.httpClient.Do(httpReq)
 	return resp, translateModernNotification, err
 }

@@ -8,6 +8,16 @@ type MCPRequest struct {
 	ID      any    `json:"id"`
 	Method  string `json:"method"`
 	Params  any    `json:"params,omitempty"`
+
+	// rawParams is params exactly as received, kept by the server's decoder
+	// so values Params loses precision on (an integer progressToken above
+	// 2^53) can still be read exactly.
+	rawParams json.RawMessage
+
+	// declareElicitation adds form-mode elicitation to a Modern request's
+	// _meta clientCapabilities: set when the caller a federated request is
+	// forwarded for can be asked (client_elicitation.go).
+	declareElicitation bool
 }
 
 // MCPNotification is a JSON-RPC 2.0 notification — a message that carries no
@@ -60,6 +70,11 @@ type capabilities struct {
 	Resources  map[string]any `json:"resources"`
 	Prompts    map[string]any `json:"prompts"`
 	Extensions map[string]any `json:"extensions,omitempty"`
+	// Completions is declared (as {}) only when the server has completers:
+	// the spec has a server that supports completion/complete declare it,
+	// so declaring it without any would promise a method that isn't there.
+	// See Server.HasCompletions.
+	Completions *struct{} `json:"completions,omitempty"`
 }
 
 type serverInfo struct {

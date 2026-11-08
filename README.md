@@ -5,14 +5,16 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 ## Features
 
 - **HTTP & Stdio Transports**: Serve the same tools over HTTP or newline-delimited JSON-RPC on stdin/stdout, and consume remote servers over either
-- **Simple API**: Fluent interface for defining tools and parameters
+- **Simple API**: Fluent interface for defining tools and parameters, including display titles and behaviour hints (`ReadOnly()`, `Destructive()`, `Idempotent()`, `OpenWorld()`)
 - **Type Safety**: Strongly typed parameter access with automatic conversion
 - **Rich Responses**: Support for text, image, audio, resource, and structured content
 - **Resources**: Serve addressable data by URI (`resources/list`, `resources/read`, resource templates), including per-user/session resources via `ResourceProvider`
 - **MCP Apps**: Link a tool to an interactive HTML UI resource (SEP-1865), with CSP/permission metadata, extension capability negotiation, and host/view auto-resize via `containerDimensions`
 - **Prompts**: Reusable message templates with arguments (`prompts/list`, `prompts/get`), including per-user/session prompts via `PromptProvider`
+- **Completion**: Argument suggestions for prompts and resource templates (`completion/complete`) from a completer per argument, with the spec's 100-value cap, `context.arguments`, and the `completions` capability declared only when completers exist
 - **Skills**: Agent Skills directories served per SEP-2640 (`skills/list`, `skills/get`): every skill file is an ordinary `skill://` resource with digests, frontmatter served verbatim from the SKILL.md; per-user/session skills via a `SkillProvider` on the request context
 - **ListChanged Notifications**: Push-based tool/resource/prompt refresh over HTTP (SSE) and stdio, with automatic propagation through federated servers
+- **Resource Subscriptions**: `NotifyResourceUpdated` delivers `notifications/resources/updated` only to subscribers of that URI: `resources/subscribe` per session or stdio connection through 2025-11-25, and `subscriptions/listen` `resourceSubscriptions` on 2026-07-28
 - **TOON Support**: Compact, human-readable JSON encoding for LLM prompts
 - **Thread Safe**: Concurrent request handling with mutex protection
 - **Remote Servers**: Connect to and proxy remote MCP servers with authentication
@@ -23,9 +25,11 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Per-User Remote Servers**: Request-scoped `RemoteProvider` for federating remote MCP servers with per-user auth, filtering, and caching
 - **Provider Composition**: Combine providers with `MultiProvider` using clear miss/error semantics
 - **Streamed Responses**: Long-running `tools/call`, `resources/read` and `prompts/get` switch to an SSE stream with keep-alives, so proxies with read timeouts (Cloudflare, nginx, load balancers) don't cut them off; fast calls stay plain JSON
+- **Progress Notifications**: `mcp.ReportProgress(ctx, progress, total, message)` from any tool, prompt or resource handler sends `notifications/progress` on the request's own stream (SSE on HTTP, stdout on stdio) when the client asked for it, with the spec's rules enforced (increasing values, nothing after the response, rate limited) and relayed through federated remote tools
+- **Elicitation**: `mcp.Elicit(ctx, mcp.ElicitForm{...})` asks the user for structured input (form mode) from any tool, prompt or resource handler: `elicitation/create` on the request's own stream for 2025-06-18/2025-11-25 clients (HTTP and stdio), and an `InputRequiredResult` with HMAC-protected `requestState` on 2026-07-28, with capability checks, timeouts and cancellation handled; a remote server's elicitation is relayed to your caller through `RegisterRemoteServer` and `NewRemoteProvider`, in any mix of eras; and a `Client` application can answer servers' questions itself with `OnElicitation`
 - **Header Routing**: `x-mcp-header` tool parameters mirrored to `Mcp-Param-*` HTTP headers (`HTTPHeader()` option), validated by the server and sent automatically by the client
 - **MCP Compliant**: Full support for protocol versions 2025-03-26 through 2026-07-28, on both server and client, negotiating the highest version both sides support
-- **Authorization**: OAuth 2.1 resource-server helpers (protected resource metadata, Bearer challenges, audience and scope checks, a JWT/JWKS validator) and a spec-compliant OAuth client (RFC 9728 discovery, PKCE, resource indicators)
+- **Authorization**: OAuth 2.1 resource-server helpers (protected resource metadata, Bearer challenges, audience and scope checks, a JWT/JWKS validator) and a spec-compliant OAuth client: the `Client` runs MCP authorization on a 401 (RFC 9728 and RFC 8414 discovery, pre-registration, Client ID Metadata Documents or dynamic registration, the authorization code flow with PKCE and resource indicators behind a pluggable browser step, RFC 9207 `iss` checks, step-up scopes and refresh tokens), plus client-credentials auth
 
 ## Installation
 
@@ -70,6 +74,29 @@ func main() {
 }
 ```
 
+### Titles and Behaviour Hints
+
+A tool can carry a display title and the spec's behaviour hints, which
+clients use to decide, for example, whether to ask the user before a call:
+
+```go
+mcp.NewTool("delete_file", "Delete a file", mcp.String("path", "File path", mcp.Required())).
+    Title("Delete file").
+    Destructive(true).
+    OpenWorld(false)
+
+mcp.NewTool("get_weather", "Current weather").
+    ReadOnly().
+    Idempotent()
+```
+
+`ReadOnly()` sets `readOnlyHint`, `Destructive(bool)` sets `destructiveHint`,
+`Idempotent()` sets `idempotentHint`, `OpenWorld(bool)` sets `openWorldHint`,
+and `Annotations(mcp.ToolAnnotations{...})` sets them all at once. Unset hints
+take the spec's defaults: not read-only, possibly destructive, not
+idempotent, open world. They are hints only — clients must treat them as
+untrusted, so what a tool may really do has to be enforced by the server.
+
 ## Transports
 
 The same server and its tools can be served over two transports.
@@ -92,6 +119,11 @@ server.SetResponseStreaming(-1, 0)                          // always JSON
 ```
 
 The client handles both response forms transparently.
+
+A handler that reports progress (`mcp.ReportProgress`) switches its response
+to SSE at once, whatever the delay, so the notifications reach the client
+before the result; see
+[Progress notifications](docs/guides/protocol-support.md#progress-notifications).
 
 ### Stdio
 
@@ -153,8 +185,9 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Resources](docs/guides/resources.md)** - Serving addressable data by URI, resource templates, and per-user/session resources
 - **[Prompts](docs/guides/prompts.md)** - Reusable message templates with arguments, and per-user/session prompts
 - **Skills** - Serving Agent Skills directories (`skills/list`, `skills/get`, `skill://` resources) per SEP-2640, statically or per-request via `SkillProvider`
+- **[Elicitation](docs/guides/elicitation.md)** - Asking the user for input from a handler: `elicitation/create` (2025-x) and InputRequiredResult (2026-07-28), requestState security, multi-instance deployment
 - **[Notifications](docs/guides/notifications.md)** - Push-based list refresh (listChanged) over HTTP and stdio, with federation propagation
-- **[Protocol Support](docs/guides/protocol-support.md)** - Supported protocol versions (2025-03-26 through 2026-07-28), version negotiation, streamed responses, `x-mcp-header`, and pagination
+- **[Protocol Support](docs/guides/protocol-support.md)** - Supported protocol versions (2025-03-26 through 2026-07-28), version negotiation, streamed responses, progress notifications, `x-mcp-header`, and pagination
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
 - **[Error Handling](docs/guides/error-handling.md)** - Structured error patterns and best practices
@@ -217,6 +250,13 @@ Run tests to ensure everything works:
 
 ```bash
 go test ./...
+```
+
+The library is also tested against the official MCP conformance suite for
+every protocol revision it speaks; see [conformance/](conformance/README.md):
+
+```bash
+conformance/run.sh
 ```
 
 View specific test categories:

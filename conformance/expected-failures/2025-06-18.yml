@@ -1,0 +1,12 @@
+# Expected failures for the official MCP conformance suite at 2025-06-18.
+# See ../README.md. A listed scenario that starts passing fails the run, so
+# remove its entry when the feature lands.
+server:
+  # Deliberately not implemented: logging, sampling and roots are
+  # deprecated by 2026-07-28 (SEP-2577), which says new implementations
+  # SHOULD NOT adopt them.
+  - logging-set-level
+  - tools-call-with-logging
+  - tools-call-sampling
+
+client: []

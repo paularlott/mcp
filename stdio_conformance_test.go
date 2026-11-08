@@ -171,7 +171,7 @@ func TestStdioModernSubscriptionsListen(t *testing.T) {
 	if err := json.Unmarshal([]byte(ack), &ackMsg); err != nil || ackMsg.Method != "notifications/subscriptions/acknowledged" {
 		t.Fatalf("want acknowledged first, got %s", ack)
 	}
-	if ackMsg.Params.Meta[metaKeySubscriptionID] != "sub-1" || ackMsg.Params.Notifications["toolsListChanged"] != true || len(ackMsg.Params.Notifications) != 1 {
+	if ackMsg.Params.Meta[metaKeySubscriptionID] != "sub-1" || ackMsg.Params.Notifications["toolsListChanged"] != true || len(ackMsg.Params.Notifications) != 2 {
 		t.Fatalf("ack = %s", ack)
 	}
 

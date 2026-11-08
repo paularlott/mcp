@@ -10,7 +10,9 @@ import (
 // registeredTool represents a registered tool
 type registeredTool struct {
 	Name         string
+	Title        string
 	Description  string
+	Annotations  *ToolAnnotations
 	Schema       map[string]any
 	OutputSchema map[string]any
 	Meta         map[string]any
@@ -52,7 +54,9 @@ func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler
 
 	regTool := &registeredTool{
 		Name:         tool.name,
+		Title:        tool.title,
 		Description:  tool.Description(),
+		Annotations:  tool.toolAnnotations(),
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
 		Meta:         tool.meta,
@@ -70,7 +74,9 @@ func (s *Server) registerNativeToolLocked(tool *ToolBuilder, handler ToolHandler
 
 	newTool := MCPTool{
 		Name:        tool.name,
+		Title:       regTool.Title,
 		Description: tool.Description(),
+		Annotations: regTool.Annotations,
 		InputSchema: regTool.Schema,
 		Meta:        regTool.Meta,
 		Icons:       regTool.Icons,
@@ -101,7 +107,9 @@ func (s *Server) registerDiscoverableToolLocked(tool *ToolBuilder, handler ToolH
 
 	regTool := &registeredTool{
 		Name:         tool.name,
+		Title:        tool.title,
 		Description:  tool.Description(),
+		Annotations:  tool.toolAnnotations(),
 		Schema:       tool.buildSchema(),
 		OutputSchema: tool.buildOutputSchema(),
 		Meta:         tool.meta,

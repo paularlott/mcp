@@ -98,7 +98,7 @@ func TestStdioInitializeAppendsDiscoveryInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := s.stdioInitialize(raw)
+	result, err := s.stdioInitialize(context.Background(), raw)
 	if err != nil {
 		t.Fatalf("stdioInitialize: %v", err)
 	}

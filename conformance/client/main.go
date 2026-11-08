@@ -1,0 +1,218 @@
+// Command client is the client under test for the official MCP conformance
+// suite (github.com/modelcontextprotocol/conformance). The suite runs it once
+// per scenario with the scenario's server URL as the last argument, the
+// scenario name in MCP_CONFORMANCE_SCENARIO, the protocol revision in
+// MCP_CONFORMANCE_PROTOCOL_VERSION and, for some scenarios, a JSON context in
+// MCP_CONFORMANCE_CONTEXT. It drives the library's Client through what the
+// scenario expects and exits 0, or 1 with the error on stderr. The suite
+// judges the client by what its mock server observes. See ../README.md.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/paularlott/mcp"
+)
+
+// scenarioContext is MCP_CONFORMANCE_CONTEXT: extra input some scenarios
+// give the client, such as tool calls to make.
+type scenarioContext struct {
+	Name      string `json:"name"`
+	ToolCalls []struct {
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
+	} `json:"toolCalls"`
+
+	// Pre-registered client credentials (auth/pre-registration), and the
+	// issuer of the authorization server they are registered with.
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	Issuer       string `json:"issuer"`
+}
+
+// redirectURI is where the mock authorization server sends the
+// authorization response; nothing listens there, since the headless
+// authorizer reads the redirect itself.
+const redirectURI = "http://localhost:3000/callback"
+
+// clientMetadataURL is the Client ID Metadata Document URL the suite expects
+// a client to use as its client_id when the authorization server supports
+// them (auth/basic-cimd).
+const clientMetadataURL = "https://conformance-test.local/client-metadata.json"
+
+// headlessAuthorize is the user: it requests the authorization URL without
+// following redirects and returns where the authorization server redirects.
+func headlessAuthorize(ctx context.Context, authorizationURL string) (string, error) {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizationURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("authorization endpoint answered %s without a redirect", resp.Status)
+	}
+	return location, nil
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: client <server-url> (scenario in MCP_CONFORMANCE_SCENARIO)")
+		os.Exit(1)
+	}
+	if err := run(os.Getenv("MCP_CONFORMANCE_SCENARIO"), os.Args[len(os.Args)-1]); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func run(scenario, url string) error {
+	var sc scenarioContext
+	if raw := os.Getenv("MCP_CONFORMANCE_CONTEXT"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &sc); err != nil {
+			return fmt.Errorf("MCP_CONFORMANCE_CONTEXT: %w", err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	auth, err := mcp.NewAuthorizationCodeAuth(mcp.AuthorizationCodeConfig{
+		RedirectURI:       redirectURI,
+		Authorizer:        headlessAuthorize,
+		ClientName:        "paularlott-mcp-conformance-client",
+		ClientID:          sc.ClientID,
+		ClientSecret:      sc.ClientSecret,
+		ClientIssuer:      sc.Issuer,
+		ClientMetadataURL: clientMetadataURL,
+	})
+	if err != nil {
+		return err
+	}
+	c := mcp.NewClient(url, auth, "")
+	defer c.Close()
+	// Answer every form-mode question as a user who accepts: tick boolean
+	// confirmations and leave the rest to the schema's defaults, which the
+	// Client fills in (SEP-1034).
+	c.OnElicitation(func(ctx context.Context, req mcp.ElicitationRequest) (*mcp.ElicitResult, error) {
+		content := map[string]any{}
+		props, _ := req.Schema["properties"].(map[string]any)
+		for name, raw := range props {
+			p, _ := raw.(map[string]any)
+			if _, hasDefault := p["default"]; !hasDefault && p["type"] == "boolean" {
+				content[name] = true
+			}
+		}
+		return &mcp.ElicitResult{Action: mcp.ElicitAccept, Content: content}, nil
+	})
+	if err := c.Initialize(ctx); err != nil {
+		return fmt.Errorf("initialize: %w", err)
+	}
+
+	tools, err := c.ListTools(ctx)
+	if err != nil {
+		return fmt.Errorf("tools/list: %w", err)
+	}
+
+	switch scenario {
+	case "initialize", "json-schema-ref-no-deref", "request-metadata":
+		// Connecting and listing tools is the whole scenario.
+		return nil
+
+	case "tools_call", "tools-call":
+		return call(ctx, c, "add_numbers", map[string]any{"a": 2, "b": 3})
+
+	case "json-schema-2020-12-preservation":
+		// Echo the focal tool's inputSchema back verbatim, so the scenario
+		// can see whether the client kept every keyword.
+		for _, t := range tools {
+			if t.Name == "json_schema_2020_12_tool" {
+				return call(ctx, c, "json_schema_echo", map[string]any{"schema": t.InputSchema})
+			}
+		}
+		return fmt.Errorf("json_schema_2020_12_tool not listed")
+
+	case "http-standard-headers":
+		return exerciseEveryMethod(ctx, c, tools)
+
+	case "sep-2322-client-request-state":
+		// Each tool exercises one part of the input-required flow; the
+		// Client answers the questions and retries on its own.
+		for _, t := range tools {
+			if err := call(ctx, c, t.Name, map[string]any{}); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "http-invalid-tool-headers":
+		// The client must have dropped tools with invalid x-mcp-header
+		// annotations from tools/list: call everything it kept.
+		for _, t := range tools {
+			if err := call(ctx, c, t.Name, map[string]any{}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Scenarios that hand the client explicit tool calls.
+	if len(sc.ToolCalls) > 0 {
+		for _, tc := range sc.ToolCalls {
+			if err := call(ctx, c, tc.Name, tc.Arguments); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	// Anything else: call the first tool, as the reference client does.
+	if len(tools) > 0 {
+		return call(ctx, c, tools[0].Name, map[string]any{})
+	}
+	return nil
+}
+
+// call calls a tool and fails on a protocol error; a tool execution error
+// (isError) is a result, not a client failure.
+func call(ctx context.Context, c *mcp.Client, name string, args map[string]any) error {
+	if _, err := c.CallTool(ctx, name, args); err != nil {
+		return fmt.Errorf("tools/call %s: %w", name, err)
+	}
+	return nil
+}
+
+// exerciseEveryMethod sends one request of each kind the standard-headers
+// scenario checks (initialize and tools/list have already gone out).
+func exerciseEveryMethod(ctx context.Context, c *mcp.Client, tools []mcp.MCPTool) error {
+	if len(tools) > 0 {
+		if err := call(ctx, c, tools[0].Name, map[string]any{}); err != nil {
+			return err
+		}
+	}
+	if resources, err := c.ListResources(ctx); err != nil {
+		return fmt.Errorf("resources/list: %w", err)
+	} else if len(resources) > 0 {
+		if _, err := c.ReadResource(ctx, resources[0].URI); err != nil {
+			return fmt.Errorf("resources/read: %w", err)
+		}
+	}
+	if prompts, err := c.ListPrompts(ctx); err != nil {
+		return fmt.Errorf("prompts/list: %w", err)
+	} else if len(prompts) > 0 {
+		if _, err := c.GetPrompt(ctx, prompts[0].Name, nil); err != nil {
+			return fmt.Errorf("prompts/get: %w", err)
+		}
+	}
+	return nil
+}

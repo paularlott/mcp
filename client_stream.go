@@ -31,10 +31,11 @@ import (
 //     asynchronously and in order: sendRequest can run with c.mu held, and
 //     handleNotification takes c.mu.
 //   - Legacy era only: a server-to-client JSON-RPC request (2025-11-25 lets
-//     a server send these on the stream) is answered by POSTing a response —
-//     an empty result for ping, Method not found for anything else, since
-//     this client declares no sampling/elicitation/roots capability. The
-//     Modern era forbids them on the stream; they are ignored there.
+//     a server send these on the stream) is answered by POSTing a response:
+//     an empty result for ping, elicitation/create put to the caller this
+//     call was forwarded for (client_elicitation.go), Method not found for
+//     anything else (sampling and roots are not implemented). The Modern
+//     era forbids them on the stream; they are ignored there.
 //   - Legacy era only: if the stream ends before the response and the server
 //     has sent an event id, the client resumes it with an HTTP GET carrying
 //     Last-Event-ID after the server's retry delay (2025-11-25 §Resumability
@@ -166,12 +167,17 @@ func (c *Client) consumeResponseStream(ctx context.Context, rd *sseReader, wantI
 		switch {
 		case env.Method != "" && env.hasID():
 			if c.era != eraModern {
-				c.replyToServerRequest(ctx, env.ID, env.Method)
+				c.answerStreamRequest(ctx, wantID, true, &env)
 			}
 		case env.Method != "":
 			method := env.Method
 			if c.era == eraModern {
 				method = canonicalNotificationMethod(method)
+			}
+			if method == NotificationProgress {
+				// Relayed at once, so it is reported before this call's
+				// response ends the relay (client_progress.go).
+				c.deliverProgress(env.Params)
 			}
 			notifier.push(method, env.Params)
 		case env.hasID() && reflect.DeepEqual(normalizeJSONRPCRawID(env.ID), wantID),
@@ -217,7 +223,7 @@ func (c *Client) resumeResponseStream(ctx context.Context, lastEventID string) (
 		return nil, fmt.Errorf("failed to get auth header: %w", err)
 	}
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doHTTP(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -228,16 +234,42 @@ func (c *Client) resumeResponseStream(ctx context.Context, lastEventID string) (
 	return httpResp.Body, nil
 }
 
-// replyToServerRequest answers a Legacy server-to-client request received on
-// a response stream by POSTing a JSON-RPC response (the server acknowledges
-// it with 202). Best effort: a failure only means the server keeps waiting.
-func (c *Client) replyToServerRequest(ctx context.Context, id json.RawMessage, method string) {
-	reply := map[string]any{"jsonrpc": "2.0", "id": id}
-	if method == "ping" {
+// answerStreamRequest answers a Legacy server-to-client request received on
+// an SSE stream. On a request's response stream (known) wantID is that
+// request: an elicitation/create is answered for it, so concurrent
+// forwarded calls never see each other's questions. On the GET stream the
+// request's related-request hint, or the only call in flight, decides.
+func (c *Client) answerStreamRequest(ctx context.Context, wantID any, known bool, env *streamEnvelope) {
+	reply := map[string]any{"jsonrpc": "2.0", "id": env.ID}
+	switch env.Method {
+	case "ping":
 		reply["result"] = map[string]any{}
-	} else {
+	case "elicitation/create":
+		raw, _ := json.Marshal(env.Params)
+		if !known {
+			wantID, known = relatedRequestOf(raw)
+		}
+		relay := c.relayFor(wantID, known)
+		result, rpcErr := c.answerElicitation(relay, raw)
+		if rpcErr != nil {
+			reply["error"] = rpcErr
+		} else {
+			reply["result"] = result
+		}
+		if relay != nil && relay.aborted() != nil {
+			// The caller is being asked instead: answer, then abandon the call.
+			defer relay.cancel()
+		}
+	default:
 		reply["error"] = map[string]any{"code": ErrorCodeMethodNotFound, "message": "Method not found"}
 	}
+	c.replyToServerRequest(ctx, reply)
+}
+
+// replyToServerRequest POSTs a JSON-RPC response to a Legacy
+// server-to-client request (the server acknowledges it with 202). Best
+// effort: a failure only means the server keeps waiting.
+func (c *Client) replyToServerRequest(ctx context.Context, reply map[string]any) {
 	body, err := json.Marshal(reply)
 	if err != nil {
 		return

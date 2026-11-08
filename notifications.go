@@ -1,6 +1,9 @@
 package mcp
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // MCP notification method names for list-change signalling, as every
 // protocol revision (2025-03-26 through 2026-07-28) spells them.
@@ -57,10 +60,19 @@ type notificationHub struct {
 	subscribers map[uint64]*notificationSubscriber
 	// bySession maps an HTTP session id to its one standalone GET stream.
 	bySession map[string]uint64
+	// sessionResources holds each Legacy HTTP session's resources/subscribe
+	// URIs (see resource_subscriptions.go); updates for them go to the
+	// session's bySession stream.
+	sessionResources  map[string]*sessionResources
+	lastResourcePrune time.Time
 }
 
 func newNotificationHub() *notificationHub {
-	return &notificationHub{subscribers: make(map[uint64]*notificationSubscriber), bySession: make(map[string]uint64)}
+	return &notificationHub{
+		subscribers:      make(map[uint64]*notificationSubscriber),
+		bySession:        make(map[string]uint64),
+		sessionResources: make(map[string]*sessionResources),
+	}
 }
 
 func (h *notificationHub) subscribe(sink notificationSink) uint64 {
@@ -99,6 +111,7 @@ func (h *notificationHub) subscribeForSession(sessionID string, sink notificatio
 	}
 	id := h.subscribeLocked(sink)
 	h.bySession[sessionID] = id
+	h.touchSessionResourcesLocked(sessionID)
 	return id
 }
 
@@ -109,6 +122,7 @@ func (h *notificationHub) unsubscribe(id uint64) {
 	for sessionID, subID := range h.bySession {
 		if subID == id {
 			delete(h.bySession, sessionID)
+			h.touchSessionResourcesLocked(sessionID)
 		}
 	}
 }

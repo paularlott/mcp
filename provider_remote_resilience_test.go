@@ -187,12 +187,15 @@ func TestRemoteProvider_OnServerErrorCalledForUnreachable(t *testing.T) {
 
 // TestRemoteProvider_OnServerErrorNotCalledForToolError verifies that a tool
 // call which reaches the remote server and fails on its own terms (a
-// *ToolError, whether the handler raised one explicitly or returned a plain
-// error) is NOT treated as a server-health failure — the server is fine, only
-// this call failed.
+// protocol error the handler raised, or a tool execution error) is NOT
+// treated as a server-health failure — the server is fine, only this call
+// failed.
 func TestRemoteProvider_OnServerErrorNotCalledForToolError(t *testing.T) {
 	ts := newRemoteWithTools(func(s *Server) {
-		s.RegisterTool(NewTool("explicit_tool_error", "always fails with a ToolError"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		s.RegisterTool(NewTool("explicit_tool_error", "always fails with a server error"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return nil, NewToolErrorInternal("store unavailable")
+		})
+		s.RegisterTool(NewTool("invalid_params", "always fails with invalid params"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
 			return nil, NewToolErrorInvalidParams("bad params")
 		})
 		s.RegisterTool(NewTool("plain_error", "always fails with a plain error"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
@@ -211,10 +214,13 @@ func TestRemoteProvider_OnServerErrorNotCalledForToolError(t *testing.T) {
 	if _, err := p.ExecuteTool(context.Background(), "svc__explicit_tool_error", nil); err == nil {
 		t.Fatal("expected an error from the tool call")
 	}
-	// A plain handler error is a tool execution error: reported inside the
-	// result with isError set (per the spec), not as a JSON-RPC error.
-	if resp, err := p.ExecuteTool(context.Background(), "svc__plain_error", nil); err != nil || resp == nil || !resp.IsError {
-		t.Fatalf("expected an isError result from the tool call, got resp=%+v err=%v", resp, err)
+	// A plain handler error, and a handler's invalid-params error, are tool
+	// execution errors: reported inside the result with isError set (per
+	// the spec), not as a JSON-RPC error.
+	for _, name := range []string{"svc__plain_error", "svc__invalid_params"} {
+		if resp, err := p.ExecuteTool(context.Background(), name, nil); err != nil || resp == nil || !resp.IsError {
+			t.Fatalf("%s: expected an isError result from the tool call, got resp=%+v err=%v", name, resp, err)
+		}
 	}
 	if calls != 0 {
 		t.Fatalf("expected OnServerError NOT called for application-level tool errors, got %d calls", calls)

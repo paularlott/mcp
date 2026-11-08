@@ -151,6 +151,7 @@ type ResourceTemplateBuilder struct {
 	mimeType    string
 	meta        map[string]any
 	icons       []Icon
+	completers  map[string]Completer // variable name → completer; see Complete
 }
 
 // NewResourceTemplate creates a parameterized resource template descriptor.

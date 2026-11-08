@@ -333,6 +333,22 @@ func newPeerClient(peer *jsonrpc.Peer, namespace string) *Client {
 	peer.Handle("ping", func(ctx context.Context, params json.RawMessage) (any, error) {
 		return map[string]any{}, nil
 	})
+	// A Legacy server's elicitation/create, put to the caller of the
+	// forwarded call it belongs to (client_elicitation.go). stdio carries
+	// no link between the two, so the request's related-request hint, or
+	// else the only call in flight, identifies it.
+	peer.Handle("elicitation/create", func(ctx context.Context, params json.RawMessage) (any, error) {
+		id, known := relatedRequestOf(params)
+		relay := c.relayFor(id, known)
+		result, rpcErr := c.answerElicitation(relay, params)
+		if relay != nil && relay.aborted() != nil {
+			defer relay.cancel()
+		}
+		if rpcErr != nil {
+			return nil, jsonrpc.NewError(rpcErr.Code, rpcErr.Message, rpcErr.Data)
+		}
+		return result, nil
+	})
 	return c
 }
 
@@ -353,4 +369,13 @@ func registerPeerNotificationHandlers(peer *jsonrpc.Peer, c *Client) {
 	} {
 		peer.Handle(method, mk(method))
 	}
+	// Progress for a call this client is relaying (client_progress.go).
+	peer.Handle(NotificationProgress, func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p any
+		if json.Unmarshal(params, &p) == nil {
+			c.deliverProgress(p)
+			c.handleNotification(NotificationProgress, p)
+		}
+		return nil, nil
+	})
 }

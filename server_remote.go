@@ -301,7 +301,10 @@ func (s *Server) registerRemoteServerWithVisibility(client *Client, visibility T
 		}()
 	})
 
-	// Fetch tools from the new server
+	// Fetch tools from the new server. Its first request initializes the
+	// client: mark it as forwarding first, so a Legacy remote learns it may
+	// ask our callers for input (elicitation).
+	client.relayElicitation()
 	ctx := context.Background()
 	tools, err := client.ListTools(ctx)
 	if err != nil {
@@ -535,6 +538,12 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 			}
 			if desc, ok := raw["description"].(string); ok {
 				result.Description = desc
+			}
+			if title, ok := raw["title"].(string); ok {
+				result.Title = title
+			}
+			if ann, ok := raw["annotations"]; ok {
+				result.Annotations = toolAnnotationsFromRaw(ann)
 			}
 			if score, ok := raw["score"].(float64); ok {
 				result.Score = score

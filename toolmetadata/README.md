@@ -14,8 +14,21 @@ type ToolMetadata struct {
     Keywords     []string         // Keywords for discovery mode
     Parameters   []ToolParameter  // Tool parameters
     Discoverable bool            // Enable discovery mode
+    UI           *mcp.UIToolMeta // MCP Apps UI resource link (optional)
+    Icons        []mcp.Icon      // Icons for the tools/list descriptor (optional)
+    Title        string          // Display name (optional)
+    ReadOnly     *bool           // readOnlyHint (optional)
+    Destructive  *bool           // destructiveHint (optional)
+    Idempotent   *bool           // idempotentHint (optional)
+    OpenWorld    *bool           // openWorldHint (optional)
 }
 ```
+
+`Title` and the four hints become the tool's `title` and `annotations` in
+`tools/list`. A nil hint is left out, so clients assume the spec default: not
+read-only, possibly destructive, not idempotent, open world. The hints tell a
+client how careful to be (for example, whether to ask before a call); they are
+not access control.
 
 ### ToolParameter
 

@@ -276,8 +276,6 @@ func getNativeToolsFromProviders(ctx context.Context) []MCPTool {
 	return tools
 }
 
-// callToolFromProviders tries to call a tool from the providers in the context.
-// Returns ToolResponse, error - returns ErrUnknownTool if no provider handles the tool.
 // providerToolIndexKey memoizes the per-request name→provider index.
 type providerToolIndexKey struct{}
 
@@ -301,7 +299,8 @@ type providerToolEntry struct {
 }
 
 // providerToolIndex builds (once per request) the name → provider index,
-// keeping each tool's input schema for header validation (xmcpheader.go).
+// keeping each tool's input schema for argument checking and header
+// validation (xmcpheader.go).
 func providerToolIndex(ctx context.Context) map[string]providerToolEntry {
 	val, err := memoizeRequest(ctx, providerToolIndexKey{}, func() (any, error) {
 		index := make(map[string]providerToolEntry)
@@ -326,10 +325,18 @@ func providerToolIndex(ctx context.Context) map[string]providerToolEntry {
 	return index
 }
 
+// callToolFromProviders calls a provider-served tool. Its arguments are
+// checked against the inputSchema the provider listed it with, as for a
+// registered tool (checkArguments): the server must validate every tool
+// input, and the provider sees them only once they pass.
 func callToolFromProviders(ctx context.Context, name string, params map[string]any) (*ToolResponse, error) {
-	provider, ok := providerForTool(ctx, name)
+	entry, ok := providerToolIndex(ctx)[name]
 	if !ok {
 		return nil, ErrUnknownTool
 	}
-	return provider.ExecuteTool(ctx, name, params)
+	params, err := checkArguments(entry.inputSchema, params)
+	if err != nil {
+		return nil, err
+	}
+	return entry.provider.ExecuteTool(ctx, name, params)
 }

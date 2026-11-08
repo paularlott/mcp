@@ -86,7 +86,10 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Failed to delete session: %v", err), http.StatusInternalServerError)
 			return
 		}
+		s.forgetHTTPPeer(r.Header.Get(headerSessionID))
 
+		// The session is gone, and its resource subscriptions with it.
+		s.notifications.dropSessionResources(r.Header.Get(headerSessionID))
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -147,11 +150,10 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// A JSON-RPC notification (a method but no id) or response (an id but no
 	// method — a Legacy client answering a server-to-client request) is
 	// acknowledged with 202 Accepted and no body, per the Streamable HTTP
-	// transport in both eras. This server sends no server-to-client requests
-	// and defines no handling for client notifications
-	// (notifications/initialized, notifications/cancelled), so accepting is
-	// all there is to do. Deliberately lenient: a response is accepted even
-	// though 2026-07-28 forbids clients from sending one (a response carries
+	// transport in both eras. notifications/cancelled cancels the named
+	// request; a response is routed to the handler waiting on it
+	// (elicitation/create, see elicitation.go), and dropped when nothing is.
+	// Deliberately lenient: a response is accepted even though 2026-07-28 forbids clients from sending one (a response carries
 	// no era signal to reject it by). A Legacy message is still checked for
 	// a valid MCP-Protocol-Version and session first: the spec requires a
 	// 400/404 for those, whatever the message, and a client must learn its
@@ -166,6 +168,11 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Method == "notifications/cancelled" {
 			s.cancelHTTPRequest(r, req.Params)
+		}
+		if req.Method == "" && !isModernRequest(r, &req) {
+			// A Legacy client answering elicitation/create: hand the
+			// response to the handler waiting for it in this session.
+			s.deliverHTTPResponse(r, req.ID, raw)
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -205,7 +212,7 @@ func decodeMCPRequest(raw []byte, req *MCPRequest) *MCPError {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
-		Params  any             `json:"params"`
+		Params  json.RawMessage `json:"params"`
 	}
 	if !json.Valid(raw) {
 		return &MCPError{Code: ErrorCodeParseError, Message: "Parse error", Data: map[string]any{"details": "body is not valid JSON"}}
@@ -220,7 +227,12 @@ func decodeMCPRequest(raw []byte, req *MCPRequest) *MCPError {
 	if dec.More() {
 		return &MCPError{Code: ErrorCodeParseError, Message: "Parse error", Data: map[string]any{"details": "unexpected data after the JSON-RPC message"}}
 	}
-	req.JSONRPC, req.Method, req.Params = wire.JSONRPC, wire.Method, wire.Params
+	req.JSONRPC, req.Method, req.rawParams = wire.JSONRPC, wire.Method, wire.Params
+	if len(wire.Params) > 0 {
+		if err := json.Unmarshal(wire.Params, &req.Params); err != nil {
+			return &MCPError{Code: ErrorCodeInvalidRequest, Message: "Invalid Request", Data: map[string]any{"details": "malformed JSON-RPC message"}}
+		}
+	}
 	if len(wire.ID) > 0 {
 		id, ok := decodeJSONRPCID(wire.ID)
 		if !ok {
@@ -394,6 +406,7 @@ var dispatchableMethods = map[string]bool{
 	"resources/templates/list": true,
 	"prompts/list":             true,
 	"prompts/get":              true,
+	"completion/complete":      true,
 	"skills/list":              true,
 	"skills/get":               true,
 }
@@ -414,10 +427,17 @@ func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCP
 		s.handleResourcesRead(w, r, req)
 	case "resources/templates/list":
 		s.handleResourcesTemplatesList(w, r, req)
+	case "resources/subscribe", "resources/unsubscribe":
+		// Legacy only: 2026-07-28 removed both in favour of
+		// subscriptions/listen, so they are deliberately absent from
+		// dispatchableMethods and a Modern request naming them 404s.
+		s.handleResourcesSubscribe(w, r, req)
 	case "prompts/list":
 		s.handlePromptsList(w, r, req)
 	case "prompts/get":
 		s.handlePromptsGet(w, r, req)
+	case "completion/complete":
+		s.handleCompletionComplete(w, r, req)
 	case "skills/list":
 		s.handleSkillsList(w, r, req)
 	case "skills/get":
@@ -545,7 +565,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
-		Capabilities:    s.buildCapabilities(protocolVersion),
+		Capabilities:    s.capabilitiesFor(r.Context(), protocolVersion, s.getSessionManager() != nil),
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,
@@ -565,7 +585,10 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 
 		// Set session ID header
 		w.Header().Set(headerSessionID, sessionID)
+		s.recordHTTPPeer(sessionID, protocolVersion, params.Capabilities)
 	}
+	// Without session management no peer is recorded: Legacy HTTP
+	// elicitation needs a session to tell clients apart (httpPeerScope).
 
 	s.sendMCPResponse(w, req.ID, result)
 }
@@ -574,7 +597,13 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request, req *MCPRequ
 	s.sendMCPResponse(w, req.ID, map[string]any{})
 }
 
-func (s *Server) buildCapabilities(protocolVersion string) capabilities {
+// buildCapabilities builds the server capabilities for protocolVersion.
+// resourceSubscribe says whether the transport serving this client can honour
+// resource subscriptions (resources.subscribe): a Legacy stdio connection and
+// a Modern client (subscriptions/listen) always can; a Legacy HTTP client can
+// only with session management, which ties its resources/subscribe to its
+// GET stream (see handleResourcesSubscribe).
+func (s *Server) buildCapabilities(protocolVersion string, resourceSubscribe bool) capabilities {
 	caps := capabilities{
 		Tools: map[string]any{},
 	}
@@ -585,7 +614,7 @@ func (s *Server) buildCapabilities(protocolVersion string) capabilities {
 		"listChanged": true,
 	}
 	caps.Resources = map[string]any{
-		"subscribe":   false,
+		"subscribe":   resourceSubscribe,
 		"listChanged": true,
 	}
 	caps.Prompts = map[string]any{
@@ -665,8 +694,20 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 		return
 	}
 
-	response, err := s.CallTool(r.Context(), params.Name, params.Arguments)
-	result, wireErr := s.toolsCallResult(r.Context(), params.Name, response, err, !isModernRequest(r, req))
+	ctx, run, perr := s.httpElicitation(r, req)
+	if perr != nil {
+		s.sendMCPError(w, req.ID, perr.Code, perr.Message, perr.Data)
+		return
+	}
+	response, err := s.callListedTool(ctx, params.Name, params.Arguments)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
+		return
+	} else if inputRequired != nil {
+		s.sendMCPResponse(w, req.ID, inputRequired)
+		return
+	}
+	result, wireErr := s.toolsCallResult(ctx, params.Name, response, err, !isModernRequest(r, req))
 	if wireErr != nil {
 		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
 		return

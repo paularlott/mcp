@@ -100,6 +100,20 @@ type Server struct {
 	streamingDelay      time.Duration
 	streamingKeepAlive  time.Duration
 
+	// Progress rate limit; see SetProgressInterval (request_stream.go).
+	progressIntervalSet bool
+	progressInterval    time.Duration
+
+	// Elicitation (elicitation.go): the 2025-x response timeout, the
+	// 2026-07-28 requestState key and lifetime, and the Legacy HTTP
+	// sessions' peers that elicitation/create responses are routed through.
+	elicitTimeoutSet bool
+	elicitTimeout    time.Duration
+	stateKey         []byte
+	stateTTL         time.Duration
+	peersMu          sync.Mutex
+	peers            map[string]*clientPeer
+
 	name                   string
 	version                string
 	instructions           string
@@ -184,7 +198,9 @@ func (s *Server) SetSessionManager(manager SessionManager) {
 }
 
 // toolSearchTool and executeToolTool define the discovery meta-tools; their
-// schemas are both advertised in tools/list and enforced on each call.
+// schemas are both advertised in tools/list and enforced on each call. They
+// never change, so each is built once (toolSearchDef, executeToolDef) rather
+// than on every tools/list or call.
 func toolSearchTool() *ToolBuilder {
 	return NewTool(ToolSearchName, "Search the tools available on this MCP server, including ones hidden from the initial tool list, by name, description, or keyword. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Call execute_tool on this MCP server with the exact name to execute a match. Omit query to list all tools available on this server.",
 		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools available on this server."),
@@ -199,26 +215,23 @@ func executeToolTool() *ToolBuilder {
 	)
 }
 
+// discoveryToolDef is a discovery meta-tool's definition as tools/list
+// shows it. Its InputSchema is shared by every caller and must not be
+// modified.
+func discoveryToolDef(b *ToolBuilder) MCPTool {
+	return MCPTool{Name: b.Name(), Description: b.Description(), InputSchema: b.BuildSchema()}
+}
+
+var (
+	toolSearchDef  = sync.OnceValue(func() MCPTool { return discoveryToolDef(toolSearchTool()) })
+	executeToolDef = sync.OnceValue(func() MCPTool { return discoveryToolDef(executeToolTool()) })
+)
+
 // getDiscoveryTools returns the discovery tools (tool_search, execute_tool) as MCPTool structs.
-// These are generated dynamically, not stored in nativeToolCache.
+// They are not stored in nativeToolCache: they appear only while the server
+// has discoverable tools.
 func (s *Server) getDiscoveryTools() []MCPTool {
-	toolSearch := toolSearchTool()
-	executeTool := executeToolTool()
-
-	discoveryTools := []MCPTool{
-		{
-			Name:        ToolSearchName,
-			Description: toolSearch.Description(),
-			InputSchema: toolSearch.BuildSchema(),
-		},
-		{
-			Name:        ExecuteToolName,
-			Description: executeTool.Description(),
-			InputSchema: executeTool.BuildSchema(),
-		},
-	}
-
-	return discoveryTools
+	return []MCPTool{toolSearchDef(), executeToolDef()}
 }
 
 // handleToolSearch handles the tool_search meta-tool execution.
@@ -226,9 +239,11 @@ func (s *Server) getDiscoveryTools() []MCPTool {
 // as well as native tools that are already in tools/list.
 // If remote MCP servers expose tool_search, it delegates to them and prefixes results.
 func (s *Server) handleToolSearch(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-	if err := validateRequiredParameters(toolSearchTool().BuildSchema(), req.Args()); err != nil {
+	args, err := checkArguments(toolSearchDef().InputSchema, req.Args())
+	if err != nil {
 		return nil, err
 	}
+	req = NewToolRequest(args)
 	query := req.StringOr("query", "")
 	maxResults := req.IntOr("max_results", 5)
 	if maxResults <= 0 {
@@ -417,7 +432,9 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 			if tool.Visibility == ToolVisibilityDiscoverable && !seen[tool.Name] {
 				mcpTool := MCPTool{
 					Name:        tool.Name,
+					Title:       tool.Title,
 					Description: tool.Description,
+					Annotations: tool.Annotations,
 					InputSchema: tool.Schema,
 					Meta:        tool.Meta,
 					Icons:       tool.Icons,
@@ -452,6 +469,15 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 		}
 	}
 
+	// inputSchema MUST be a JSON Schema object, never null. A provider or
+	// remote tool that gave none takes any arguments, which the spec writes
+	// as {"type":"object"}.
+	for i := range allTools {
+		if allTools[i].InputSchema == nil {
+			allTools[i].InputSchema = map[string]any{"type": "object"}
+		}
+	}
+
 	// Sort combined results
 	sort.Slice(allTools, func(i, j int) bool {
 		return allTools[i].Name < allTools[j].Name
@@ -460,10 +486,42 @@ func (s *Server) ListToolsWithContext(ctx context.Context) []MCPTool {
 	return allTools
 }
 
+// discoveryToolListed reports whether the request's tools/list shows the
+// discovery tool name (tool_search or execute_tool), as ListToolsWithContext
+// decides: this server's own while the request can reach a discoverable tool
+// and is not in show-all mode, or one of that name listed by a remote server
+// (a proxy without a namespace lists the remote's own) or a provider.
+func (s *Server) discoveryToolListed(ctx context.Context, name string) bool {
+	if !GetShowAllTools(ctx) && s.hasDiscoverableToolsNow(ctx) {
+		return true
+	}
+	s.mu.RLock()
+	_, remote := s.toolToServer[name]
+	s.mu.RUnlock()
+	if remote {
+		return true
+	}
+	_, fromProvider := providerForTool(ctx, name)
+	return fromProvider
+}
+
+// callListedTool is CallTool for a tools/call from a client: the discovery
+// tools exist for a request only when its tools/list shows them, so
+// otherwise they are unknown tools, like any other tool the list doesn't
+// hold. CallTool itself, the direct Go API, can always use them.
+func (s *Server) callListedTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
+	if (name == ToolSearchName || name == ExecuteToolName) && !s.discoveryToolListed(ctx, name) {
+		return nil, ErrUnknownTool
+	}
+	return s.CallTool(ctx, name, args)
+}
+
 // CallTool executes a tool directly with namespace support (direct API)
 // It checks discovery tools first, then local tools, then remote tools, then providers from context.
+//
+// An error from a remote server's tools/call is relayed as that server sent
+// it (a *ToolError); see toolsCallResult for how each error reaches the wire.
 func (s *Server) CallTool(ctx context.Context, name string, args map[string]any) (*ToolResponse, error) {
-	// Handle discovery tools (tool_search, execute_tool) dynamically
 	if name == ToolSearchName {
 		return s.handleToolSearch(ctx, NewToolRequest(args))
 	}
@@ -480,8 +538,11 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 		outputSchema := tool.OutputSchema
 		s.mu.RUnlock()
 
-		// Validate required parameters
-		if err := validateRequiredParameters(schema, args); err != nil {
+		// Check the arguments against the tool's inputSchema; the handler
+		// sees them as checked (unambiguous numeric and boolean strings
+		// converted to the declared type).
+		args, err := checkArguments(schema, args)
+		if err != nil {
 			return nil, err
 		}
 
@@ -503,7 +564,8 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 		if namespace != "" {
 			toolName = strings.TrimPrefix(name, namespace+regClient.client.separator)
 		}
-		return client.CallTool(ctx, toolName, args)
+		resp, err := client.CallTool(ctx, toolName, args)
+		return resp, relayedError(err)
 	}
 
 	// Fallback: match by namespace prefix to find the remote server,
@@ -522,7 +584,8 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 			separator := rc.client.separator
 			s.mu.RUnlock()
 			toolName := strings.TrimPrefix(name, rc.namespace+separator)
-			return client.ExecuteDiscoveredTool(ctx, toolName, args)
+			resp, err := client.ExecuteDiscoveredTool(ctx, toolName, args)
+			return resp, relayedError(err)
 		}
 	}
 
@@ -533,7 +596,8 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 	if _, fromProvider := providerForTool(ctx, name); len(unprefixed) == 1 && !fromProvider {
 		client := unprefixed[0].client
 		s.mu.RUnlock()
-		return client.ExecuteDiscoveredTool(ctx, name, args)
+		resp, err := client.ExecuteDiscoveredTool(ctx, name, args)
+		return resp, relayedError(err)
 	}
 
 	s.mu.RUnlock()
@@ -549,12 +613,15 @@ func (s *Server) CallTool(ctx context.Context, name string, args map[string]any)
 // (-32602, "Unknown tool: ..."); see toolsCallResult for everything else.
 func (s *Server) toolsCallWireError(ctx context.Context, name string, err error) *MCPError {
 	var toolErr *ToolError
-	if errors.As(err, &toolErr) && !isModernProtocolErrorCode(toolErr.Code) {
+	if errors.As(err, &toolErr) && (!isModernProtocolErrorCode(toolErr.Code) || isOwnMissingCapability(toolErr)) {
 		return &MCPError{Code: toolErr.Code, Message: toolErr.Message, Data: toolErr.Data}
 	}
 	if errors.Is(err, ErrUnknownTool) {
 		msg := fmt.Sprintf("Unknown tool: %s", name)
-		if s.hasDiscoverableToolsNow(ctx) {
+		// Point at discovery only when the request's tools/list shows the
+		// discovery tools (not in show-all mode, and not when the unknown
+		// tool is one of them).
+		if name != ToolSearchName && name != ExecuteToolName && s.discoveryToolListed(ctx, ToolSearchName) {
 			msg += fmt.Sprintf(". Use %s to discover available tools, then %s to invoke them.", ToolSearchName, ExecuteToolName)
 		}
 		return &MCPError{Code: ErrorCodeInvalidParams, Message: msg, Data: map[string]any{"name": name}}
@@ -563,22 +630,26 @@ func (s *Server) toolsCallWireError(ctx context.Context, name string, err error)
 }
 
 // toolsCallResult turns a handler's outcome into the tools/call result the
-// spec defines, shared by the HTTP and stdio handlers. Arguments that fail
-// the tool's input schema are a tool execution error. A *ToolError and an
-// unknown tool stay protocol errors (wireErr); any other error the handler
-// returned is a tool execution error and is reported inside the result with
-// isError set, so the model sees the text and can self-correct. legacy
+// spec defines, shared by the HTTP and stdio handlers. The spec's protocol
+// errors for tools/call are an unknown tool, a malformed request and a
+// server error, so those are sent as JSON-RPC errors (wireErr): an unknown
+// tool, a *ToolError with a server error code, and a *ToolError relayed from
+// a remote server as it came. Everything else — arguments failing the
+// tool's inputSchema, any other *ToolError a handler or provider returned,
+// any plain error — is a tool execution error, reported inside the result
+// with isError set, so the model sees the text and can self-correct. legacy
 // strips a non-object structuredContent, which only 2026-07-28 allows.
 func (s *Server) toolsCallResult(ctx context.Context, name string, response *ToolResponse, err error, legacy bool) (result *ToolResult, wireErr *MCPError) {
 	if err != nil {
 		var toolErr *ToolError
 		switch {
-		case errors.As(err, &toolErr) && toolErr.invalidArguments:
-			// Input validation is a tool execution error in the spec:
-			// the model reads the message and can retry.
-			response = NewToolResponseError(toolErr.Message)
-		case toolErr != nil || errors.Is(err, ErrUnknownTool):
+		case errors.Is(err, ErrUnknownTool):
 			return nil, s.toolsCallWireError(ctx, name, err)
+		case errors.As(err, &toolErr):
+			if toolErr.relayed || isServerErrorCode(toolErr.Code) {
+				return nil, s.toolsCallWireError(ctx, name, err)
+			}
+			response = NewToolResponseError(toolErr.Message)
 		default:
 			response = NewToolResponseError(err.Error())
 		}
@@ -763,6 +834,16 @@ func cursorIn(params any) bool {
 // reporting its own hop's problem, which this server must not relay to its
 // caller as if the caller's request were at fault; it is reported as an
 // internal error with the message kept.
+// isOwnMissingCapability reports whether toolErr is this server's own
+// MissingRequiredClientCapabilityError (NewToolErrorMissingClientCapability
+// from a handler or provider), which tools/call sends as it is. One relayed
+// from a remote server is about this server's own client capabilities on
+// that hop, not the caller's, so it is treated like any other foreign
+// protocol code.
+func isOwnMissingCapability(toolErr *ToolError) bool {
+	return toolErr.Code == ErrorCodeMissingRequiredClientCapability && !toolErr.relayed
+}
+
 func isModernProtocolErrorCode(code int) bool {
 	switch code {
 	case ErrorCodeHeaderMismatch, ErrorCodeMissingRequiredClientCapability, ErrorCodeUnsupportedProtocolVersion,

@@ -218,6 +218,8 @@ func (cfg RemoteProviderConfig) newClient(auth AuthProvider) *Client {
 	} else {
 		client = NewClient(cfg.URL, auth, cfg.Name)
 	}
+	// It forwards calls for a Server: a Legacy remote may ask the caller.
+	client.relayElicitation()
 
 	// Advertise this client's own support for the MCP Apps extension
 	// (SEP-1865) to the remote server. A federated tool's whole point is to
@@ -408,11 +410,12 @@ func (p *RemoteProvider) ExecuteTool(ctx context.Context, name string, params ma
 		// error (the server is fine, this call just failed) — not a health
 		// problem, so it does not trigger the error hook. Any other error means
 		// the server could not be reached or misbehaved at the transport level.
+		// Either way it is relayed to tools/call as the server sent it.
 		var toolErr *ToolError
 		if err != nil && !errors.As(err, &toolErr) {
 			p.reportError(cfg, err)
 		}
-		return result, err
+		return result, relayedError(err)
 	}
 
 	return nil, ErrUnknownTool
