@@ -29,7 +29,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Elicitation**: `mcp.Elicit(ctx, mcp.ElicitForm{...})` asks the user for structured input (form mode) from any tool, prompt or resource handler: `elicitation/create` on the request's own stream for 2025-06-18/2025-11-25 clients (HTTP and stdio), and an `InputRequiredResult` with HMAC-protected `requestState` on 2026-07-28, with capability checks, timeouts and cancellation handled; a remote server's elicitation is relayed to your caller through `RegisterRemoteServer` and `NewRemoteProvider`, in any mix of eras
 - **Header Routing**: `x-mcp-header` tool parameters mirrored to `Mcp-Param-*` HTTP headers (`HTTPHeader()` option), validated by the server and sent automatically by the client
 - **MCP Compliant**: Full support for protocol versions 2025-03-26 through 2026-07-28, on both server and client, negotiating the highest version both sides support
-- **Authorization**: OAuth 2.1 resource-server helpers (protected resource metadata, Bearer challenges, audience and scope checks, a JWT/JWKS validator) and a spec-compliant OAuth client (RFC 9728 discovery, PKCE, resource indicators)
+- **Authorization**: OAuth 2.1 resource-server helpers (protected resource metadata, Bearer challenges, audience and scope checks, a JWT/JWKS validator) and a spec-compliant OAuth client: the `Client` runs MCP authorization on a 401 (RFC 9728 and RFC 8414 discovery, pre-registration, Client ID Metadata Documents or dynamic registration, the authorization code flow with PKCE and resource indicators behind a pluggable browser step, RFC 9207 `iss` checks, step-up scopes and refresh tokens), plus client-credentials auth
 
 ## Installation
 

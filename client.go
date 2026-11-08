@@ -1148,7 +1148,7 @@ func (c *Client) sendLegacyHTTPRequest(ctx context.Context, req *MCPRequest, res
 		return fmt.Errorf("failed to get auth header: %w", err)
 	}
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doHTTP(httpReq)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}

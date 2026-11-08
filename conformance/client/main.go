@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -26,6 +27,42 @@ type scenarioContext struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	} `json:"toolCalls"`
+
+	// Pre-registered client credentials (auth/pre-registration), and the
+	// issuer of the authorization server they are registered with.
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	Issuer       string `json:"issuer"`
+}
+
+// redirectURI is where the mock authorization server sends the
+// authorization response; nothing listens there, since the headless
+// authorizer reads the redirect itself.
+const redirectURI = "http://localhost:3000/callback"
+
+// clientMetadataURL is the Client ID Metadata Document URL the suite expects
+// a client to use as its client_id when the authorization server supports
+// them (auth/basic-cimd).
+const clientMetadataURL = "https://conformance-test.local/client-metadata.json"
+
+// headlessAuthorize is the user: it requests the authorization URL without
+// following redirects and returns where the authorization server redirects.
+func headlessAuthorize(ctx context.Context, authorizationURL string) (string, error) {
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authorizationURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", fmt.Errorf("authorization endpoint answered %s without a redirect", resp.Status)
+	}
+	return location, nil
 }
 
 func main() {
@@ -50,7 +87,19 @@ func run(scenario, url string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	c := mcp.NewClient(url, nil, "")
+	auth, err := mcp.NewAuthorizationCodeAuth(mcp.AuthorizationCodeConfig{
+		RedirectURI:       redirectURI,
+		Authorizer:        headlessAuthorize,
+		ClientName:        "paularlott-mcp-conformance-client",
+		ClientID:          sc.ClientID,
+		ClientSecret:      sc.ClientSecret,
+		ClientIssuer:      sc.Issuer,
+		ClientMetadataURL: clientMetadataURL,
+	})
+	if err != nil {
+		return err
+	}
+	c := mcp.NewClient(url, auth, "")
 	defer c.Close()
 	if err := c.Initialize(ctx); err != nil {
 		return fmt.Errorf("initialize: %w", err)

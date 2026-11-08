@@ -217,6 +217,14 @@ server.RegisterTool(
 `ListTools`, `ListResources`, `ListResourceTemplates` and `ListPrompts` follow
 `nextCursor` to the end of the list (bounded; a repeated cursor is an error).
 
+### Authorization
+
+A `Client` given an `AuthorizationCodeAuth` runs MCP authorization when a
+server answers 401 (or 403 `insufficient_scope`) and retries the request with
+the token: discovery, client registration, the authorization code flow with
+PKCE through your own browser step, refresh and step-up. See
+[Authorization (OAuth 2.1)](remote-servers.md#authorization-oauth-21).
+
 ### Known gaps
 
 - Logging, sampling and roots are not implemented in either era, on
