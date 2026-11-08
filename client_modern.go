@@ -184,12 +184,15 @@ func (c *Client) checkResultType(result any) error {
 //
 //  1. A version this client knows how to speak Modern (i.e. one of its own
 //     supportedModernProtocolVersions) other than alreadyTried.
+//
 //  2. Any version dated at or after the Modern era's first revision — a
 //     newer dated revision this client predates. Since this library's
 //     Modern wire shape is uniform across dated revisions (the version is
 //     just a negotiated label, not a structural difference this client
 //     parses differently), such a label is worth trying rather than
 //     assuming Legacy.
+//
+//  3. alreadyTried, if the list names it (see the comment on that tier).
 //
 // A list offering only versions dated before the Modern era (dual-era and
 // Legacy servers legitimately list their Legacy versions alongside — the
@@ -216,7 +219,20 @@ func pickRetryModernVersion(data any, alreadyTried string) (version string, ok b
 	if v, ok := pick(isSupportedModernProtocolVersion); ok {
 		return v, true
 	}
-	return pick(func(s string) bool { return s >= MCPProtocolVersionModern })
+	if v, ok := pick(func(s string) bool { return s >= MCPProtocolVersionModern }); ok {
+		return v, true
+	}
+	// 3. alreadyTried itself, when the server lists it. The server answered
+	//    with a Modern error, so it speaks Modern, and the spec says to retry
+	//    with an advertised version "rather than falling back"; a rejection
+	//    of a version the server says it supports may be transient. The
+	//    caller retries only once, so this cannot loop.
+	for _, v := range supported {
+		if s, ok := v.(string); ok && s == alreadyTried && isSupportedModernProtocolVersion(s) {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // withModernMeta returns a shallow copy of req with the Modern-era

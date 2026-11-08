@@ -3,7 +3,8 @@
 The library is tested against the official MCP conformance suite,
 [`@modelcontextprotocol/conformance`](https://github.com/modelcontextprotocol/conformance),
 for every protocol revision it speaks: 2025-03-26, 2025-06-18, 2025-11-25 and
-2026-07-28. CI runs it on every push and pull request (`.github/workflows/test.yml`).
+2026-07-28, as a server and as a client. CI runs it on every push and pull
+request (`.github/workflows/test.yml`).
 
 ## Running it
 
@@ -13,13 +14,15 @@ Needs Go and Node.js (for `npx`):
 conformance/run.sh
 ```
 
-That builds and starts the fixture server, runs the suite (`--suite all`) once
-per revision against that revision's baseline, and stops the server. It exits
-non-zero on any unexpected failure.
+That builds the fixture server and client, runs the suite's server scenarios
+against the server and its client scenarios against the client (`--suite all`),
+once per revision against that revision's baseline, and exits non-zero on any
+unexpected failure.
 
 | Variable | Default | |
 |---|---|---|
 | `SPEC_VERSIONS` | all four revisions | e.g. `SPEC_VERSIONS=2026-07-28` |
+| `SUITES` | `server client` | run only one with `SUITES=server` or `SUITES=client` |
 | `CONFORMANCE_VERSION` | `0.2.0-alpha.12` | suite version (the pinned one covers 2026-07-28) |
 | `PORT` | `3001` | the server listens on `localhost:$PORT/mcp` |
 | `OUTPUT_DIR` | a temporary folder | where per-scenario `checks.json` results go |
@@ -33,6 +36,29 @@ go run ./conformance/server -addr localhost:3001
 ```bash
 npx -y @modelcontextprotocol/conformance@0.2.0-alpha.12 server --url http://localhost:3001/mcp --spec-version 2026-07-28 --scenario tools-call-error
 ```
+
+And a single client scenario (the suite starts its own mock server and runs
+the client against it):
+
+```bash
+go build -o /tmp/mcp-conformance-client ./conformance/client
+```
+
+```bash
+npx -y @modelcontextprotocol/conformance@0.2.0-alpha.12 client --command /tmp/mcp-conformance-client --spec-version 2026-07-28 --scenario http-custom-headers
+```
+
+## The fixture client
+
+[`client/main.go`](client/main.go) is what the suite runs for each client
+scenario: it gets the scenario's server URL as its last argument and the
+scenario name in `MCP_CONFORMANCE_SCENARIO`, drives the library's `Client`
+(connect, list tools, call what the scenario expects, send the extra requests
+some scenarios check) and exits 0 or 1. The suite judges the client by what
+its mock server observes: version negotiation and `_meta`, the 2026-07-28
+`Mcp-Method`/`Mcp-Name`/`Mcp-Param-*` headers, dropping tools with invalid
+`x-mcp-header` annotations, JSON Schema preservation and `$ref` handling, SSE
+retry and resumption, and the authorization flows.
 
 ## The fixture server
 
@@ -50,8 +76,11 @@ spec's JSON Schema for that revision.
 
 ## Expected failures
 
-[`expected-failures/`](expected-failures) lists, per revision, the scenarios
-that fail because the library does not implement an optional capability.
+[`expected-failures/`](expected-failures) lists, per revision, the server
+(`server:`) and client (`client:`) scenarios that fail because the library
+does not implement an optional capability.
+
+### Server
 
 Not implemented on purpose — 2026-07-28 deprecates these (SEP-2577) and says
 new implementations SHOULD NOT adopt them:
@@ -73,6 +102,21 @@ Not implemented yet:
 - URL-mode elicitation (2025-11-25 only; 2026-07-28 forbids it), which no
   scenario exercises
 
-The spec lets a server leave all of these out. Anything else that fails is a
-regression. A listed scenario that starts passing also fails the run, so
-remove its entry when a feature lands.
+The spec lets a server leave all of these out.
+
+### Client
+
+Not implemented yet:
+
+- answering elicitation in the `Client`: `elicitation/create` requests through
+  2025-11-25 (`elicitation-sep1034-client-defaults`), and
+  `InputRequiredResult` retries that echo `requestState` on 2026-07-28
+  (`sep-2322-client-request-state`)
+- the OAuth authorization-code flow (every `auth/*` scenario): the library
+  has the pieces — protected resource and authorization server metadata
+  discovery with PKCE checks, client registration, client-credentials and
+  refresh-token auth — but the `Client` does not run authorization when a
+  server answers 401
+
+Anything else that fails is a regression. A listed scenario that starts
+passing also fails the run, so remove its entry when a feature lands.

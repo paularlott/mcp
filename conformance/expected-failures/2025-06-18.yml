@@ -8,4 +8,11 @@ server:
   - logging-set-level
   - tools-call-with-logging
   - tools-call-sampling
-  # Not implemented yet.
+
+client:
+  # Not implemented yet: the OAuth authorization-code flow in the Client
+  # (the library has discovery, registration and client-credentials,
+  # but the Client does not run authorization on a 401).
+  - auth/token-endpoint-auth-basic
+  - auth/token-endpoint-auth-post
+  - auth/token-endpoint-auth-none

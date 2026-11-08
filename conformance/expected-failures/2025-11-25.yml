@@ -8,4 +8,26 @@ server:
   - logging-set-level
   - tools-call-with-logging
   - tools-call-sampling
-  # Not implemented yet.
+
+client:
+  # Not implemented yet: answering elicitation in the Client
+  # (elicitation/create through 2025-11-25, InputRequiredResult retries
+  # with requestState on 2026-07-28).
+  - elicitation-sep1034-client-defaults
+  # Not implemented yet: the OAuth authorization-code flow in the Client
+  # (the library has discovery, registration and client-credentials,
+  # but the Client does not run authorization on a 401).
+  - auth/metadata-default
+  - auth/metadata-var1
+  - auth/metadata-var2
+  - auth/metadata-var3
+  - auth/basic-cimd
+  - auth/scope-from-www-authenticate
+  - auth/scope-from-scopes-supported
+  - auth/scope-omitted-when-undefined
+  - auth/scope-step-up
+  - auth/scope-retry-limit
+  - auth/token-endpoint-auth-basic
+  - auth/token-endpoint-auth-post
+  - auth/token-endpoint-auth-none
+  - auth/pre-registration

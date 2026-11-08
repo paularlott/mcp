@@ -3,3 +3,9 @@
 # not implement; a listed scenario that starts passing fails the run, so
 # remove its entry when the feature lands.
 server: []
+client:
+  # Not implemented yet: the OAuth authorization-code flow in the Client
+  # (the library has discovery, registration and client-credentials,
+  # but the Client does not run authorization on a 401).
+  - auth/2025-03-26-oauth-metadata-backcompat
+  - auth/2025-03-26-oauth-endpoint-fallback
