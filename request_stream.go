@@ -118,6 +118,36 @@ func (rs *requestStream) notifyLocked(method string, params any) error {
 	return nil
 }
 
+// notify sends one notification on the stream (notifications/cancelled for
+// a server-to-client request the server gives up on).
+func (rs *requestStream) notify(method string, params any) error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	return rs.notifyLocked(method, params)
+}
+
+// sendRequest sends a server-to-client JSON-RPC request (elicitation/create)
+// related to this request; the client's response is routed back by id
+// (elicitation.go).
+func (rs *requestStream) sendRequest(id any, method string, params any) error {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if rs.done {
+		return ErrRequestCompleted
+	}
+	if rs.send == nil {
+		return errStreamUnavailable
+	}
+	line, err := json.Marshal(MCPRequest{JSONRPC: "2.0", ID: id, Method: method, Params: params})
+	if err != nil {
+		return err
+	}
+	if !rs.send(line) {
+		return errStreamUnavailable
+	}
+	return nil
+}
+
 // progressTokenFrom reads params._meta.progressToken. The spec allows a
 // string or an integer; anything else is not a token, and the request is
 // treated as having asked for no progress. Integers are kept as json.Number

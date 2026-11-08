@@ -26,6 +26,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Provider Composition**: Combine providers with `MultiProvider` using clear miss/error semantics
 - **Streamed Responses**: Long-running `tools/call`, `resources/read` and `prompts/get` switch to an SSE stream with keep-alives, so proxies with read timeouts (Cloudflare, nginx, load balancers) don't cut them off; fast calls stay plain JSON
 - **Progress Notifications**: `mcp.ReportProgress(ctx, progress, total, message)` from any tool, prompt or resource handler sends `notifications/progress` on the request's own stream (SSE on HTTP, stdout on stdio) when the client asked for it, with the spec's rules enforced (increasing values, nothing after the response, rate limited) and relayed through federated remote tools
+- **Elicitation**: `mcp.Elicit(ctx, mcp.ElicitForm{...})` asks the user for structured input (form mode) from any tool, prompt or resource handler: `elicitation/create` on the request's own stream for 2025-06-18/2025-11-25 clients (HTTP and stdio), and an `InputRequiredResult` with HMAC-protected `requestState` on 2026-07-28, with capability checks, timeouts and cancellation handled
 - **Header Routing**: `x-mcp-header` tool parameters mirrored to `Mcp-Param-*` HTTP headers (`HTTPHeader()` option), validated by the server and sent automatically by the client
 - **MCP Compliant**: Full support for protocol versions 2025-03-26 through 2026-07-28, on both server and client, negotiating the highest version both sides support
 - **Authorization**: OAuth 2.1 resource-server helpers (protected resource metadata, Bearer challenges, audience and scope checks, a JWT/JWKS validator) and a spec-compliant OAuth client (RFC 9728 discovery, PKCE, resource indicators)
@@ -184,6 +185,7 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Resources](docs/guides/resources.md)** - Serving addressable data by URI, resource templates, and per-user/session resources
 - **[Prompts](docs/guides/prompts.md)** - Reusable message templates with arguments, and per-user/session prompts
 - **Skills** - Serving Agent Skills directories (`skills/list`, `skills/get`, `skill://` resources) per SEP-2640, statically or per-request via `SkillProvider`
+- **[Elicitation](docs/guides/elicitation.md)** - Asking the user for input from a handler: `elicitation/create` (2025-x) and InputRequiredResult (2026-07-28), requestState security, multi-instance deployment
 - **[Notifications](docs/guides/notifications.md)** - Push-based list refresh (listChanged) over HTTP and stdio, with federation propagation
 - **[Protocol Support](docs/guides/protocol-support.md)** - Supported protocol versions (2025-03-26 through 2026-07-28), version negotiation, streamed responses, progress notifications, `x-mcp-header`, and pagination
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)

@@ -70,6 +70,11 @@ func (s *Server) ServeStream(ctx context.Context, in io.Reader, out io.Writer, o
 		ctx = WithShowAllTools(ctx)
 	}
 
+	// The connection's client, for server-to-client requests
+	// (elicitation/create): initialize records its capabilities, and its
+	// responses are routed back to the handler waiting on them.
+	ctx = withClientPeer(ctx, &clientPeer{})
+
 	// A shared write mutex guards out so responses and notifications serialize.
 	var writeMu sync.Mutex
 	var wg sync.WaitGroup
@@ -262,6 +267,11 @@ func (s *Server) serveStdioMessage(ctx context.Context, srv *jsonrpc.Server, str
 				return
 			}
 			if head.Method == "" {
+				// A response to a server-to-client request (elicitation/create):
+				// routed to the handler waiting on it, never answered.
+				if peer := clientPeerFrom(ctx); peer != nil {
+					peer.deliver(stdioIDKey(head.ID), msg)
+				}
 				return
 			}
 		}
@@ -702,6 +712,9 @@ func (s *Server) stdioInitialize(ctx context.Context, raw json.RawMessage) (any,
 	s.lastClientCapabilities = params.Capabilities
 	hasDiscoverable := s.hasDiscoverableTools
 	s.mu.Unlock()
+	if peer := clientPeerFrom(ctx); peer != nil {
+		peer.record(protocolVersion, params.Capabilities)
+	}
 
 	// Match the HTTP initialize: when discoverable tools exist, tell the
 	// client about tool_search/execute_tool. stdio has no show-all mode, so
@@ -730,7 +743,16 @@ func (s *Server) stdioToolsCall(ctx context.Context, raw json.RawMessage) (any, 
 		}
 	}
 
+	ctx, run, perr := s.stdioElicitation(ctx, "tools/call", raw)
+	if perr != nil {
+		return nil, jsonrpc.NewError(perr.Code, perr.Message, perr.Data)
+	}
 	response, err := s.CallTool(ctx, params.Name, params.Arguments)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		return nil, jsonrpc.NewError(wireErr.Code, wireErr.Message, wireErr.Data)
+	} else if inputRequired != nil {
+		return inputRequired, nil
+	}
 	result, wireErr := s.toolsCallResult(ctx, params.Name, response, err, !isStdioModern(ctx))
 	if wireErr != nil {
 		return nil, jsonrpc.NewError(wireErr.Code, wireErr.Message, wireErr.Data)
@@ -749,7 +771,16 @@ func (s *Server) stdioResourcesRead(ctx context.Context, raw json.RawMessage) (a
 		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "uri parameter is required", nil)
 	}
 
+	ctx, run, perr := s.stdioElicitation(ctx, "resources/read", raw)
+	if perr != nil {
+		return nil, jsonrpc.NewError(perr.Code, perr.Message, perr.Data)
+	}
 	resp, err := s.ReadResource(ctx, params.URI)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		return nil, jsonrpc.NewError(wireErr.Code, wireErr.Message, wireErr.Data)
+	} else if inputRequired != nil {
+		return inputRequired, nil
+	}
 	if err != nil {
 		e := resourcesReadWireError(params.URI, err, !isStdioModern(ctx))
 		return nil, jsonrpc.NewError(e.Code, e.Message, e.Data)
@@ -768,7 +799,16 @@ func (s *Server) stdioPromptsGet(ctx context.Context, raw json.RawMessage) (any,
 		return nil, jsonrpc.NewError(ErrorCodeInvalidParams, "name parameter is required", nil)
 	}
 
+	ctx, run, perr := s.stdioElicitation(ctx, "prompts/get", raw)
+	if perr != nil {
+		return nil, jsonrpc.NewError(perr.Code, perr.Message, perr.Data)
+	}
 	resp, err := s.GetPrompt(ctx, params.Name, params.Arguments)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		return nil, jsonrpc.NewError(wireErr.Code, wireErr.Message, wireErr.Data)
+	} else if inputRequired != nil {
+		return inputRequired, nil
+	}
 	if err != nil {
 		e := promptsGetWireError(params.Name, err)
 		return nil, jsonrpc.NewError(e.Code, e.Message, e.Data)

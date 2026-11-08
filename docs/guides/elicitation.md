@@ -1,0 +1,224 @@
+# Elicitation Guide
+
+Elicitation lets a server ask the user, through the client, for structured
+input while it handles a request: a confirmation before a destructive step, a
+missing parameter, a choice between options. The library implements **form
+mode** for every protocol revision that has elicitation, behind one call:
+
+```go
+res, err := mcp.Elicit(ctx, mcp.ElicitForm{
+    Key:     "confirm_delete",
+    Message: "Delete 42 files?",
+    Schema: map[string]any{
+        "type": "object",
+        "properties": map[string]any{
+            "confirm": map[string]any{"type": "boolean", "default": false},
+        },
+        "required": []string{"confirm"},
+    },
+})
+```
+
+Call it from a tool, prompt or resource handler with the handler's `ctx` (or
+one derived from it). Tools reached through `execute_tool` and tools from a
+`ToolProvider` get the same context, so they can elicit too.
+
+## The result
+
+```go
+if err != nil {
+    return nil, err // see "Errors" below; return ErrElicitationPending as is
+}
+switch res.Action {
+case mcp.ElicitAccept:
+    ok, _ := res.Content["confirm"].(bool)
+    // ...
+case mcp.ElicitDecline: // the user said no
+case mcp.ElicitCancel:  // the user dismissed the form
+}
+```
+
+`Content` is only set on accept, and has already been checked against your
+schema (an answer that does not match is `ErrInvalidElicitationResult`).
+Numbers decode as `float64`, multi-select answers as `[]any`.
+
+## Schemas
+
+The spec restricts `requestedSchema` to a flat object whose properties are
+primitives. `Elicit` rejects anything else before asking:
+
+| Property | Shape |
+| --- | --- |
+| text | `{"type": "string"}`, optional `minLength`, `maxLength`, `format` (`email`, `uri`, `date`, `date-time`), `default` |
+| number | `{"type": "number"}` or `"integer"`, optional `minimum`, `maximum`, `default` |
+| boolean | `{"type": "boolean"}`, optional `default` |
+| single choice | `{"type": "string", "enum": [...]}`, or titled: `"oneOf": [{"const": "a", "title": "A"}, ...]` (legacy `enumNames` is accepted) |
+| multiple choice | `{"type": "array", "items": {"type": "string", "enum": [...]}}`, or titled: `"items": {"anyOf": [{"const": ..., "title": ...}]}` |
+
+Defaults (SEP-1034) and the titled and multi-select enums (SEP-1330) arrived
+in 2025-11-25; a 2025-06-18 client may ignore them. Never ask for passwords,
+API keys or other secrets through a form: the spec forbids it.
+
+## How it works in each era
+
+### 2025-06-18 and 2025-11-25: a request to the client
+
+`Elicit` sends an `elicitation/create` request to the client and blocks until
+the client answers.
+
+- **Only when allowed.** The client must have declared the `elicitation`
+  capability in `initialize` (an empty object means form mode only); a client
+  that declared only `url` mode is not asked. 2025-03-26 has no elicitation.
+  In each case `Elicit` returns `ErrElicitationUnsupported`.
+- **Streamable HTTP.** The request goes on the originating request's response
+  stream, which switches to SSE as soon as it is sent (as progress does), so the
+  client must send `Accept: text/event-stream`; without it, or with
+  `SetResponseStreaming` disabled, elicitation is unsupported for that
+  request. The client POSTs its JSON-RPC response separately (answered 202),
+  and the server routes it by id to the waiting handler in the same session.
+- **stdio.** The request is a line on stdout; the client's response line on
+  stdin is routed back the same way.
+- **Timeouts.** `SetElicitationTimeout` (default 10 minutes; a person is
+  filling in a form) bounds the wait. When it passes, the server sends
+  `notifications/cancelled` for its request and `Elicit` returns
+  `ErrElicitationTimeout`. Make sure your HTTP server's `WriteTimeout` and any
+  proxy allow a response stream that long; the stream sends keep-alive comments.
+- **Cancellation.** If the client cancels the originating request (or closes
+  its stream), `Elicit` returns the context's error and the waiting request is
+  cleaned up. A response that arrives afterwards is dropped.
+
+**Deploying several instances.** The client's response arrives as a separate
+POST and must reach the instance that holds the waiting handler: use sticky
+routing on `MCP-Session-Id`. The capabilities a client declared are kept in
+memory by the instance that served its `initialize`, so a request that lands
+on another instance sees elicitation as unsupported. Without session
+management, every client shares one scope (the most recent `initialize`), so
+enable sessions when several clients elicit at once.
+
+### 2026-07-28: InputRequiredResult (multi round-trip requests)
+
+2026-07-28 removes server-to-client requests. Instead, `tools/call`,
+`prompts/get` and `resources/read` may answer with an `InputRequiredResult`:
+
+```json
+{
+  "resultType": "input_required",
+  "inputRequests": {
+    "confirm_delete": {
+      "method": "elicitation/create",
+      "params": {"mode": "form", "message": "Delete 42 files?", "requestedSchema": {...}}
+    }
+  },
+  "requestState": "..."
+}
+```
+
+The client asks the user and retries the same request with
+`inputResponses: {"confirm_delete": {"action": "accept", "content": {...}}}`
+and the `requestState` it was given.
+
+The library does this by **re-running your handler**:
+
+1. First run: `Elicit` finds no answer and returns `ErrElicitationPending`.
+   Your handler returns it (wrapped or not), and the library answers with an
+   `InputRequiredResult` holding every question still open.
+2. The retry runs the handler again from the top. This time `Elicit` finds
+   the answer in `inputResponses` and returns it at once.
+
+So on 2026-07-28 **everything before `Elicit` runs again on each retry, and
+must be safe to repeat**: read, compute and validate before asking, and do
+side effects (writes, payments, messages) after the last `Elicit`. A handler
+that ignores `ErrElicitationPending` and returns a result anyway still gets
+an `InputRequiredResult`: while a question is open, the handler's own result
+is discarded.
+
+**Keys must be deterministic.** `ElicitForm.Key` is the `inputRequests` key
+the answer comes back under, so it must be the same on every run of the same
+request. Leave it empty and questions are numbered in the order the handler
+asks them (`elicitation-1`, `elicitation-2`, ...), which is deterministic as
+long as the handler is. A key may be used once per request.
+
+**Several questions.** A handler that asks one question after another needs
+one round trip each; earlier answers travel in `requestState`, so the last
+run sees them all even though the client only sends the newest. To ask
+several at once, use `ElicitAll`:
+
+```go
+res, err := mcp.ElicitAll(ctx,
+    mcp.ElicitForm{Key: "name", Message: "Your name?", Schema: nameSchema},
+    mcp.ElicitForm{Key: "team", Message: "Your team?", Schema: teamSchema},
+)
+```
+
+On 2026-07-28 both go into one `InputRequiredResult`; on 2025-x they are asked
+in turn.
+
+**What the library enforces:**
+
+- The client is only asked when the request's `_meta` `clientCapabilities`
+  declare `elicitation` (form mode); otherwise `ErrElicitationUnsupported`.
+- A missing answer gets a new `InputRequiredResult` re-requesting it rather
+  than an error; answers to questions the server did not ask are ignored.
+- A malformed `inputResponses` (not an object, or an answer that is not a
+  valid result for its form) is a `-32602` error.
+- `InputRequiredResult` is only ever sent on `tools/call`, `prompts/get` and
+  `resources/read`.
+
+### requestState
+
+`requestState` passes through the client, so the spec treats it as
+attacker-controlled. The library protects it with HMAC-SHA256 and binds it
+to:
+
+- the method and a digest of the request's params (everything except
+  `_meta`, `inputResponses` and `requestState`), so state from one call
+  cannot be replayed on another;
+- an expiry, `SetRequestStateTTL` (default 10 minutes);
+- the authenticated principal, `TokenInfo.Subject`, when the request carries
+  one (see `Protect` and `WithTokenInfo`).
+
+State that fails any check is rejected with `-32602` before the handler
+runs. The state is signed, not encrypted: it carries the user's earlier
+answers, which the client already knows. It bounds replay but does not make
+a request single-use; enforce that yourself if an action must happen at most
+once.
+
+The key is random per process by default, so state from one instance is
+rejected by another. For several instances, share a secret:
+
+```go
+server.SetRequestStateKey(secret) // 32 random bytes or more, the same on every instance
+```
+
+With that, a 2026-07-28 retry can land on any instance; no sticky routing is
+needed.
+
+## Errors
+
+| Error | Meaning |
+| --- | --- |
+| `ErrElicitationPending` | 2026-07-28: the question went to the client. Return it from the handler. |
+| `ErrElicitationUnsupported` | The client cannot be asked (capability, revision or transport). Carry on without the input, or fail. |
+| `ErrElicitationTimeout` | 2025-x: no answer within `SetElicitationTimeout`. |
+| `ErrInvalidElicitationResult` | The answer is malformed or does not match the schema. |
+| `*ElicitationError` | 2025-x: the client answered `elicitation/create` with a JSON-RPC error. |
+| the context's error | The originating request was cancelled. |
+
+Returned from a tool handler, any of these but `ErrElicitationPending`
+becomes a tool execution error (`isError: true`) like any other handler error.
+
+Use `mcp.ElicitationSupported(ctx)` to choose a different path up front, for
+example a tool argument instead of a question.
+
+## Not implemented
+
+- **URL mode** (`mode: "url"`, the `-32042` URLElicitationRequiredError and
+  `notifications/elicitation/complete`). It exists only in 2025-11-25 and
+  2026-07-28 forbids it; a client that declared only URL mode is treated as
+  not supporting elicitation.
+- **Elicitation through federated remote servers.** A remote server's own
+  `elicitation/create` or `InputRequiredResult` is not relayed to this
+  server's client.
+- **Sampling and roots**, the other server-to-client requests, are
+  deliberately not implemented in either era: 2026-07-28 deprecates them
+  (SEP-2577).

@@ -86,6 +86,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("Failed to delete session: %v", err), http.StatusInternalServerError)
 			return
 		}
+		s.forgetHTTPPeer(r.Header.Get(headerSessionID))
 
 		// The session is gone, and its resource subscriptions with it.
 		s.notifications.dropSessionResources(r.Header.Get(headerSessionID))
@@ -149,11 +150,10 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 	// A JSON-RPC notification (a method but no id) or response (an id but no
 	// method — a Legacy client answering a server-to-client request) is
 	// acknowledged with 202 Accepted and no body, per the Streamable HTTP
-	// transport in both eras. This server sends no server-to-client requests
-	// and defines no handling for client notifications
-	// (notifications/initialized, notifications/cancelled), so accepting is
-	// all there is to do. Deliberately lenient: a response is accepted even
-	// though 2026-07-28 forbids clients from sending one (a response carries
+	// transport in both eras. notifications/cancelled cancels the named
+	// request; a response is routed to the handler waiting on it
+	// (elicitation/create, see elicitation.go), and dropped when nothing is.
+	// Deliberately lenient: a response is accepted even though 2026-07-28 forbids clients from sending one (a response carries
 	// no era signal to reject it by). A Legacy message is still checked for
 	// a valid MCP-Protocol-Version and session first: the spec requires a
 	// 400/404 for those, whatever the message, and a client must learn its
@@ -168,6 +168,11 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Method == "notifications/cancelled" {
 			s.cancelHTTPRequest(r, req.Params)
+		}
+		if req.Method == "" && !isModernRequest(r, &req) {
+			// A Legacy client answering elicitation/create: hand the
+			// response to the handler waiting for it in this session.
+			s.deliverHTTPResponse(r, req.ID, raw)
 		}
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -580,6 +585,9 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 
 		// Set session ID header
 		w.Header().Set(headerSessionID, sessionID)
+		s.recordHTTPPeer(sessionID, protocolVersion, params.Capabilities)
+	} else {
+		s.recordHTTPPeer("", protocolVersion, params.Capabilities)
 	}
 
 	s.sendMCPResponse(w, req.ID, result)
@@ -686,8 +694,20 @@ func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *MC
 		return
 	}
 
-	response, err := s.CallTool(r.Context(), params.Name, params.Arguments)
-	result, wireErr := s.toolsCallResult(r.Context(), params.Name, response, err, !isModernRequest(r, req))
+	ctx, run, perr := s.httpElicitation(r, req)
+	if perr != nil {
+		s.sendMCPError(w, req.ID, perr.Code, perr.Message, perr.Data)
+		return
+	}
+	response, err := s.CallTool(ctx, params.Name, params.Arguments)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
+		return
+	} else if inputRequired != nil {
+		s.sendMCPResponse(w, req.ID, inputRequired)
+		return
+	}
+	result, wireErr := s.toolsCallResult(ctx, params.Name, response, err, !isModernRequest(r, req))
 	if wireErr != nil {
 		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
 		return

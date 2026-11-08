@@ -52,6 +52,7 @@ func newServer() (*mcp.Server, error) {
 	registerDiagnosticTools(s)
 	registerResources(s)
 	registerPrompts(s)
+	registerElicitation(s)
 	return s, nil
 }
 
@@ -153,10 +154,10 @@ func registerDiagnosticTools(s *mcp.Server) {
 			return mcp.NewToolResponseText("Prompt list changed"), nil
 		})
 
-	// The library sends no log messages and no server-to-client requests,
-	// so these answer plainly; the scenarios check that a request without
-	// _meta logLevel gets no notifications/message, and that a response
-	// stream carries no independent JSON-RPC requests.
+	// These answer plainly: the scenarios check that a request without
+	// _meta logLevel gets no notifications/message, and that a 2026-07-28
+	// response stream carries no independent JSON-RPC requests (the library
+	// sends none there; elicitation uses InputRequiredResult).
 	s.RegisterTool(mcp.NewTool("test_logging_tool", "Runs without logging unless asked to"),
 		text("Logging tool completed"))
 	s.RegisterTool(mcp.NewTool("test_streaming_elicitation", "Answers on its response stream"),

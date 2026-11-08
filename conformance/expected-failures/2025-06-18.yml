@@ -9,5 +9,3 @@ server:
   - tools-call-with-logging
   - tools-call-sampling
   # Not implemented yet.
-  # Elicitation (server-to-client elicitation/create)
-  - tools-call-elicitation

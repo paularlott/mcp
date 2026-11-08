@@ -430,7 +430,11 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 	// Seed the fan-out hop counter from the incoming forward marker (see
 	// maxResourceFanoutHops): a read arriving from another server's fan-out
 	// already carries hops that this server's own fan-out must count.
-	readCtx := r.Context()
+	readCtx, run, perr := s.httpElicitation(r, req)
+	if perr != nil {
+		s.sendMCPError(w, req.ID, perr.Code, perr.Message, perr.Data)
+		return
+	}
 	if raw := r.Header.Get(headerResourceFanoutHop); raw != "" {
 		if hop, err := strconv.Atoi(raw); err == nil && hop > 0 {
 			readCtx = withResourceFanoutHop(readCtx, hop)
@@ -438,6 +442,13 @@ func (s *Server) handleResourcesRead(w http.ResponseWriter, r *http.Request, req
 	}
 
 	resp, err := s.ReadResource(readCtx, params.URI)
+	if inputRequired, wireErr := run.outcome(); wireErr != nil {
+		s.sendMCPError(w, req.ID, wireErr.Code, wireErr.Message, wireErr.Data)
+		return
+	} else if inputRequired != nil {
+		s.sendMCPResponse(w, req.ID, inputRequired)
+		return
+	}
 	if err != nil {
 		e := resourcesReadWireError(params.URI, err, !isModernRequest(r, req))
 		s.sendMCPError(w, req.ID, e.Code, e.Message, e.Data)
