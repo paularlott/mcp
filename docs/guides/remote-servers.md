@@ -136,6 +136,21 @@ result, err := server.CallTool(ctx, "unknown-tool", args)      // Returns ErrUnk
 http.HandleFunc("/mcp", server.HandleRequest)
 ```
 
+### Elicitation through remote servers
+
+A remote tool that asks the user for input (elicitation) reaches the caller
+of your server, whichever protocol revision either side speaks, and the
+answer goes back to the remote. For a 2025-x remote the client declares
+form-mode elicitation and answers the remote's `elicitation/create` for the
+call it belongs to; for a 2026-07-28 remote it relays the remote's
+`InputRequiredResult` and retries with the answers and the remote's
+`requestState`. This works through `RegisterRemoteServer`, discoverable
+registration, `execute_tool` and `NewRemoteProvider`, over HTTP and stdio.
+Used on its own (not inside a server handler), a `Client` answers a 2025-x
+remote's `elicitation/create` with `{"action": "cancel"}` and returns
+`ErrInputRequired` for a 2026-07-28 remote that needs input. See
+[Elicitation: federated remote servers](elicitation.md#federated-remote-servers).
+
 ### Excluding MCP Apps tools
 
 A remote's tool list can include MCP Apps views — tools linked to a `ui://` resource via `_meta.ui.resourceUri` that a host UI renders as a sandboxed app. Federating such a tool re-serves it under your namespace, but the view's in-page code calls its own tools by bare, host-agnostic names, which a namespaced endpoint cannot resolve. If the server you're building mounts no views of its own, exclude them:

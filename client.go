@@ -112,6 +112,11 @@ type Client struct {
 	progressMu     sync.Mutex
 	progressRelays map[string]func(progress, total float64, message string)
 	nextProgress   atomic.Int64
+
+	// elicitRelays maps the wire id of each forwarded call in flight to the
+	// caller a remote's elicitation/create is put to (client_elicitation.go).
+	elicitMu     sync.Mutex
+	elicitRelays map[string]*elicitRelay
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -460,7 +465,7 @@ func (c *Client) initializeLegacy(ctx context.Context) error {
 		Method:  "initialize",
 		Params: map[string]any{
 			"protocolVersion": MCPProtocolVersionLatest,
-			"capabilities":    c.capabilitiesMap(),
+			"capabilities":    legacyElicitationCapabilities(c.capabilitiesMap()),
 			"clientInfo": map[string]any{
 				"name":    mcpClientName,
 				"version": mcpClientVersion,
@@ -825,7 +830,7 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 		}
 		lookupErr = lErr
 		resp = MCPResponse{}
-		if err := c.sendRequest(callCtx, &req, &resp, nil); err != nil {
+		if err := c.sendWithInput(callCtx, &req, &resp, nil); err != nil {
 			return nil, fmt.Errorf("call tool failed: %w", err)
 		}
 		// HeaderMismatch on a Modern HTTP call means our view of the tool's
@@ -906,7 +911,7 @@ func (c *Client) ReadResource(ctx context.Context, uri string) (*ResourceRespons
 	}
 
 	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	if err := c.sendWithInput(ctx, &req, &resp, nil); err != nil {
 		return nil, fmt.Errorf("read resource failed: %w", err)
 	}
 
@@ -994,7 +999,7 @@ func (c *Client) GetPrompt(ctx context.Context, name string, args map[string]str
 	}
 
 	var resp MCPResponse
-	if err := c.sendRequest(ctx, &req, &resp, nil); err != nil {
+	if err := c.sendWithInput(ctx, &req, &resp, nil); err != nil {
 		return nil, fmt.Errorf("get prompt failed: %w", err)
 	}
 

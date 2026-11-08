@@ -62,6 +62,9 @@ type requestStream struct {
 	// messages for this request at all.
 	send func(msg []byte) bool
 	done bool
+	// requestID is the id of the request this stream belongs to, when the
+	// transport knows it (sent as a hint on server-to-client requests).
+	requestID any
 
 	// Progress state (see ReportProgress): the request's token (a string or
 	// a json.Number integer, nil when the client sent none), the last value

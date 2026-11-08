@@ -54,8 +54,10 @@ runs `initialize`. Every other `Client` method — `ListTools`, `CallTool`,
 they call the same private helper either way.
 
 Every Modern result's `resultType` is checked: absent or `complete` is a final
-result, `input_required` returns `ErrInputRequired` (the client implements no
-Multi Round-Trip Requests input: sampling, elicitation, roots), and any other
+result, `input_required` is relayed when the client is forwarding a call for
+a server handler whose caller can be asked (elicitation input only; see
+[Elicitation](elicitation.md#federated-remote-servers)) and returns
+`ErrInputRequired` otherwise (sampling and roots are never relayed), and any other
 value is an invalid-result error.
 
 ## Supported Protocol Versions
