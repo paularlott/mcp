@@ -99,6 +99,7 @@ type registeredResourceTemplate struct {
 	handler    ResourceHandler
 	pattern    *regexp.Regexp
 	varNames   []string
+	completers map[string]Completer // variable completers for completion/complete
 }
 
 // RegisterResource registers a static resource. The resource appears in
@@ -166,6 +167,7 @@ func (s *Server) RegisterResourceTemplate(tb *ResourceTemplateBuilder, handler R
 		handler:    handler,
 		pattern:    pattern,
 		varNames:   varNames,
+		completers: copyCompleters(tb.completers),
 	})
 	s.NotifyResourcesChanged()
 }

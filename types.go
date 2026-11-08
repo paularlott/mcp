@@ -60,6 +60,11 @@ type capabilities struct {
 	Resources  map[string]any `json:"resources"`
 	Prompts    map[string]any `json:"prompts"`
 	Extensions map[string]any `json:"extensions,omitempty"`
+	// Completions is declared (as {}) only when the server has completers:
+	// the spec has a server that supports completion/complete declare it,
+	// so declaring it without any would promise a method that isn't there.
+	// See Server.HasCompletions.
+	Completions *struct{} `json:"completions,omitempty"`
 }
 
 type serverInfo struct {

@@ -394,6 +394,7 @@ var dispatchableMethods = map[string]bool{
 	"resources/templates/list": true,
 	"prompts/list":             true,
 	"prompts/get":              true,
+	"completion/complete":      true,
 	"skills/list":              true,
 	"skills/get":               true,
 }
@@ -418,6 +419,8 @@ func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, req *MCP
 		s.handlePromptsList(w, r, req)
 	case "prompts/get":
 		s.handlePromptsGet(w, r, req)
+	case "completion/complete":
+		s.handleCompletionComplete(w, r, req)
 	case "skills/list":
 		s.handleSkillsList(w, r, req)
 	case "skills/get":
@@ -545,7 +548,7 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 
 	result := initializeResult{
 		ProtocolVersion: protocolVersion,
-		Capabilities:    s.buildCapabilities(protocolVersion),
+		Capabilities:    s.capabilitiesFor(r.Context(), protocolVersion),
 		ServerInfo: serverInfo{
 			Name:    s.name,
 			Version: s.version,

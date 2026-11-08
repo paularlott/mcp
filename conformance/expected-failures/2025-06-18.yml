@@ -9,8 +9,6 @@ server:
   - tools-call-with-logging
   - tools-call-sampling
   # Not implemented yet.
-  # Completion utility (completion/complete)
-  - completion-complete
   # Progress notifications during a tool call
   - tools-call-with-progress
   # Elicitation (server-to-client elicitation/create)

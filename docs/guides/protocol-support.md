@@ -203,8 +203,8 @@ server.RegisterTool(
 - Logging, sampling and roots are not implemented in either era, on
   purpose: 2026-07-28 deprecates them (SEP-2577) and says new
   implementations SHOULD NOT adopt them.
-- Elicitation, completion, progress notifications and resource subscriptions
-  are not implemented yet. The [conformance baselines](../../conformance/README.md#expected-failures)
+- Elicitation, progress notifications and resource subscriptions are not
+  implemented yet. The [conformance baselines](../../conformance/README.md#expected-failures)
   list the scenarios each one will clear.
 
 ## Streamed responses (both eras)

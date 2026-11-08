@@ -10,6 +10,7 @@ import (
 type registeredPrompt struct {
 	descriptor MCPPrompt
 	handler    PromptHandler
+	completers map[string]Completer // argument completers for completion/complete
 }
 
 // RegisterPrompt registers a prompt. The prompt appears in prompts/list and is
@@ -24,6 +25,7 @@ func (s *Server) RegisterPrompt(pb *PromptBuilder, handler PromptHandler) {
 	s.prompts[pb.name] = &registeredPrompt{
 		descriptor: pb.ToMCPPrompt(),
 		handler:    handler,
+		completers: copyCompleters(pb.completers),
 	}
 	s.NotifyPromptsChanged()
 }
