@@ -100,6 +100,10 @@ type Server struct {
 	streamingDelay      time.Duration
 	streamingKeepAlive  time.Duration
 
+	// Progress rate limit; see SetProgressInterval (request_stream.go).
+	progressIntervalSet bool
+	progressInterval    time.Duration
+
 	name                   string
 	version                string
 	instructions           string

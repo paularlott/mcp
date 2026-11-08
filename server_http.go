@@ -205,7 +205,7 @@ func decodeMCPRequest(raw []byte, req *MCPRequest) *MCPError {
 		JSONRPC string          `json:"jsonrpc"`
 		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
-		Params  any             `json:"params"`
+		Params  json.RawMessage `json:"params"`
 	}
 	if !json.Valid(raw) {
 		return &MCPError{Code: ErrorCodeParseError, Message: "Parse error", Data: map[string]any{"details": "body is not valid JSON"}}
@@ -220,7 +220,12 @@ func decodeMCPRequest(raw []byte, req *MCPRequest) *MCPError {
 	if dec.More() {
 		return &MCPError{Code: ErrorCodeParseError, Message: "Parse error", Data: map[string]any{"details": "unexpected data after the JSON-RPC message"}}
 	}
-	req.JSONRPC, req.Method, req.Params = wire.JSONRPC, wire.Method, wire.Params
+	req.JSONRPC, req.Method, req.rawParams = wire.JSONRPC, wire.Method, wire.Params
+	if len(wire.Params) > 0 {
+		if err := json.Unmarshal(wire.Params, &req.Params); err != nil {
+			return &MCPError{Code: ErrorCodeInvalidRequest, Message: "Invalid Request", Data: map[string]any{"details": "malformed JSON-RPC message"}}
+		}
+	}
 	if len(wire.ID) > 0 {
 		id, ok := decodeJSONRPCID(wire.ID)
 		if !ok {

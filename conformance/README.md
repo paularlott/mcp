@@ -61,7 +61,6 @@ new implementations SHOULD NOT adopt them:
 Not implemented yet:
 
 - the completion utility (`completion/complete`)
-- progress notifications during a tool call
 - elicitation: `elicitation/create` through 2025-11-25, and
   `InputRequiredResult` (multi round-trip requests) on 2026-07-28
 - resource subscriptions

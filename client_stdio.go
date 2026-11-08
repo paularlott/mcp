@@ -353,4 +353,13 @@ func registerPeerNotificationHandlers(peer *jsonrpc.Peer, c *Client) {
 	} {
 		peer.Handle(method, mk(method))
 	}
+	// Progress for a call this client is relaying (client_progress.go).
+	peer.Handle(NotificationProgress, func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p any
+		if json.Unmarshal(params, &p) == nil {
+			c.deliverProgress(p)
+			c.handleNotification(NotificationProgress, p)
+		}
+		return nil, nil
+	})
 }

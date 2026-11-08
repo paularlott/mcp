@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"mime"
 	"net/http"
@@ -33,6 +34,11 @@ import (
 //     carry no event and clients must ignore them (WHATWG SSE; 2026-07-28
 //     explicitly encourages them as keep-alives), but they reset every
 //     intermediary's idle timer.
+//   - A handler that sends a message of its own on the request first
+//     (ReportProgress; see request_stream.go) switches the response to SSE
+//     at once: the message is sent, then any others, then the response.
+//     Both eras let the server send notifications on the stream before the
+//     response; on a JSON response they would have nowhere to go.
 //   - The JSON-RPC response is sent as a single "message" event, after which
 //     the stream is terminated (both eras: the response SHOULD terminate it).
 //   - A client disconnect cancels the request's context, stops the stream
@@ -143,19 +149,61 @@ func legacyShape(_ string, capture *modernResponseCapture) capturedResponse {
 	return capturedResponse{status: capture.status, header: capture.header, body: capture.body.Bytes()}
 }
 
+// requestParams returns req's params as raw JSON: as received when the
+// server decoded the request itself, re-encoded otherwise.
+func requestParams(req *MCPRequest) json.RawMessage {
+	if len(req.rawParams) > 0 {
+		return req.rawParams
+	}
+	if req.Params == nil {
+		return nil
+	}
+	raw, _ := json.Marshal(req.Params)
+	return raw
+}
+
+// requestStreamBuffer bounds the messages a handler may queue on its
+// request's stream ahead of the writer; beyond it they are dropped.
+const requestStreamBuffer = 64
+
 // dispatchResponse runs dispatchMethod for req and writes its response,
 // streaming it as SSE when the method, client and ResponseWriter allow and
-// the handler outlives the streaming delay. shape turns the handler's
-// captured output into the era's final response.
+// the handler outlives the streaming delay or sends a message of its own
+// (ReportProgress) first. shape turns the handler's captured output into the
+// era's final response.
+//
+// The handler's context carries the request's requestStream
+// (request_stream.go). When the response cannot be streamed, messages are
+// dropped: there is nowhere to put them. Otherwise the first message
+// switches the response to SSE at once, whatever the delay, and is followed
+// by any others and finally the response, all on this one stream.
 func (s *Server) dispatchResponse(w http.ResponseWriter, r *http.Request, req *MCPRequest, shape func(method string, capture *modernResponseCapture) capturedResponse) {
 	delay, keepAlive := s.streamingConfig()
 	flusher, canFlush := w.(http.Flusher)
 	if delay < 0 || !canFlush || !streamableMethods[req.Method] || !acceptsEventStream(r.Header.Get("Accept")) {
+		rs := s.newRequestStream(requestParams(req), nil)
+		r = r.WithContext(withRequestStream(r.Context(), rs))
 		capture := newModernResponseCapture()
 		s.dispatchMethod(capture, r, req)
+		rs.finish()
 		shape(req.Method, capture).writeJSON(w)
 		return
 	}
+
+	// Messages the handler sends are queued here and written by this
+	// goroutine, the only one that touches w. The handler goroutine finishes
+	// the request stream before closing done, so every queued message was
+	// queued before done closes, and none can follow it.
+	msgs := make(chan []byte, requestStreamBuffer)
+	rs := s.newRequestStream(requestParams(req), func(msg []byte) bool {
+		select {
+		case msgs <- msg:
+			return true
+		default:
+			return false
+		}
+	})
+	r = r.WithContext(withRequestStream(r.Context(), rs))
 
 	// The handler writes only into capture, and only this goroutine touches
 	// w, so the two never race. done's close publishes capture.
@@ -163,6 +211,7 @@ func (s *Server) dispatchResponse(w http.ResponseWriter, r *http.Request, req *M
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer rs.finish()
 		defer func() {
 			// A panic here would otherwise kill the process: it is no longer
 			// on net/http's goroutine, whose recover used to catch it.
@@ -174,14 +223,22 @@ func (s *Server) dispatchResponse(w http.ResponseWriter, r *http.Request, req *M
 		s.dispatchMethod(capture, r, req)
 	}()
 
+	var first []byte
 	timer := time.NewTimer(delay)
 	select {
 	case <-done:
 		timer.Stop()
-		shape(req.Method, capture).writeJSON(w)
-		return
+		if len(msgs) == 0 {
+			shape(req.Method, capture).writeJSON(w)
+			return
+		}
+		// The handler sent messages and finished before they were picked
+		// up: they still precede the response, so stream.
+	case first = <-msgs:
+		timer.Stop()
 	case <-r.Context().Done():
 		timer.Stop()
+		rs.finish()
 		<-done
 		return
 	case <-timer.C:
@@ -192,26 +249,40 @@ func (s *Server) dispatchResponse(w http.ResponseWriter, r *http.Request, req *M
 	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	if first != nil {
+		writeSSEMessage(w, first)
+	}
 	flusher.Flush()
 
 	ticker := time.NewTicker(keepAlive)
 	defer ticker.Stop()
 	for {
 		select {
+		case msg := <-msgs:
+			writeSSEMessage(w, msg)
+			flusher.Flush()
 		case <-done:
-			// A non-200 status the handler chose (a Modern protocol error)
-			// cannot be sent now; the JSON-RPC error body still says it all.
+			// Messages queued before completion go out first, then the
+			// response. A non-200 status the handler chose (a Modern
+			// protocol error) cannot be sent now; the JSON-RPC error body
+			// still says it all.
+			for len(msgs) > 0 {
+				writeSSEMessage(w, <-msgs)
+			}
 			writeSSEMessage(w, shape(req.Method, capture).body)
 			flusher.Flush()
 			return
 		case <-ticker.C:
 			if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+				rs.finish()
 				<-done
 				return
 			}
 			flusher.Flush()
 		case <-r.Context().Done():
-			// Cancelled (client closed the stream): send nothing further.
+			// Cancelled (client closed the stream, or notifications/cancelled):
+			// send nothing further.
+			rs.finish()
 			<-done
 			return
 		}

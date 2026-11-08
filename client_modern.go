@@ -228,14 +228,20 @@ func (c *Client) withModernMeta(req *MCPRequest) *MCPRequest {
 	for k, v := range params {
 		paramsCopy[k] = v
 	}
-	paramsCopy["_meta"] = map[string]any{
-		metaKeyProtocolVersion: c.modernProtocolVersion(),
-		metaKeyClientInfo: map[string]any{
-			"name":    mcpClientName,
-			"version": mcpClientVersion,
-		},
-		metaKeyClientCapabilities: c.capabilitiesMap(),
+	// Keep whatever _meta the request already carries (a progressToken).
+	meta := map[string]any{}
+	if existing, ok := params["_meta"].(map[string]any); ok {
+		for k, v := range existing {
+			meta[k] = v
+		}
 	}
+	meta[metaKeyProtocolVersion] = c.modernProtocolVersion()
+	meta[metaKeyClientInfo] = map[string]any{
+		"name":    mcpClientName,
+		"version": mcpClientVersion,
+	}
+	meta[metaKeyClientCapabilities] = c.capabilitiesMap()
+	paramsCopy["_meta"] = meta
 	out := *req
 	out.Params = paramsCopy
 	return &out

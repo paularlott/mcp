@@ -173,6 +173,11 @@ func (c *Client) consumeResponseStream(ctx context.Context, rd *sseReader, wantI
 			if c.era == eraModern {
 				method = canonicalNotificationMethod(method)
 			}
+			if method == NotificationProgress {
+				// Relayed at once, so it is reported before this call's
+				// response ends the relay (client_progress.go).
+				c.deliverProgress(env.Params)
+			}
 			notifier.push(method, env.Params)
 		case env.hasID() && reflect.DeepEqual(normalizeJSONRPCRawID(env.ID), wantID),
 			!env.hasID() && len(env.Error) > 0:

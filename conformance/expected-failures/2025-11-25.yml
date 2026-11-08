@@ -11,8 +11,6 @@ server:
   # Not implemented yet.
   # Completion utility (completion/complete)
   - completion-complete
-  # Progress notifications during a tool call
-  - tools-call-with-progress
   # Elicitation (server-to-client elicitation/create)
   - tools-call-elicitation
   - elicitation-sep1034-defaults

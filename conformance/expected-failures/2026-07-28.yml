@@ -10,8 +10,6 @@ server:
   # Not implemented yet.
   # Completion utility (completion/complete)
   - completion-complete
-  # Progress notifications during a tool call
-  - tools-call-with-progress
   # Multi round-trip requests: InputRequiredResult for elicitation (SEP-2322)
   - input-required-result-basic-elicitation
   - input-required-result-request-state

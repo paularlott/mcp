@@ -203,8 +203,8 @@ server.RegisterTool(
 - Logging, sampling and roots are not implemented in either era, on
   purpose: 2026-07-28 deprecates them (SEP-2577) and says new
   implementations SHOULD NOT adopt them.
-- Elicitation, completion, progress notifications and resource subscriptions
-  are not implemented yet. The [conformance baselines](../../conformance/README.md#expected-failures)
+- Elicitation, completion and resource subscriptions are not implemented
+  yet. The [conformance baselines](../../conformance/README.md#expected-failures)
   list the scenarios each one will clear.
 
 ## Streamed responses (both eras)
@@ -228,6 +228,9 @@ client's `Accept` header lists `text/event-stream`:
   sent (2026-07-28: closing the stream is cancellation).
 - No SSE event ids are sent: the stream is not resumable (2026-07-28 removes
   resumability; this server never offered replay for Legacy).
+- A handler that sends a message of its own on the request (a progress
+  notification, below) switches the response to SSE at once, whatever the
+  delay: the message goes out, then any others, then the response.
 
 ```go
 server.SetResponseStreaming(5*time.Second, 20*time.Second) // delay, keep-alive
@@ -262,6 +265,65 @@ on `405` (the server offers no stream).
 `CallToolsParallel` sends one JSON-RPC batch only when the negotiated revision
 allows batching (2025-03-26); for later revisions, Modern
 included, it sends concurrent individual requests.
+
+### Progress notifications
+
+A client opts in to progress for one request by sending
+`params._meta.progressToken` (a string or an integer). A handler reports
+progress with the context it was called with:
+
+```go
+server.RegisterTool(mcp.NewTool("import", "Imports a file"),
+    func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+        for i, chunk := range chunks {
+            // ... work ...
+            if err := mcp.ReportProgress(ctx, float64(i+1), float64(len(chunks)), "Importing"); err != nil {
+                return nil, err
+            }
+        }
+        return mcp.NewToolResponseText("imported"), nil
+    })
+```
+
+`total` is `0` when unknown (it is then omitted) and `message` is optional.
+The same call works from prompt and resource handlers, from tools reached
+through `execute_tool`, and from `ToolProvider` tools. `mcp.ProgressToken(ctx)`
+says whether the client asked.
+
+The library enforces the spec, in both eras:
+
+- No `progressToken` on the request: `ReportProgress` does nothing and
+  returns nil.
+- `progress` MUST increase with each notification: a value not above the last
+  one returns `ErrProgressNotIncreasing`.
+- Notifications MUST stop after completion: once the response has been
+  written, or the request cancelled, `ReportProgress` returns
+  `ErrRequestCompleted` and sends nothing, so a goroutine that outlives its
+  handler cannot put a notification on the wire after the result.
+- Rate limiting (both sides SHOULD): a report sooner than the progress
+  interval (default 10ms) after the last one sent is dropped, unless it
+  reaches `total`. Tune it with `server.SetProgressInterval(d)`; `0` disables
+  it.
+
+Where the notification goes:
+
+- **HTTP, both eras:** on the request's own response stream, which is
+  switched to SSE by the first notification (see above). In 2026-07-28 a
+  request's notifications never go on a `subscriptions/listen` stream. A
+  client whose `Accept` header does not list `text/event-stream`, a server
+  with streaming disabled (`SetResponseStreaming(-1, 0)`), and a request
+  inside a 2025-03-26 JSON-RPC batch cannot be sent one: the notification is
+  dropped and `ReportProgress` still returns nil, since progress is advisory.
+- **stdio:** written to stdout ahead of the response.
+
+**Federated remote tools.** When a caller that asked for progress calls a
+tool of a server registered with `RegisterRemoteServer`, the remote call
+asks for progress too, under a token of the client's own (tokens must be
+unique among the remote's active requests, and the remote is shared), and
+each `notifications/progress` it sends is reported on the caller's request.
+Over HTTP this is exact; over a stdio remote, notifications are handled
+concurrently by the transport, so one arriving out of order or after the
+result is dropped.
 
 ## Version Negotiation (Legacy)
 

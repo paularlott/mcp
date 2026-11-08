@@ -104,6 +104,14 @@ type Client struct {
 	// federated view and a public endpoint view of the same remote) and each
 	// registration's propagation must survive the next.
 	onNotification []func(method string, params any)
+
+	// progressRelays forwards notifications/progress for this client's
+	// in-flight tool calls, keyed by the progress token it sent (see
+	// client_progress.go). On its own mutex: stream readers deliver to it
+	// while a request may hold c.mu.
+	progressMu     sync.Mutex
+	progressRelays map[string]func(progress, total float64, message string)
+	nextProgress   atomic.Int64
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -796,14 +804,16 @@ func (c *Client) CallTool(ctx context.Context, name string, args map[string]any)
 		return nil, ErrToolFiltered
 	}
 
+	params := map[string]any{
+		"name":      toolName,
+		"arguments": args,
+	}
+	defer c.relayProgress(ctx, params)()
 	req := MCPRequest{
 		JSONRPC: "2.0",
 		ID:      c.newRequestID(),
 		Method:  "tools/call",
-		Params: map[string]any{
-			"name":      toolName,
-			"arguments": args,
-		},
+		Params:  params,
 	}
 
 	var resp MCPResponse

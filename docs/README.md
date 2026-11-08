@@ -9,7 +9,7 @@
 - **[Response Types](./guides/response-types.md)** — Text, images, audio, structured, and multi-content responses
 - **[Error Handling](./guides/error-handling.md)** — Error types, codes, and best practices
 - **[Thread Safety & Concurrency](./guides/concurrency.md)** — Safe concurrent usage and parallel client calls
-- **[Protocol Support](./guides/protocol-support.md)** — Supported MCP protocol versions and negotiation
+- **[Protocol Support](./guides/protocol-support.md)** — Supported MCP protocol versions and negotiation, streamed responses and progress notifications
 - **[MCP Apps](./guides/mcp-apps.md)** — Interactive UI resources linked to tools (SEP-1865), CSP metadata, and extension capability negotiation
 
 ## Examples

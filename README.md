@@ -23,6 +23,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 - **Per-User Remote Servers**: Request-scoped `RemoteProvider` for federating remote MCP servers with per-user auth, filtering, and caching
 - **Provider Composition**: Combine providers with `MultiProvider` using clear miss/error semantics
 - **Streamed Responses**: Long-running `tools/call`, `resources/read` and `prompts/get` switch to an SSE stream with keep-alives, so proxies with read timeouts (Cloudflare, nginx, load balancers) don't cut them off; fast calls stay plain JSON
+- **Progress Notifications**: `mcp.ReportProgress(ctx, progress, total, message)` from any tool, prompt or resource handler sends `notifications/progress` on the request's own stream (SSE on HTTP, stdout on stdio) when the client asked for it, with the spec's rules enforced (increasing values, nothing after the response, rate limited) and relayed through federated remote tools
 - **Header Routing**: `x-mcp-header` tool parameters mirrored to `Mcp-Param-*` HTTP headers (`HTTPHeader()` option), validated by the server and sent automatically by the client
 - **MCP Compliant**: Full support for protocol versions 2025-03-26 through 2026-07-28, on both server and client, negotiating the highest version both sides support
 - **Authorization**: OAuth 2.1 resource-server helpers (protected resource metadata, Bearer challenges, audience and scope checks, a JWT/JWKS validator) and a spec-compliant OAuth client (RFC 9728 discovery, PKCE, resource indicators)
@@ -116,6 +117,11 @@ server.SetResponseStreaming(-1, 0)                          // always JSON
 
 The client handles both response forms transparently.
 
+A handler that reports progress (`mcp.ReportProgress`) switches its response
+to SSE at once, whatever the delay, so the notifications reach the client
+before the result; see
+[Progress notifications](docs/guides/protocol-support.md#progress-notifications).
+
 ### Stdio
 
 Serve the MCP protocol over stdin/stdout (newline-delimited JSON-RPC 2.0) — the
@@ -177,7 +183,7 @@ For comprehensive guides, patterns, and API documentation, see the [docs/](docs/
 - **[Prompts](docs/guides/prompts.md)** - Reusable message templates with arguments, and per-user/session prompts
 - **Skills** - Serving Agent Skills directories (`skills/list`, `skills/get`, `skill://` resources) per SEP-2640, statically or per-request via `SkillProvider`
 - **[Notifications](docs/guides/notifications.md)** - Push-based list refresh (listChanged) over HTTP and stdio, with federation propagation
-- **[Protocol Support](docs/guides/protocol-support.md)** - Supported protocol versions (2025-03-26 through 2026-07-28), version negotiation, streamed responses, `x-mcp-header`, and pagination
+- **[Protocol Support](docs/guides/protocol-support.md)** - Supported protocol versions (2025-03-26 through 2026-07-28), version negotiation, streamed responses, progress notifications, `x-mcp-header`, and pagination
 - **[Sessions](docs/guides/sessions.md)** - Optional session management (MCP 2025-11-25)
 - **[Response Types](docs/guides/response-types.md)** - Text, images, audio, and structured responses
 - **[Error Handling](docs/guides/error-handling.md)** - Structured error patterns and best practices
