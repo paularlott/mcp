@@ -108,10 +108,6 @@ The spec lets a server leave all of these out.
 
 Not implemented yet:
 
-- answering elicitation in the `Client`: `elicitation/create` requests through
-  2025-11-25 (`elicitation-sep1034-client-defaults`), and
-  `InputRequiredResult` retries that echo `requestState` on 2026-07-28
-  (`sep-2322-client-request-state`)
 - the OAuth authorization-code flow (every `auth/*` scenario): the library
   has the pieces — protected resource and authorization server metadata
   discovery with PKCE checks, client registration, client-credentials and

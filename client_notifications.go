@@ -87,11 +87,13 @@ func (c *Client) startNotifications(era clientEra) {
 		return
 	}
 	c.readerStarted = true
+	c.streamUp = make(chan struct{})
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 	ctx := c.ctx
 	c.readerWG.Add(1)
 	go func() {
 		defer c.readerWG.Done()
+		defer c.markStreamUp() // a reader that stops releases any waiter
 		if era == eraModern {
 			c.runEventStreamReader(ctx, "subscriptions/listen", false, c.connectModernSubscription)
 		} else {
@@ -220,6 +222,7 @@ func (c *Client) runEventStreamReader(ctx context.Context, label string, legacy 
 			return
 		}
 		if errors.Is(err, errStreamNotOffered) {
+			c.markStreamUp() // nothing to wait for
 			slog.Info("mcp: server does not offer a notification stream; not retrying", "server", c.baseURL, "stream", label)
 			return
 		}
@@ -279,6 +282,7 @@ func (c *Client) readEventStream(ctx context.Context, legacy bool, connect event
 	if resp.StatusCode != http.StatusOK {
 		return false, fmt.Errorf("event stream returned status %d", resp.StatusCode)
 	}
+	c.markStreamUp()
 
 	reader := newSSEReader(resp.Body)
 	reader.LastEventID, reader.idBuf, reader.Retry = state.lastEventID, state.lastEventID, state.retry

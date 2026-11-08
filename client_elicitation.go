@@ -57,6 +57,100 @@ import (
 //   - Sampling and roots input requests are not relayed (deprecated by
 //     2026-07-28, not implemented): the call fails with ErrInputRequired.
 
+// Answering elicitation in the application.
+//
+// OnElicitation lets an application answer a server's form-mode questions
+// itself (a CLI prompt, a UI dialog). Both eras use it: a 2025-x server's
+// elicitation/create request, and the elicitation input requests of a
+// 2026-07-28 InputRequiredResult, which the Client then retries with the
+// answers and the server's exact requestState. When the Client is
+// forwarding a call for a Server whose own caller can be asked (federation,
+// above), the question goes to that caller instead.
+
+// ElicitationRequest is a server's form-mode question, as an
+// ElicitationHandler receives it.
+type ElicitationRequest struct {
+	// Message explains what the server is asking and why.
+	Message string
+	// Schema is the server's requestedSchema: a flat object of primitive
+	// properties, which may carry defaults (see OnElicitation).
+	Schema map[string]any
+}
+
+// ElicitationHandler answers a server's elicitation: ElicitAccept with the
+// user's values, ElicitDecline, or ElicitCancel. An error is reported to the
+// server as a cancelled elicitation (no user made a choice).
+type ElicitationHandler func(ctx context.Context, req ElicitationRequest) (*ElicitResult, error)
+
+// OnElicitation registers fn to answer the servers' form-mode elicitation
+// requests, and makes the Client declare form-mode elicitation. On
+// ElicitAccept, any schema property fn leaves out that has a default is
+// filled with it, as the spec asks clients that support defaults to do
+// (SEP-1034). Pass nil to stop answering: questions are then cancelled, and
+// a 2026-07-28 request that needs an answer fails with ErrInputRequired.
+//
+// Against a 2025-x server over HTTP the Client also opens the session's GET
+// event stream (as EnableNotifications does), because the server may send
+// its questions there rather than on the call's response stream; release it
+// with Close. Register the handler before Initialize so initialize declares
+// it. Returns the client for chaining.
+func (c *Client) OnElicitation(fn ElicitationHandler) *Client {
+	c.elicitMu.Lock()
+	c.elicitHandler = fn
+	c.elicitMu.Unlock()
+	if fn != nil {
+		c.mu.RLock()
+		ready := c.initialized && c.transport == nil && c.era != eraModern
+		era := c.era
+		c.mu.RUnlock()
+		if ready {
+			c.startNotifications(era)
+		}
+	}
+	return c
+}
+
+func (c *Client) elicitationHandler() ElicitationHandler {
+	c.elicitMu.Lock()
+	defer c.elicitMu.Unlock()
+	return c.elicitHandler
+}
+
+// askApplication puts one question to the application's handler, applying
+// the schema's defaults to an accepted answer. Any failure is a cancel.
+func askApplication(ctx context.Context, fn ElicitationHandler, message string, schema map[string]any) *ElicitResult {
+	res, err := fn(ctx, ElicitationRequest{Message: message, Schema: schema})
+	if err != nil || res == nil {
+		return &ElicitResult{Action: ElicitCancel}
+	}
+	switch res.Action {
+	case ElicitAccept:
+		return &ElicitResult{Action: ElicitAccept, Content: withSchemaDefaults(schema, res.Content)}
+	case ElicitDecline, ElicitCancel:
+		return &ElicitResult{Action: res.Action}
+	}
+	return &ElicitResult{Action: ElicitCancel}
+}
+
+// withSchemaDefaults returns content with every schema property that has a
+// default and isn't in content set to that default. content is not modified.
+func withSchemaDefaults(schema, content map[string]any) map[string]any {
+	out := make(map[string]any, len(content))
+	for k, v := range content {
+		out[k] = v
+	}
+	props, _ := schema["properties"].(map[string]any)
+	for name, raw := range props {
+		p, _ := raw.(map[string]any)
+		if def, ok := p["default"]; ok {
+			if _, set := out[name]; !set {
+				out[name] = def
+			}
+		}
+	}
+	return out
+}
+
 // metaKeyRelatedRequest is the _meta key on this library's elicitation/create
 // requests naming the client request they serve.
 const metaKeyRelatedRequest = "io.github.paularlott/relatedRequestId"
@@ -125,7 +219,8 @@ func (c *Client) relayFor(id any, known bool) *elicitRelay {
 // set: the caller of answerElicitation sends the reply, then cancels the call.
 func (c *Client) answerElicitation(relay *elicitRelay, raw json.RawMessage) (any, *MCPError) {
 	cancelled := map[string]any{"action": string(ElicitCancel)}
-	if relay == nil || !relay.canAsk {
+	handler := c.elicitationHandler()
+	if (relay == nil || !relay.canAsk) && handler == nil {
 		return cancelled, nil
 	}
 	var p struct {
@@ -138,6 +233,14 @@ func (c *Client) answerElicitation(relay *elicitRelay, raw json.RawMessage) (any
 	}
 	if p.Mode != "" && p.Mode != "form" {
 		return nil, &MCPError{Code: ErrorCodeInvalidParams, Message: "Unsupported elicitation mode", Data: map[string]any{"details": "this client declared form mode only"}}
+	}
+	if relay == nil || !relay.canAsk {
+		// No downstream caller to relay to: the application answers.
+		ctx := context.Background()
+		if relay != nil {
+			ctx = relay.ctx
+		}
+		return elicitResultWire(askApplication(ctx, handler, p.Message, p.RequestedSchema)), nil
 	}
 	relay.mu.Lock()
 	relay.seq++
@@ -197,7 +300,7 @@ func (c *Client) sendWithInput(ctx context.Context, req *MCPRequest, resp *MCPRe
 	canAsk := ElicitationSupported(ctx)
 
 	cur := *req
-	cur.declareElicitation = canAsk
+	cur.declareElicitation = canAsk || c.elicitationHandler() != nil
 	var open *relayedInput
 	if raw, ok := run.recall(slot); ok {
 		var saved relayedInput
@@ -252,7 +355,7 @@ func (c *Client) sendWithInput(ctx context.Context, req *MCPRequest, resp *MCPRe
 		if open.State != nil {
 			next["requestState"] = *open.State
 		}
-		cur = MCPRequest{JSONRPC: "2.0", ID: c.newRequestID(), Method: req.Method, Params: next, declareElicitation: canAsk}
+		cur = MCPRequest{JSONRPC: "2.0", ID: c.newRequestID(), Method: req.Method, Params: next, declareElicitation: cur.declareElicitation}
 		*resp = MCPResponse{}
 		if err := c.sendRequest(ctx, &cur, resp, respHeaders); err != nil {
 			return err
@@ -309,6 +412,14 @@ func (c *Client) answerInputRequests(ctx context.Context, slot string, open *rel
 	}
 	if len(forms) == 0 {
 		return map[string]any{}, nil // only requestState: retry at once (MAY)
+	}
+	if handler := c.elicitationHandler(); handler != nil && !ElicitationSupported(ctx) {
+		// No downstream caller to relay to: the application answers.
+		out := make(map[string]any, len(keys))
+		for i, k := range keys {
+			out[k] = elicitResultWire(askApplication(ctx, handler, forms[i].Message, forms[i].Schema))
+		}
+		return out, nil
 	}
 	results, err := ElicitAll(ctx, forms...)
 	if errors.Is(err, ErrElicitationUnsupported) {

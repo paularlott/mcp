@@ -14,10 +14,6 @@ server:
   - input-required-result-capability-check
 
 client:
-  # Not implemented yet: answering elicitation in the Client
-  # (elicitation/create through 2025-11-25, InputRequiredResult retries
-  # with requestState on 2026-07-28).
-  - sep-2322-client-request-state
   # Not implemented yet: the OAuth authorization-code flow in the Client
   # (the library has discovery, registration and client-credentials,
   # but the Client does not run authorization on a 401).

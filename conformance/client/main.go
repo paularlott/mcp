@@ -52,6 +52,20 @@ func run(scenario, url string) error {
 
 	c := mcp.NewClient(url, nil, "")
 	defer c.Close()
+	// Answer every form-mode question as a user who accepts: tick boolean
+	// confirmations and leave the rest to the schema's defaults, which the
+	// Client fills in (SEP-1034).
+	c.OnElicitation(func(ctx context.Context, req mcp.ElicitationRequest) (*mcp.ElicitResult, error) {
+		content := map[string]any{}
+		props, _ := req.Schema["properties"].(map[string]any)
+		for name, raw := range props {
+			p, _ := raw.(map[string]any)
+			if _, hasDefault := p["default"]; !hasDefault && p["type"] == "boolean" {
+				content[name] = true
+			}
+		}
+		return &mcp.ElicitResult{Action: mcp.ElicitAccept, Content: content}, nil
+	})
 	if err := c.Initialize(ctx); err != nil {
 		return fmt.Errorf("initialize: %w", err)
 	}
@@ -81,6 +95,16 @@ func run(scenario, url string) error {
 
 	case "http-standard-headers":
 		return exerciseEveryMethod(ctx, c, tools)
+
+	case "sep-2322-client-request-state":
+		// Each tool exercises one part of the input-required flow; the
+		// Client answers the questions and retries on its own.
+		for _, t := range tools {
+			if err := call(ctx, c, t.Name, map[string]any{}); err != nil {
+				return err
+			}
+		}
+		return nil
 
 	case "http-invalid-tool-headers":
 		// The client must have dropped tools with invalid x-mcp-header

@@ -256,6 +256,47 @@ Details:
   Method not found, and a 2026-07-28 remote asking for either fails the call
   with `ErrInputRequired`.
 
+## Answering elicitation in a Client
+
+An application that uses this library's `Client` can answer a server's
+questions itself, a CLI prompt or a UI dialog for example, with
+`OnElicitation`:
+
+```go
+client := mcp.NewClient(url, nil, "")
+client.OnElicitation(func(ctx context.Context, req mcp.ElicitationRequest) (*mcp.ElicitResult, error) {
+    // Show req.Message and a form built from req.Schema to the user.
+    answers, ok := askUser(req.Message, req.Schema)
+    if !ok {
+        return &mcp.ElicitResult{Action: mcp.ElicitDecline}, nil
+    }
+    return &mcp.ElicitResult{Action: mcp.ElicitAccept, Content: answers}, nil
+})
+if err := client.Initialize(ctx); err != nil { ... }
+```
+
+Register the handler before `Initialize`. With it, the Client declares
+form-mode elicitation, and:
+
+- **2025-06-18 / 2025-11-25:** the server's `elicitation/create` request is
+  answered by the handler. A server may send it on the call's response stream
+  or on the session's GET event stream, so over HTTP the Client also opens the
+  GET stream (as `EnableNotifications` does); release it with `Close`.
+- **2026-07-28:** when a call returns an `InputRequiredResult` with
+  elicitation input requests, the handler answers each one and the Client
+  retries the call with the answers and the server's exact `requestState`,
+  under a new request id, until the server completes. A result without
+  `resultType` is complete, and one call's state is never sent with another.
+- On accept, any schema property the handler leaves out that has a `default`
+  is filled with it, as the spec asks clients that support defaults to do
+  (SEP-1034).
+- A handler that returns an error, or an unknown action, answers cancel.
+
+Without a handler, questions are cancelled on 2025-x, and on 2026-07-28 the
+Client doesn't declare elicitation, so the server can't ask. A Client that a
+Server uses to forward calls relays questions to the Server's own caller when
+that caller can be asked (see above), and uses the handler otherwise.
+
 ## Not implemented
 
 - **URL mode** (`mode: "url"`, the `-32042` URLElicitationRequiredError and

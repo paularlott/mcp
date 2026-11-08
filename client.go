@@ -84,8 +84,12 @@ type Client struct {
 
 	// Notification reader lifecycle. Kept on its own mutex so notification
 	// handling can't deadlock with c.mu (the request/cache lock).
-	readerMu          sync.Mutex
-	readerStarted     bool
+	readerMu      sync.Mutex
+	readerStarted bool
+	// streamUp is closed once the Legacy GET stream is connected (or the
+	// reader gave up on it); see awaitElicitationStream.
+	streamUp          chan struct{}
+	streamUpOnce      sync.Once
 	readerWG          sync.WaitGroup
 	wantNotifications bool // set by EnableNotifications; gates reader startup
 	ctx               context.Context
@@ -117,6 +121,9 @@ type Client struct {
 	// caller a remote's elicitation/create is put to (client_elicitation.go).
 	elicitMu     sync.Mutex
 	elicitRelays map[string]*elicitRelay
+	// elicitHandler answers a server's elicitation for the application
+	// (OnElicitation); nil when the application doesn't answer.
+	elicitHandler ElicitationHandler
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -399,6 +406,55 @@ func (c *Client) capabilitiesMap() map[string]any {
 // Client method is unaffected by which era was detected — they all still
 // just call sendRequest, which applies the right wire shape internally.
 func (c *Client) Initialize(ctx context.Context) error {
+	if err := c.initialize(ctx); err != nil {
+		return err
+	}
+	c.awaitElicitationStream(ctx)
+	return nil
+}
+
+// elicitationStreamWait bounds how long Initialize waits for the Legacy GET
+// stream of a Client that answers elicitation.
+const elicitationStreamWait = 2 * time.Second
+
+// awaitElicitationStream waits, briefly, for the Legacy GET stream of a
+// Client that answers elicitation (OnElicitation) to connect. A 2025-x
+// server may send its elicitation/create on that stream, and a server with
+// no stream connected drops it, so calls made right after Initialize must
+// not race the stream's connection.
+func (c *Client) awaitElicitationStream(ctx context.Context) {
+	c.mu.RLock()
+	legacyHTTP := c.transport == nil && c.era != eraModern
+	c.mu.RUnlock()
+	if !legacyHTTP || c.elicitationHandler() == nil {
+		return
+	}
+	c.readerMu.Lock()
+	up := c.streamUp
+	c.readerMu.Unlock()
+	if up == nil {
+		return
+	}
+	timer := time.NewTimer(elicitationStreamWait)
+	defer timer.Stop()
+	select {
+	case <-up:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// markStreamUp releases awaitElicitationStream.
+func (c *Client) markStreamUp() {
+	c.readerMu.Lock()
+	up := c.streamUp
+	c.readerMu.Unlock()
+	if up != nil {
+		c.streamUpOnce.Do(func() { close(up) })
+	}
+}
+
+func (c *Client) initialize(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -446,7 +502,10 @@ func (c *Client) Initialize(ctx context.Context) error {
 	c.readerMu.Lock()
 	want := c.wantNotifications
 	c.readerMu.Unlock()
-	if want {
+	// A Legacy server may send its elicitation/create on the GET stream
+	// rather than the call's own response stream (2025-11-25 transports), so
+	// a client that answers elicitation listens there too.
+	if want || (c.era != eraModern && c.elicitationHandler() != nil) {
 		c.startNotifications(c.era)
 	}
 	return nil
