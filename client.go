@@ -124,6 +124,9 @@ type Client struct {
 	// elicitHandler answers a server's elicitation for the application
 	// (OnElicitation); nil when the application doesn't answer.
 	elicitHandler ElicitationHandler
+	// elicitRelay is set when a Server forwards calls through this client
+	// (RegisterRemoteServer, NewRemoteProvider), whose callers may be asked.
+	elicitRelay bool
 }
 
 // clientTransport abstracts how a client request/response round-trip is
@@ -524,7 +527,7 @@ func (c *Client) initializeLegacy(ctx context.Context) error {
 		Method:  "initialize",
 		Params: map[string]any{
 			"protocolVersion": MCPProtocolVersionLatest,
-			"capabilities":    legacyElicitationCapabilities(c.capabilitiesMap()),
+			"capabilities":    c.legacyCapabilities(),
 			"clientInfo": map[string]any{
 				"name":    mcpClientName,
 				"version": mcpClientVersion,

@@ -86,8 +86,16 @@ func upstreamURL(t *testing.T, s *Server, legacy bool) string {
 
 // upstreamClient connects a Client to s over transport ("http" or
 // "stdio"), in the Legacy era when legacy is set and the Modern one
-// otherwise.
+// otherwise, marked as forwarding for a Server (it is initialized here,
+// before the test registers it, so RegisterRemoteServer can't mark it).
 func upstreamClient(t *testing.T, s *Server, transport string, legacy bool) *Client {
+	t.Helper()
+	return connectClient(t, s, transport, legacy, (*Client).relayElicitation)
+}
+
+// connectClient is upstreamClient with before run on the Client just before
+// it initializes (nil for none).
+func connectClient(t *testing.T, s *Server, transport string, legacy bool, before func(*Client)) *Client {
 	t.Helper()
 	var c *Client
 	switch transport {
@@ -120,6 +128,9 @@ func upstreamClient(t *testing.T, s *Server, transport string, legacy bool) *Cli
 		}()
 		c = NewStreamClient(toClientR, fromClientW, "up")
 		t.Cleanup(func() { c.Close(); cancel(); toServerW.Close(); fromClientW.Close() })
+	}
+	if before != nil {
+		before(c)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

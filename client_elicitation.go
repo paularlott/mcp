@@ -435,11 +435,30 @@ func (c *Client) answerInputRequests(ctx context.Context, slot string, open *rel
 	return out, nil
 }
 
-// legacyElicitationCapabilities adds form-mode elicitation to the
-// capabilities a Legacy initialize declares (an empty object: form only).
-func legacyElicitationCapabilities(caps map[string]any) map[string]any {
-	caps["elicitation"] = map[string]any{}
+// legacyCapabilities is what a Legacy initialize declares: the client's
+// capabilities, with form-mode elicitation (an empty object: form only) only
+// when the client can answer. That means an application handler
+// (OnElicitation), or forwarding for a Server whose callers may be asked
+// (relayElicitation). A client that would only ever cancel doesn't claim
+// support, so a server can tell "can't ask" from "the user cancelled".
+func (c *Client) legacyCapabilities() map[string]any {
+	caps := c.capabilitiesMap()
+	c.elicitMu.Lock()
+	answers := c.elicitHandler != nil || c.elicitRelay
+	c.elicitMu.Unlock()
+	if answers {
+		caps["elicitation"] = map[string]any{}
+	}
 	return caps
+}
+
+// relayElicitation marks the client as forwarding calls for a Server, so a
+// Legacy initialize declares elicitation and the remote's questions reach
+// the Server's callers. It must be set before the client initializes.
+func (c *Client) relayElicitation() {
+	c.elicitMu.Lock()
+	c.elicitRelay = true
+	c.elicitMu.Unlock()
 }
 
 // relatedRequestOf reads this library's related-request hint from a

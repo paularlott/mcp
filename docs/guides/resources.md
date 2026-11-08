@@ -105,7 +105,7 @@ server.RegisterResourceTemplate(
 )
 ```
 
-`Complete` panics if the template has no such variable. Completers work exactly as for prompt arguments (see the [Prompts guide](prompts.md#argument-completion)): return all matches, most relevant first, and the library applies the spec's 100-value cap with `total`/`hasMore`. The server declares the `completions` capability only when some completer exists. An unknown template, or a name that isn't one of its variables, is `-32602`; a variable with no completer gets an empty list. A static resource URI is a valid reference but has nothing to complete.
+`Complete` panics if the template has no such variable. Completers work exactly as for prompt arguments (see the [Prompts guide](prompts.md#argument-completion)): return all matches, most relevant first, and the library applies the spec's 100-value cap with `total`/`hasMore`. The server declares the `completions` capability only when some completer exists. An unknown template, or a name that isn't one of its variables, is `-32602`; a variable with no completer gets an empty list. A static resource URI resolves as a reference but has no variables, so any argument name gets `-32602`.
 
 A `ResourceProvider` completes the variables of templates it lists by also implementing `ResourceCompletionProvider`:
 

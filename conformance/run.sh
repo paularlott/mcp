@@ -27,10 +27,19 @@ status=0
 case " $SUITES " in *" server "*)
   "$tmp/server" -addr "localhost:${PORT}" &
   pid=$!
+  ready=0
   for _ in $(seq 1 50); do
-    if curl -s -o /dev/null "$URL"; then break; fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "conformance server exited before becoming ready" >&2
+      exit 1
+    fi
+    if curl -s -o /dev/null "$URL"; then ready=1; break; fi
     sleep 0.1
   done
+  if [ "$ready" -ne 1 ]; then
+    echo "conformance server did not become ready at $URL" >&2
+    exit 1
+  fi
   for v in $SPEC_VERSIONS; do
     echo "=== MCP conformance (server): $v"
     npx -y "$SUITE" server --url "$URL" --spec-version "$v" --suite all \

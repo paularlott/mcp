@@ -218,6 +218,8 @@ func (cfg RemoteProviderConfig) newClient(auth AuthProvider) *Client {
 	} else {
 		client = NewClient(cfg.URL, auth, cfg.Name)
 	}
+	// It forwards calls for a Server: a Legacy remote may ask the caller.
+	client.relayElicitation()
 
 	// Advertise this client's own support for the MCP Apps extension
 	// (SEP-1865) to the remote server. A federated tool's whole point is to

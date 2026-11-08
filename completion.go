@@ -84,7 +84,8 @@ func (r *CompletionRequest) ContextArgs() map[string]string {
 // sends the first [MaxCompletionValues], sets total to the number returned
 // and hasMore when some were cut. Return a [ToolError] (e.g.
 // [NewToolErrorInvalidParams]) to send a specific JSON-RPC error; any other
-// error is sent as an internal error.
+// error is sent as an internal error ("Completion failed") without its text,
+// which may name internals the caller must not see.
 //
 // Completion inputs come from the client: the spec requires servers to
 // validate them and to keep completions from disclosing anything the caller
@@ -524,7 +525,10 @@ func completionWireError(ref CompletionRef, err error) *MCPError {
 	if errors.As(err, &toolErr) {
 		return &MCPError{Code: toolErr.Code, Message: toolErr.Message, Data: toolErr.Data}
 	}
-	return &MCPError{Code: ErrorCodeInternalError, Message: fmt.Sprintf("Completion failed: %v", err)}
+	// Not the error's text: a completer's or provider's error may name
+	// internals (a database, a host, a path) the caller must not see. A
+	// completer that wants the client to read a message returns a ToolError.
+	return &MCPError{Code: ErrorCodeInternalError, Message: "Completion failed"}
 }
 
 // handleCompletionComplete handles completion/complete over HTTP.

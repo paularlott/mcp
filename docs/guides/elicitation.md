@@ -238,7 +238,12 @@ caller with `Elicit`, so any mix of eras works on the two hops.
 Details:
 
 - **Capabilities.** A Legacy (2025-x) connection declares form-mode
-  elicitation in `initialize`, once for every caller. A Modern (2026-07-28)
+  elicitation in `initialize`, once for every caller. `RegisterRemoteServer`
+  and `NewRemoteProvider` mark their `Client` as forwarding before its first
+  request, so pass `RegisterRemoteServer` a `Client` you haven't initialized
+  yourself: one initialized earlier has already told a Legacy remote it can't
+  be asked. (A `Client` that neither forwards nor has an `OnElicitation`
+  handler doesn't declare elicitation at all.) A Modern (2026-07-28)
   request declares it only when the caller it is forwarded for can be asked
   (`ElicitationSupported`); sampling and roots are never declared.
 - **One connection, many callers.** A `Client` is shared by every caller, so

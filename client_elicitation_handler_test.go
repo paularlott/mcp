@@ -53,19 +53,22 @@ func TestClientOnElicitation(t *testing.T) {
 		for _, legacy := range []bool{true, false} {
 			era := map[bool]string{true: "legacy", false: "modern"}[legacy]
 			t.Run(transport+"-"+era, func(t *testing.T) {
-				c := upstreamClient(t, s, transport, legacy)
-				// The handler opens the Legacy GET stream; close it before the
-				// test server shuts down (cleanups run last-in first-out).
-				t.Cleanup(func() { c.Close() })
 				var mu sync.Mutex
 				var asked []ElicitationRequest
 				var answer func() (*ElicitResult, error)
-				c.OnElicitation(func(ctx context.Context, req ElicitationRequest) (*ElicitResult, error) {
-					mu.Lock()
-					asked = append(asked, req)
-					mu.Unlock()
-					return answer()
+				// The handler is registered before Initialize, which is when a
+				// Legacy client declares elicitation.
+				c := connectClient(t, s, transport, legacy, func(c *Client) {
+					c.OnElicitation(func(ctx context.Context, req ElicitationRequest) (*ElicitResult, error) {
+						mu.Lock()
+						asked = append(asked, req)
+						mu.Unlock()
+						return answer()
+					})
 				})
+				// The handler opens the Legacy GET stream; close it before the
+				// test server shuts down (cleanups run last-in first-out).
+				t.Cleanup(func() { c.Close() })
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				callText := func() string {
@@ -102,13 +105,13 @@ func TestClientOnElicitation(t *testing.T) {
 	}
 }
 
-// Without a handler nothing changes: on 2025-x the question is cancelled;
-// on 2026-07-28 the Client doesn't declare elicitation, so the server
-// can't ask.
+// Without a handler, and not forwarding for a Server, the Client doesn't
+// declare elicitation in either era, so the server knows it can't ask
+// (rather than being told every time that the user cancelled).
 func TestClientWithoutElicitationHandler(t *testing.T) {
 	s := handlerServer(t)
 	for _, legacy := range []bool{true, false} {
-		c := upstreamClient(t, s, "http", legacy)
+		c := connectClient(t, s, "http", legacy, nil)
 		t.Cleanup(func() { c.Close() })
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		resp, err := c.CallTool(ctx, "ask", nil)
@@ -116,9 +119,8 @@ func TestClientWithoutElicitationHandler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("legacy=%v: %v", legacy, err)
 		}
-		got := responseText(resp)
-		if want := map[bool]string{true: "cancel", false: "unsupported"}[legacy]; got != want {
-			t.Errorf("legacy=%v: got %q, want %q", legacy, got, want)
+		if got := responseText(resp); got != "unsupported" {
+			t.Errorf("legacy=%v: got %q, want unsupported", legacy, got)
 		}
 	}
 }

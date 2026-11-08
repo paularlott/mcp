@@ -475,8 +475,11 @@ func (a *AuthorizationCodeAuth) selectScopes(meta *OAuthMeta) []string {
 	return scopes
 }
 
-// refresh replaces the session's access token using its refresh token, with the resource parameter (RFC 8707). On
-// failure the refresh token is dropped, so the next challenge authorizes afresh. Called with a.mu held.
+// refresh replaces the session's access token using its refresh token, with the resource parameter (RFC 8707). When the
+// authorization server refuses the refresh (an OAuth error response, such as invalid_grant: RFC 6749 section 5.2) or
+// returns an unusable token, the tokens are dropped, so the next challenge authorizes afresh. A transient failure (a
+// network error, a timeout, a 5xx) keeps them, so an outage at the token endpoint doesn't cost the user a new
+// authorization. Called with a.mu held.
 func (a *AuthorizationCodeAuth) refresh(ctx context.Context) error {
 	if a.session.RefreshToken == "" {
 		return errors.New("no refresh token")
@@ -489,12 +492,16 @@ func (a *AuthorizationCodeAuth) refresh(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	token, err := requestToken(ctx, a.client, a.session.TokenEndpoint, form, a.credentials())
-	if err == nil {
-		err = checkTokenType(token)
-	}
 	if err != nil {
-		a.session.AccessToken, a.session.RefreshToken, a.session.Expiry = "", "", time.Time{}
-		a.changed()
+		var refused *oauth2.RetrieveError
+		if errors.As(err, &refused) && refused.Response != nil &&
+			refused.Response.StatusCode >= 400 && refused.Response.StatusCode < 500 {
+			a.dropTokens()
+		}
+		return err
+	}
+	if err := checkTokenType(token); err != nil {
+		a.dropTokens()
 		return err
 	}
 	a.session.AccessToken = token.accessToken
@@ -507,6 +514,12 @@ func (a *AuthorizationCodeAuth) refresh(ctx context.Context) error {
 	}
 	a.changed()
 	return nil
+}
+
+// dropTokens forgets the session's tokens, keeping its client identity. Called with a.mu held.
+func (a *AuthorizationCodeAuth) dropTokens() {
+	a.session.AccessToken, a.session.RefreshToken, a.session.Expiry = "", "", time.Time{}
+	a.changed()
 }
 
 // credentials is the session's client identity for token requests.

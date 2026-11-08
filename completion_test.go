@@ -173,8 +173,8 @@ func TestComplete_CompleterErrors(t *testing.T) {
 		t.Fatalf("ToolError from completer: %+v", resp.Error)
 	}
 	resp = legacyComplete(t, s, map[string]any{"ref": map[string]any{"type": "ref/prompt", "name": "p"}, "argument": map[string]any{"name": "boom", "value": ""}})
-	if resp.Error == nil || resp.Error.Code != ErrorCodeInternalError {
-		t.Fatalf("plain error from completer: %+v", resp.Error)
+	if resp.Error == nil || resp.Error.Code != ErrorCodeInternalError || strings.Contains(resp.Error.Message, "db down") {
+		t.Fatalf("plain error from completer: %+v (its text must not reach the client)", resp.Error)
 	}
 }
 

@@ -452,7 +452,12 @@ func (c *Client) connectLegacySSE(ctx context.Context, lastEventID string) (*htt
 		return nil, nil, err
 	}
 
-	resp, err := c.doHTTP(req)
+	// A background stream never starts an interactive authorization (that
+	// would open the Authorizer, e.g. a browser, from the reader goroutine,
+	// again on every reconnect): it sends the current token (refreshed
+	// without the user if it expired), and after a 401 the next reconnect
+	// picks up the token a foreground request obtains.
+	resp, err := c.httpClient.Do(req)
 	return resp, passthroughMethod, err
 }
 

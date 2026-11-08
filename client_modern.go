@@ -408,7 +408,9 @@ func (c *Client) connectModernSubscription(ctx context.Context, lastEventID stri
 		return nil, nil, err
 	}
 
-	resp, err := c.doHTTP(httpReq)
+	// Never an interactive authorization from the background reader: see
+	// connectLegacySSE.
+	resp, err := c.httpClient.Do(httpReq)
 	return resp, translateModernNotification, err
 }
 
