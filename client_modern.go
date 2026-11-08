@@ -74,6 +74,11 @@ func (c *Client) tryModernInitialize(ctx context.Context) (modern bool, err erro
 		}
 		if err != nil {
 			c.protocolVersion = ""
+			// The server asked for authorization and it failed: the Legacy
+			// initialize would only be refused the same way.
+			if errors.Is(err, ErrAuthorizationFailed) {
+				return false, fmt.Errorf("initialize failed: %w", err)
+			}
 			return false, nil
 		}
 		if resp.Error != nil {
@@ -333,7 +338,7 @@ func (c *Client) sendModernHTTPRequest(ctx context.Context, req *MCPRequest, res
 		return fmt.Errorf("failed to get auth header: %w", err)
 	}
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doHTTP(httpReq)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -403,7 +408,7 @@ func (c *Client) connectModernSubscription(ctx context.Context, lastEventID stri
 		return nil, nil, err
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.doHTTP(httpReq)
 	return resp, translateModernNotification, err
 }
 

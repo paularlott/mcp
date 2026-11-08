@@ -28,6 +28,11 @@ type OAuthMeta struct {
 	// ScopesSupported is the authorization server's scopes_supported.
 	ScopesSupported []string `json:"scopes_supported,omitempty"`
 
+	// TokenEndpointAuthMethodsSupported is the authorization server's token_endpoint_auth_methods_supported: how a
+	// client may authenticate to the token endpoint. RFC 8414 section 2: when omitted, the default is
+	// client_secret_basic.
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+
 	// CodeChallengeMethodsSupported is the authorization server's code_challenge_methods_supported. Discovery only
 	// returns metadata that includes S256: the MCP authorization spec requires PKCE with S256.
 	CodeChallengeMethodsSupported []string `json:"code_challenge_methods_supported,omitempty"`
@@ -72,56 +77,74 @@ func DiscoverOAuthMeta(ctx context.Context, serverURL string) (*OAuthMeta, error
 // (or http on a loopback host) is not used, and an authorization server that does not advertise PKCE S256 fails
 // discovery with ErrPKCENotSupported.
 func DiscoverOAuthMetaWithClient(ctx context.Context, client *http.Client, serverURL string) (*OAuthMeta, error) {
+	meta, _, err := discoverOAuthMeta(ctx, client, serverURL, nil)
+	return meta, err
+}
+
+// discoverOAuthMeta is DiscoverOAuthMetaWithClient for a caller that may already hold the server's challenge:
+// challenges are the WWW-Authenticate values of a 401 or 403 it was answered with (a non-nil empty slice when that
+// answer carried none), and nil has discovery provoke one itself. unpublished reports that the server publishes no
+// OAuth metadata at all: every address discovery tried answered 404.
+func discoverOAuthMeta(ctx context.Context, client *http.Client, serverURL string, challenges []string) (meta *OAuthMeta, unpublished bool, err error) {
 	u, err := url.Parse(strings.TrimSuffix(serverURL, "/"))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	client = clientCheckingRedirects(client)
-	meta, found, why := protectedResourceOAuthMeta(ctx, client, u)
+	meta, found, why := protectedResourceOAuthMeta(ctx, client, u, challenges)
 	if meta != nil {
-		return meta, nil
+		return meta, false, nil
 	}
 	// The host-root fallback is for a server that publishes no protected
 	// resource metadata at all: every address answered "not here". An
 	// address that failed in any other way, or a document for another
 	// resource, means the server may well have one, so there is no fallback.
 	if !found {
-		legacy, err := legacyOAuthMeta(ctx, client, u)
+		legacy, allNotFound, err := legacyOAuthMeta(ctx, client, u)
 		if legacy != nil {
-			return legacy, nil
+			return legacy, false, nil
 		}
+		unpublished = allNotFound
 		why = moreTelling(why, err)
 	}
 	if why != nil {
-		return nil, fmt.Errorf("could not discover OAuth metadata from %s: %w", serverURL, why)
+		return nil, unpublished, fmt.Errorf("could not discover OAuth metadata from %s: %w", serverURL, why)
 	}
-	return nil, fmt.Errorf("could not discover OAuth metadata from %s", serverURL)
+	return nil, unpublished, fmt.Errorf("could not discover OAuth metadata from %s", serverURL)
 }
 
 // legacyOAuthMeta finds an MCP server that is its own authorization server, publishing its metadata at the root of its
 // host (the MCP 2025-03-26 authorization spec). Tried only when the server publishes no protected resource metadata;
 // only metadata whose issuer is exactly the server's origin counts, and its Resource is the server's URL.
 //
+// allNotFound reports that neither address had a document (both answered 404).
+//
 // LEGACY(fortix-mcp-own-oauth): Freedom 3 instances that do not sign in through their identity provider (IdP) are
 // served by a fortix-mcp that is its own authorization server, found here. Remove this, and its call, once every
 // Freedom 3 instance signs in only through the IdP: those are found by protectedResourceOAuthMeta.
-func legacyOAuthMeta(ctx context.Context, client *http.Client, u *url.URL) (*OAuthMeta, error) {
+func legacyOAuthMeta(ctx context.Context, client *http.Client, u *url.URL) (*OAuthMeta, bool, error) {
 	var why error
+	allNotFound := true
 	for _, path := range []string{"/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"} {
 		candidate := originURL(u, path)
 		var meta OAuthMeta
 		if err := getJSON(ctx, client, candidate, &meta); err != nil {
+			var notThere *notPublishedError
+			if !errors.As(err, &notThere) || notThere.code != http.StatusNotFound {
+				allNotFound = false
+			}
 			why = moreTelling(why, err)
 			continue
 		}
+		allNotFound = false
 		if err := checkOAuthMeta(&meta, originURL(u, ""), candidate); err != nil {
 			why = moreTelling(why, err)
 			continue
 		}
 		meta.Resource = originURL(u, strings.TrimSuffix(u.Path, "/"))
-		return &meta, nil
+		return &meta, false, nil
 	}
-	return nil, why
+	return nil, allNotFound, why
 }
 
 // protectedResourceOAuthMeta finds the authorization server an MCP server names in its protected resource metadata
@@ -130,8 +153,8 @@ func legacyOAuthMeta(ctx context.Context, client *http.Client, u *url.URL) (*OAu
 // metadata names another issuer (RFC 8414 section 3.3). found reports whether a document for this server was read,
 // whether or not its authorization server could be used. When none is found, the error says why when there is more to
 // say than "not published": an authorization server that was named but could not be read, or a request that failed.
-func protectedResourceOAuthMeta(ctx context.Context, client *http.Client, u *url.URL) (*OAuthMeta, bool, error) {
-	metadataURLs, challengeScope, why := protectedResourceMetadataURLs(ctx, client, u)
+func protectedResourceOAuthMeta(ctx context.Context, client *http.Client, u *url.URL, challenges []string) (*OAuthMeta, bool, error) {
+	metadataURLs, challengeScope, why := protectedResourceMetadataURLs(ctx, client, u, challenges)
 	found := false
 	rootURL := originURL(u, "/.well-known/oauth-protected-resource")
 	for _, metadataURL := range metadataURLs {
@@ -186,11 +209,13 @@ func moreTelling(kept, err error) error {
 
 // protectedResourceMetadataURLs lists where u's protected resource metadata may be, most specific first: the
 // resource_metadata of the server's 401 Bearer challenge, then the well-known address for its path, then for its
-// host. The challenge comes from an unauthenticated GET or, when that is not answered 401 (a server that only takes
-// POST), an unauthenticated JSON-RPC ping. scope is the scope of the challenge naming the metadata; why says why a
-// resource_metadata was not used (one that is not https is refused).
-func protectedResourceMetadataURLs(ctx context.Context, client *http.Client, u *url.URL) (urls []string, scope string, why error) {
-	challenges := unauthorizedChallenges(ctx, client, u, http.MethodGet)
+// host. The challenge is the caller's (challenges, when not nil) or comes from an unauthenticated GET or, when that is
+// not answered 401 (a server that only takes POST), an unauthenticated JSON-RPC ping. scope is the scope of the
+// challenge; why says why a resource_metadata was not used (one that is not https is refused).
+func protectedResourceMetadataURLs(ctx context.Context, client *http.Client, u *url.URL, challenges []string) (urls []string, scope string, why error) {
+	if challenges == nil {
+		challenges = unauthorizedChallenges(ctx, client, u, http.MethodGet)
+	}
 	if challenges == nil {
 		challenges = unauthorizedChallenges(ctx, client, u, http.MethodPost)
 	}
@@ -506,30 +531,70 @@ func RegisterOAuthClientWithClient(ctx context.Context, client *http.Client, reg
 	for _, opt := range opts {
 		opt(&o)
 	}
+	registered, err := registerClient(ctx, client, registrationEndpoint, clientRegistration{
+		name:            clientName,
+		redirectURI:     redirectURI,
+		applicationType: o.applicationType,
+		authMethod:      authMethodNone,
+	})
+	if err != nil {
+		return "", err
+	}
+	return registered.clientID, nil
+}
+
+// Token endpoint client authentication methods (RFC 7591 section 2, OAuth 2.1 section 2.4.1).
+const (
+	authMethodNone        = "none"
+	authMethodSecretBasic = "client_secret_basic"
+	authMethodSecretPost  = "client_secret_post"
+)
+
+// clientRegistration is the client metadata registerClient sends.
+type clientRegistration struct {
+	name            string
+	redirectURI     string
+	applicationType string
+	authMethod      string // the token_endpoint_auth_method asked for
+}
+
+// clientCredentials is a client's identity at one authorization server, and how it authenticates to the token
+// endpoint.
+type clientCredentials struct {
+	clientID     string
+	clientSecret string
+	authMethod   string
+}
+
+// registerClient performs RFC 7591 dynamic client registration for the authorization code grant with PKCE and
+// refresh tokens (grant_types carries refresh_token, as SEP-2207 asks of a client that wants them). The returned
+// credentials use the token_endpoint_auth_method the server registered: the one in its response, which RFC 7591
+// section 3.2.1 says carries every registered value, else the one asked for.
+func registerClient(ctx context.Context, client *http.Client, registrationEndpoint string, reg clientRegistration) (*clientCredentials, error) {
 	// The MCP authorization spec: redirect URIs MUST be localhost or https.
 	// A native app's private-use scheme (RFC 8252 section 7.1) is neither
 	// and is allowed too; what is refused is plain http to a real host.
-	if ru, err := url.Parse(redirectURI); err != nil || ru.Scheme == "" ||
+	if ru, err := url.Parse(reg.redirectURI); err != nil || ru.Scheme == "" ||
 		((strings.EqualFold(ru.Scheme, "http") || strings.EqualFold(ru.Scheme, "https")) && checkFetchURL(ru) != nil) {
-		return "", fmt.Errorf("redirect URI %q must be https, a loopback address, or a private-use scheme", redirectURI)
+		return nil, fmt.Errorf("redirect URI %q must be https, a loopback address, or a private-use scheme", reg.redirectURI)
 	}
 	body, _ := json.Marshal(map[string]any{
-		"client_name":                clientName,
-		"redirect_uris":              []string{redirectURI},
+		"client_name":                reg.name,
+		"redirect_uris":              []string{reg.redirectURI},
 		"grant_types":                []string{"authorization_code", "refresh_token"},
 		"response_types":             []string{"code"},
-		"token_endpoint_auth_method": "none",
-		"application_type":           o.applicationType,
+		"token_endpoint_auth_method": reg.authMethod,
+		"application_type":           reg.applicationType,
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, registrationEndpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -539,20 +604,105 @@ func RegisterOAuthClientWithClient(ctx context.Context, client *http.Client, reg
 		}
 		_ = json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&failure)
 		if failure.Error == "" {
-			return "", fmt.Errorf("dynamic client registration failed (status %d)", resp.StatusCode)
+			return nil, fmt.Errorf("dynamic client registration failed (status %d)", resp.StatusCode)
 		}
 		if failure.ErrorDescription == "" {
-			return "", fmt.Errorf("dynamic client registration failed (status %d): %s", resp.StatusCode, failure.Error)
+			return nil, fmt.Errorf("dynamic client registration failed (status %d): %s", resp.StatusCode, failure.Error)
 		}
-		return "", fmt.Errorf("dynamic client registration failed (status %d): %s: %s", resp.StatusCode, failure.Error, failure.ErrorDescription)
+		return nil, fmt.Errorf("dynamic client registration failed (status %d): %s: %s", resp.StatusCode, failure.Error, failure.ErrorDescription)
 	}
 	var result struct {
-		ClientID string `json:"client_id"`
+		ClientID                string `json:"client_id"`
+		ClientSecret            string `json:"client_secret"`
+		TokenEndpointAuthMethod string `json:"token_endpoint_auth_method"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxMetadataBytes)).Decode(&result); err != nil || result.ClientID == "" {
-		return "", fmt.Errorf("dynamic client registration failed (status %d): no client_id", resp.StatusCode)
+		return nil, fmt.Errorf("dynamic client registration failed (status %d): no client_id", resp.StatusCode)
 	}
-	return result.ClientID, nil
+	creds := &clientCredentials{clientID: result.ClientID, clientSecret: result.ClientSecret, authMethod: result.TokenEndpointAuthMethod}
+	if creds.authMethod == "" {
+		creds.authMethod = reg.authMethod
+	}
+	return creds, nil
+}
+
+// tokenResponse is a successful token endpoint response (OAuth 2.1 section 3.2.3).
+type tokenResponse struct {
+	accessToken  string
+	tokenType    string
+	refreshToken string
+	scope        string
+	expiry       time.Time // zero when the response gave no expires_in
+}
+
+// requestToken posts a token request (form, without client authentication) to tokenURL, authenticating as creds:
+// client_secret_basic sends the id and secret in an HTTP Basic Authorization header, each form-urlencoded first (OAuth
+// 2.1 section 2.4.1); client_secret_post sends both as form parameters; none (a public client) sends only client_id.
+// A failed response is returned as an *oauth2.RetrieveError carrying the server's error code.
+func requestToken(ctx context.Context, client *http.Client, tokenURL string, form url.Values, creds clientCredentials) (*tokenResponse, error) {
+	form = cloneValues(form)
+	// A client with no secret to send identifies itself as a public client
+	// whatever method it was registered with.
+	basic := creds.authMethod == authMethodSecretBasic && creds.clientSecret != ""
+	if !basic {
+		form.Set("client_id", creds.clientID)
+	}
+	if creds.authMethod == authMethodSecretPost && creds.clientSecret != "" {
+		form.Set("client_secret", creds.clientSecret)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	if basic {
+		req.SetBasicAuth(url.QueryEscape(creds.clientID), url.QueryEscape(creds.clientSecret))
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: cannot fetch token: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBytes))
+	if err != nil {
+		return nil, fmt.Errorf("oauth2: cannot fetch token: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		var failure struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		_ = json.Unmarshal(body, &failure)
+		return nil, &oauth2.RetrieveError{Response: resp, Body: body, ErrorCode: failure.Error, ErrorDescription: failure.ErrorDescription}
+	}
+	var tr struct {
+		AccessToken  string      `json:"access_token"`
+		TokenType    string      `json:"token_type"`
+		RefreshToken string      `json:"refresh_token"`
+		Scope        string      `json:"scope"`
+		ExpiresIn    json.Number `json:"expires_in"`
+	}
+	if err := json.Unmarshal(body, &tr); err != nil {
+		return nil, fmt.Errorf("oauth2: cannot parse token response: %w", err)
+	}
+	if tr.AccessToken == "" {
+		return nil, errors.New("oauth2: server response missing access_token")
+	}
+	token := &tokenResponse{accessToken: tr.AccessToken, tokenType: tr.TokenType, refreshToken: tr.RefreshToken, scope: tr.Scope}
+	if secs, err := tr.ExpiresIn.Int64(); err == nil && secs > 0 {
+		token.expiry = time.Now().Add(time.Duration(secs) * time.Second)
+	}
+	return token, nil
+}
+
+// cloneValues copies v, so a caller's form is never modified.
+func cloneValues(v url.Values) url.Values {
+	out := make(url.Values, len(v)+2)
+	for k, vs := range v {
+		out[k] = append([]string(nil), vs...)
+	}
+	return out
 }
 
 // applicationTypeFor is the application_type for a client redirecting to redirectURI: "native" for a loopback host or
@@ -667,56 +817,20 @@ func (s *resourceRefreshTokenSource) Token() (*oauth2.Token, error) {
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {s.refreshToken},
-		"client_id":     {s.clientID},
 		"resource":      {s.resource},
 	}
 	// A token endpoint that hangs must not hold every caller (GetAuthHeader
 	// serialises refreshes), so the request is bounded.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.tokenURL, strings.NewReader(form.Encode()))
+	tr, err := requestToken(ctx, s.client, s.tokenURL, form, clientCredentials{clientID: s.clientID, authMethod: authMethodNone})
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("oauth2: cannot fetch token: %w", err)
+	if tr.refreshToken != "" {
+		s.refreshToken = tr.refreshToken
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxMetadataBytes))
-	if err != nil {
-		return nil, fmt.Errorf("oauth2: cannot fetch token: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		var failure struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description"`
-		}
-		_ = json.Unmarshal(body, &failure)
-		return nil, &oauth2.RetrieveError{Response: resp, Body: body, ErrorCode: failure.Error, ErrorDescription: failure.ErrorDescription}
-	}
-	var tr struct {
-		AccessToken  string      `json:"access_token"`
-		TokenType    string      `json:"token_type"`
-		RefreshToken string      `json:"refresh_token"`
-		ExpiresIn    json.Number `json:"expires_in"`
-	}
-	if err := json.Unmarshal(body, &tr); err != nil {
-		return nil, fmt.Errorf("oauth2: cannot parse token response: %w", err)
-	}
-	if tr.AccessToken == "" {
-		return nil, errors.New("oauth2: server response missing access_token")
-	}
-	if tr.RefreshToken != "" {
-		s.refreshToken = tr.RefreshToken
-	}
-	token := &oauth2.Token{AccessToken: tr.AccessToken, TokenType: tr.TokenType, RefreshToken: s.refreshToken}
-	if secs, err := tr.ExpiresIn.Int64(); err == nil && secs > 0 {
-		token.Expiry = time.Now().Add(time.Duration(secs) * time.Second)
-	}
-	return token, nil
+	return &oauth2.Token{AccessToken: tr.accessToken, TokenType: tr.tokenType, RefreshToken: s.refreshToken, Expiry: tr.expiry}, nil
 }
 
 func (o *OAuth2Auth) GetAuthHeader() (string, error) {

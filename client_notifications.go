@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -334,14 +335,93 @@ func (c *Client) applyAuthHeader(h http.Header) error {
 	if c.auth == nil {
 		return nil
 	}
-	header, err := c.auth.GetAuthHeader()
+	var header string
+	var err error
+	if p, ok := c.auth.(resourceAuthProvider); ok {
+		header, err = p.authHeaderFor(c.baseURL)
+	} else {
+		header, err = c.auth.GetAuthHeader()
+	}
 	if err != nil {
 		return err
 	}
 	if header != "" {
 		h.Set("Authorization", header)
+	} else {
+		h.Del("Authorization")
 	}
 	return nil
+}
+
+// resourceAuthProvider is an AuthProvider whose tokens are bound to one
+// resource (AuthorizationCodeAuth): asked for the header of a request to a
+// given server, it gives none for a server its token was not issued for.
+type resourceAuthProvider interface {
+	authHeaderFor(serverURL string) (string, error)
+}
+
+// challengeResponder is an AuthProvider that can get a new token when a
+// server refuses a request (AuthorizationCodeAuth). respondToChallenge is
+// given the refusal (status 401 or 403 and its WWW-Authenticate values) and
+// the Authorization header the request carried, and reports whether the
+// request should be retried with a fresh header.
+type challengeResponder interface {
+	respondToChallenge(ctx context.Context, serverURL string, status int, challenges []string, sentAuthorization string) (bool, error)
+}
+
+// maxAuthorizationRetries bounds how often one request is retried after an
+// authorization challenge. The MCP authorization spec asks clients to limit
+// retries so a server whose scope demands can never be met (repeated 403
+// insufficient_scope) does not loop the user through authorization forever.
+const maxAuthorizationRetries = 3
+
+// doHTTP sends an HTTP request to the server. When the server answers 401,
+// or 403 insufficient_scope, and the client's auth provider can authorize
+// (challengeResponder), it does and the request is retried with the new
+// token, up to maxAuthorizationRetries times; otherwise the refusal is
+// returned as it is, for the caller to report. A failed authorization is
+// returned as an error wrapping ErrAuthorizationFailed.
+func (c *Client) doHTTP(req *http.Request) (*http.Response, error) {
+	resp, err := c.httpClient.Do(req)
+	responder, ok := c.auth.(challengeResponder)
+	if !ok {
+		return resp, err
+	}
+	for retries := 0; err == nil && retries < maxAuthorizationRetries; retries++ {
+		if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
+			break
+		}
+		if req.Body != nil && req.GetBody == nil {
+			break // the body cannot be sent again
+		}
+		retry, authErr := responder.respondToChallenge(req.Context(), c.baseURL, resp.StatusCode,
+			append([]string{}, resp.Header.Values("WWW-Authenticate")...), req.Header.Get("Authorization"))
+		if authErr != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return nil, authErr
+		}
+		if !retry {
+			break
+		}
+		// A retry that cannot be built leaves the refusal standing.
+		next := req.Clone(req.Context())
+		if req.GetBody != nil {
+			body, bodyErr := req.GetBody()
+			if bodyErr != nil {
+				break
+			}
+			next.Body = body
+		}
+		if c.applyAuthHeader(next.Header) != nil {
+			break
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		req = next
+		resp, err = c.httpClient.Do(req)
+	}
+	return resp, err
 }
 
 // connectLegacySSE builds and sends one Legacy-era GET event-stream request,
@@ -372,7 +452,7 @@ func (c *Client) connectLegacySSE(ctx context.Context, lastEventID string) (*htt
 		return nil, nil, err
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.doHTTP(req)
 	return resp, passthroughMethod, err
 }
 

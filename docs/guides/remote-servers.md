@@ -432,10 +432,89 @@ parameter in every token request.
 
 ### Authorization (OAuth 2.1)
 
-For servers that need a user's authorization, the library implements the
-client side of the
-[MCP authorization spec](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
-up to the browser step, which is left to your application.
+For servers that need a user's authorization, `mcp.AuthorizationCodeAuth`
+runs the client side of the
+[MCP authorization spec](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+(and its 2025-11-25, 2025-06-18 and 2025-03-26 forms). Give it to `NewClient`;
+the client's first request goes out without a token, and when the server
+answers `401` the provider authorizes and the client retries the request with
+the token. The one step your application supplies is the user agent: an
+`Authorizer` that sends the user to the authorization URL and returns the URL
+the authorization server redirected back to.
+
+```go
+auth, err := mcp.NewAuthorizationCodeAuth(mcp.AuthorizationCodeConfig{
+    RedirectURI: "http://127.0.0.1:8765/callback",
+    Authorizer: func(ctx context.Context, authorizationURL string) (string, error) {
+        // Open authorizationURL in the user's browser, wait for the request
+        // to RedirectURI (e.g. a local listener on 127.0.0.1:8765), and
+        // return its full URL, query included.
+        return waitForCallback(ctx, authorizationURL)
+    },
+    ClientName: "my-app",
+    // Optional: a saved session from OnSession, so the user isn't asked again.
+    Session:   loadSession(),
+    OnSession: func(s mcp.OAuthSession) { saveSession(s) },
+})
+if err != nil {
+    return err
+}
+client := mcp.NewClient("https://api.example.com/mcp", auth, "namespace")
+// Any call now authorizes on demand. A failure wraps mcp.ErrAuthorizationFailed.
+```
+
+What happens on a `401`:
+
+1. **Discovery** (below): the challenge's `resource_metadata` and `scope`, the
+   protected resource metadata (whose `resource` must be this server, or the
+   flow stops), and the authorization server's metadata (whose `issuer` must
+   be exactly the one named, or it is not used). A server with no protected
+   resource metadata gets the 2025-03-26 behaviour: metadata at the root of its
+   host, and when there is none at all, the default endpoints `/authorize`,
+   `/token` and `/register` there.
+2. **Client identity**, in the spec's order: pre-registered `ClientID` /
+   `ClientSecret` (only sent to `ClientIssuer`'s authorization server when that
+   is set); else `ClientMetadataURL` as a Client ID Metadata Document when the
+   authorization server advertises `client_id_metadata_document_supported`;
+   else dynamic client registration.
+3. **Scopes**: the challenge's `scope`, else the protected resource metadata's
+   `scopes_supported`, else none (the parameter is left out), plus
+   `offline_access` when the authorization server lists it (to get a refresh
+   token; `SkipOfflineAccess` turns this off).
+4. **Authorization request** with PKCE `S256`, a random `state` and the
+   `resource` parameter (RFC 8707) exactly as the metadata published it. The
+   response's `state` must match, and its `iss` (RFC 9207) must be exactly the
+   issuer, compared as a string, whether or not the server advertised it; a
+   server that advertises `authorization_response_iss_parameter_supported` must
+   send one. A rejected response never reaches the token endpoint.
+5. **Token request** with the code verifier and the same `resource`,
+   authenticated as the authorization server supports and the registration
+   says: `client_secret_basic`, `client_secret_post`, or `none` for a public
+   client (`TokenEndpointAuthMethod` forces one).
+
+Afterwards:
+
+- An expired token is refreshed (with `resource`) before it is sent; a `401`
+  for a token that can be refreshed refreshes rather than asking the user.
+- A `403` with `error="insufficient_scope"` asks the user again for the
+  challenged scope together with the scope already held (step-up). One request
+  is retried at most three times, and a `403` for scopes already granted stops
+  at once, so a server whose demands can't be met doesn't loop the user.
+- Discovery runs again on every `401`, so a server that moves to another
+  authorization server is followed: the client registers there afresh, and
+  no client id, secret or token from the old one is ever sent to the new one.
+- A token is only sent to the server it was issued for (the protected resource
+  metadata's `resource`): a provider shared between clients for different
+  servers never leaks one server's token to another.
+- Concurrent requests refused at the same time share one authorization.
+
+`OAuthSession` holds the authorization server, the client registration and the
+tokens; it contains secrets, so store it as such.
+
+#### Doing it yourself
+
+The building blocks `AuthorizationCodeAuth` uses are public too, for an
+application that runs the flow itself.
 
 **Discovery.** `mcp.DiscoverOAuthMeta(ctx, serverURL)` (or
 `DiscoverOAuthMetaWithClient` with your own `*http.Client`) finds the

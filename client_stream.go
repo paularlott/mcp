@@ -223,7 +223,7 @@ func (c *Client) resumeResponseStream(ctx context.Context, lastEventID string) (
 		return nil, fmt.Errorf("failed to get auth header: %w", err)
 	}
 
-	httpResp, err := c.httpClient.Do(httpReq)
+	httpResp, err := c.doHTTP(httpReq)
 	if err != nil {
 		return nil, err
 	}

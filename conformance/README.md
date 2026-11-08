@@ -58,7 +58,12 @@ some scenarios check) and exits 0 or 1. The suite judges the client by what
 its mock server observes: version negotiation and `_meta`, the 2026-07-28
 `Mcp-Method`/`Mcp-Name`/`Mcp-Param-*` headers, dropping tools with invalid
 `x-mcp-header` annotations, JSON Schema preservation and `$ref` handling, SSE
-retry and resumption, and the authorization flows.
+retry and resumption, and the authorization flows. For those it runs the
+`Client` with an `AuthorizationCodeAuth` whose `Authorizer` is headless: the
+suite's mock authorization server approves at once, so it requests the
+authorization URL and returns the redirect. The extension `auth/*` scenarios
+(client credentials, enterprise-managed authorization, DPoP, workload
+identity) are not part of `--suite all` and are not run.
 
 ## The fixture server
 
@@ -106,13 +111,11 @@ The spec lets a server leave all of these out.
 
 ### Client
 
-Not implemented yet:
-
-- the OAuth authorization-code flow (every `auth/*` scenario): the library
-  has the pieces — protected resource and authorization server metadata
-  discovery with PKCE checks, client registration, client-credentials and
-  refresh-token auth — but the `Client` does not run authorization when a
-  server answers 401
+None: every client scenario the suite runs with `--suite all` passes on
+every revision, including all the `auth/*` authorization scenarios. The
+suite's authorization extension scenarios (DPoP, enterprise-managed
+authorization, client-credentials JWT, workload identity) are not part of
+`--suite all` and are not run.
 
 Anything else that fails is a regression. A listed scenario that starts
 passing also fails the run, so remove its entry when a feature lands.
