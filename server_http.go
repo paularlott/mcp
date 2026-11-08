@@ -586,9 +586,9 @@ func (s *Server) handleInitialize(w http.ResponseWriter, r *http.Request, req *M
 		// Set session ID header
 		w.Header().Set(headerSessionID, sessionID)
 		s.recordHTTPPeer(sessionID, protocolVersion, params.Capabilities)
-	} else {
-		s.recordHTTPPeer("", protocolVersion, params.Capabilities)
 	}
+	// Without session management no peer is recorded: Legacy HTTP
+	// elicitation needs a session to tell clients apart (httpPeerScope).
 
 	s.sendMCPResponse(w, req.ID, result)
 }

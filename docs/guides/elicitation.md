@@ -76,6 +76,16 @@ the client answers.
   `SetResponseStreaming` disabled, elicitation is unsupported for that
   request. The client POSTs its JSON-RPC response separately (answered 202),
   and the server routes it by id to the waiting handler in the same session.
+  **Legacy HTTP elicitation needs session management** (`SetSessionManager`):
+  without sessions the server can't tell one client from another, so it can't
+  know what each declared or who is answering, and `Elicit` returns
+  `ErrElicitationUnsupported`.
+- **Who may answer.** A response is accepted only in the session the question
+  went to, only from the same authenticated principal (`TokenInfo.Subject`,
+  when the request passed `Protect` or carries `WithTokenInfo`), and only for
+  the question's request id, which is random (128 bits). A response that
+  fails any of these is dropped and the question keeps waiting for the real
+  answer.
 - **stdio.** The request is a line on stdout; the client's response line on
   stdin is routed back the same way.
 - **Timeouts.** `SetElicitationTimeout` (default 10 minutes; a person is
@@ -91,9 +101,7 @@ the client answers.
 POST and must reach the instance that holds the waiting handler: use sticky
 routing on `MCP-Session-Id`. The capabilities a client declared are kept in
 memory by the instance that served its `initialize`, so a request that lands
-on another instance sees elicitation as unsupported. Without session
-management, every client shares one scope (the most recent `initialize`), so
-enable sessions when several clients elicit at once.
+on another instance sees elicitation as unsupported.
 
 ### 2026-07-28: InputRequiredResult (multi round-trip requests)
 

@@ -270,7 +270,7 @@ func (s *Server) serveStdioMessage(ctx context.Context, srv *jsonrpc.Server, str
 				// A response to a server-to-client request (elicitation/create):
 				// routed to the handler waiting on it, never answered.
 				if peer := clientPeerFrom(ctx); peer != nil {
-					peer.deliver(stdioIDKey(head.ID), msg)
+					peer.deliver(stdioIDKey(head.ID), principalOf(ctx), msg) // the connection is one client
 				}
 				return
 			}

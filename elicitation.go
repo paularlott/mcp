@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -497,8 +496,17 @@ type clientPeer struct {
 	mu      sync.Mutex
 	version string
 	caps    map[string]any
-	pending map[string]chan json.RawMessage // response id (compact JSON) -> waiter
+	pending map[string]pendingAnswer // response id (compact JSON) -> waiter
 	seen    time.Time
+}
+
+// pendingAnswer is a server-to-client request waiting for its response.
+// principal is the authenticated caller the request went to (TokenInfo's
+// Subject, "" without authentication): only a response from the same
+// principal is accepted, so another caller who learns the id can't answer.
+type pendingAnswer struct {
+	ch        chan json.RawMessage
+	principal string
 }
 
 func (p *clientPeer) record(version string, caps map[string]any) {
@@ -513,14 +521,14 @@ func (p *clientPeer) state() (version string, caps map[string]any) {
 	return p.version, p.caps
 }
 
-func (p *clientPeer) await(id string) chan json.RawMessage {
+func (p *clientPeer) await(id, principal string) chan json.RawMessage {
 	ch := make(chan json.RawMessage, 1)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.pending == nil {
-		p.pending = map[string]chan json.RawMessage{}
+		p.pending = map[string]pendingAnswer{}
 	}
-	p.pending[id] = ch
+	p.pending[id] = pendingAnswer{ch: ch, principal: principal}
 	return ch
 }
 
@@ -530,18 +538,30 @@ func (p *clientPeer) forget(id string) {
 	delete(p.pending, id)
 }
 
-// deliver hands a client's JSON-RPC response to the request waiting for it.
-// A response nobody waits for (late, after a timeout, or unknown) is dropped.
-func (p *clientPeer) deliver(id string, msg json.RawMessage) bool {
+// deliver hands a client's JSON-RPC response to the request waiting for it,
+// when it comes from the principal the request went to. A response nobody
+// waits for (late, after a timeout, or unknown) is dropped, and so is one
+// from another principal, which leaves the request waiting for the real one.
+func (p *clientPeer) deliver(id, principal string, msg json.RawMessage) bool {
 	p.mu.Lock()
-	ch := p.pending[id]
-	delete(p.pending, id)
-	p.mu.Unlock()
-	if ch == nil {
+	w, ok := p.pending[id]
+	if !ok || w.principal != principal {
+		p.mu.Unlock()
 		return false
 	}
-	ch <- msg
+	delete(p.pending, id)
+	p.mu.Unlock()
+	w.ch <- msg
 	return true
+}
+
+// principalOf is the authenticated caller of ctx (TokenInfo's Subject), or
+// "" when the request carried no verified token.
+func principalOf(ctx context.Context) string {
+	if info := TokenInfoFromContext(ctx); info != nil {
+		return info.Subject
+	}
+	return ""
 }
 
 type clientPeerKey struct{}
@@ -559,8 +579,10 @@ func clientPeerFrom(ctx context.Context) *clientPeer {
 const httpPeerIdle = 2 * time.Hour
 
 // httpPeerScope is the key an HTTP request's peer is filed under: its
-// session id, or "" for every request when session management is off (the
-// same process-wide scope ClientCapabilities has then).
+// session id. Without session management there is none (""), and no peer:
+// the server can't tell one Legacy HTTP client from another, so it can't
+// know what each declared or whose answer a response is, and elicitation is
+// not offered.
 func (s *Server) httpPeerScope(r *http.Request) string {
 	if s.getSessionManager() == nil {
 		return ""
@@ -569,9 +591,12 @@ func (s *Server) httpPeerScope(r *http.Request) string {
 }
 
 // recordHTTPPeer remembers what an HTTP initialize declared, for elicitation
-// on that session's later requests. Only clients that declared elicitation
-// are kept, and idle entries are swept here.
+// on that session's later requests. Only sessions whose client declared
+// elicitation are kept, and idle entries are swept here.
 func (s *Server) recordHTTPPeer(scope, version string, caps map[string]any) {
+	if scope == "" {
+		return // no session: see httpPeerScope
+	}
 	s.peersMu.Lock()
 	defer s.peersMu.Unlock()
 	now := time.Now()
@@ -599,6 +624,9 @@ func (s *Server) recordHTTPPeer(scope, version string, caps map[string]any) {
 }
 
 func (s *Server) httpPeer(scope string) *clientPeer {
+	if scope == "" {
+		return nil // no session: see httpPeerScope
+	}
 	s.peersMu.Lock()
 	defer s.peersMu.Unlock()
 	p := s.peers[scope]
@@ -617,19 +645,27 @@ func (s *Server) forgetHTTPPeer(scope string) {
 }
 
 // deliverHTTPResponse routes a client's JSON-RPC response POST (an id and no
-// method) to the handler waiting for it in the same session.
+// method) to the handler waiting for it in the same session, when it comes
+// from the same authenticated principal.
 func (s *Server) deliverHTTPResponse(r *http.Request, id any, raw []byte) {
 	p := s.httpPeer(s.httpPeerScope(r))
 	if p == nil {
 		return
 	}
 	key, _ := json.Marshal(id)
-	p.deliver(string(key), raw)
+	p.deliver(string(key), principalOf(r.Context()), raw)
 }
 
-// elicitationIDs numbers server-to-client requests; ids only need to be
-// unique among a client's outstanding requests.
-var elicitationIDs atomic.Uint64
+// newServerRequestID returns an id for a server-to-client request. It is
+// random (128 bits), not a counter: an answer is accepted by id, so an id
+// must not be guessable by anyone but the client it was sent to.
+func newServerRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("mcp: crypto/rand: " + err.Error())
+	}
+	return "elicitation-" + hex.EncodeToString(b[:])
+}
 
 type legacyElicitation struct {
 	peer    *clientPeer
@@ -668,9 +704,9 @@ func (l *legacyElicitation) one(ctx context.Context, f preparedForm) (*ElicitRes
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	id := fmt.Sprintf("elicitation-%d", elicitationIDs.Add(1))
+	id := newServerRequestID()
 	key, _ := json.Marshal(id)
-	ch := l.peer.await(string(key))
+	ch := l.peer.await(string(key), principalOf(ctx))
 	defer l.peer.forget(string(key))
 
 	params := f.params(l.version >= "2025-11-25")
