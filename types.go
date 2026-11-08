@@ -8,6 +8,11 @@ type MCPRequest struct {
 	ID      any    `json:"id"`
 	Method  string `json:"method"`
 	Params  any    `json:"params,omitempty"`
+
+	// rawParams is params exactly as received, kept by the server's decoder
+	// so values Params loses precision on (an integer progressToken above
+	// 2^53) can still be read exactly.
+	rawParams json.RawMessage
 }
 
 // MCPNotification is a JSON-RPC 2.0 notification — a message that carries no

@@ -147,13 +147,14 @@ type stdioStream struct {
 type stdioInflight struct {
 	cancel    context.CancelFunc
 	cancelled bool
-	listen    bool // a subscriptions/listen: ends with the stream, silently
+	listen    bool           // a subscriptions/listen: ends with the stream, silently
+	rs        *requestStream // the request's own messages (progress); finished on cancel
 }
 
-func (st *stdioStream) track(key string, cancel context.CancelFunc, listen bool) {
+func (st *stdioStream) track(key string, cancel context.CancelFunc, listen bool, rs *requestStream) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.inflight[key] = &stdioInflight{cancel: cancel, listen: listen}
+	st.inflight[key] = &stdioInflight{cancel: cancel, listen: listen, rs: rs}
 }
 
 // untrack forgets a finished request and reports whether the client had
@@ -174,6 +175,7 @@ func (st *stdioStream) cancel(key string) {
 	defer st.mu.Unlock()
 	if e := st.inflight[key]; e != nil {
 		e.cancelled = true
+		e.rs.finish() // the server MUST NOT send further messages for it
 		e.cancel()
 	}
 }
@@ -310,9 +312,18 @@ func (s *Server) serveStdioMessage(ctx context.Context, srv *jsonrpc.Server, str
 
 	reqCtx, cancel := context.WithCancel(ctx)
 	key := ""
+	var rs *requestStream
 	if len(head.ID) > 0 && string(bytes.TrimSpace(head.ID)) != "null" && head.Method != "" {
 		key = stdioIDKey(head.ID)
-		stream.track(key, cancel, head.Method == "subscriptions/listen")
+		// Messages for the request (progress notifications) are written to
+		// stdout as they are sent, under the same mutex as everything else,
+		// so each is a whole line ahead of the response.
+		rs = s.newRequestStream(head.Params, func(line []byte) bool {
+			stream.write(line)
+			return true
+		})
+		reqCtx = withRequestStream(reqCtx, rs)
+		stream.track(key, cancel, head.Method == "subscriptions/listen", rs)
 		if id, ok := decodeJSONRPCID(head.ID); ok {
 			reqCtx = context.WithValue(reqCtx, stdioRequestKey{}, &stdioRequest{id: id, write: stream.write})
 		}
@@ -323,6 +334,9 @@ func (s *Server) serveStdioMessage(ctx context.Context, srv *jsonrpc.Server, str
 		defer wg.Done()
 		defer cancel()
 		resp, hasResp := srv.HandleMessage(reqCtx, msg)
+		if rs != nil {
+			rs.finish() // nothing for this request after its response
+		}
 		if key != "" && stream.untrack(key) {
 			return // cancelled by the client: no response
 		}

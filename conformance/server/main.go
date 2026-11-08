@@ -97,6 +97,25 @@ func registerTools(s *mcp.Server) {
 		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
 			return mcp.NewToolResponseText("Reconnection test completed"), nil
 		})
+
+	// Reports progress 0, 50 and 100 of 100 on the call's own stream, before
+	// its result (a no-op when the request carried no progressToken).
+	s.RegisterTool(mcp.NewTool("test_tool_with_progress", "Reports progress while it runs"),
+		func(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
+			for i, p := range []float64{0, 50, 100} {
+				if i > 0 {
+					select {
+					case <-time.After(50 * time.Millisecond):
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+				if err := mcp.ReportProgress(ctx, p, 100, fmt.Sprintf("Step %d of 3", i+1)); err != nil {
+					return nil, err
+				}
+			}
+			return mcp.NewToolResponseText("Progress test completed"), nil
+		})
 }
 
 // registerDiagnosticTools adds the tools the 2026-07-28 scenarios use to
