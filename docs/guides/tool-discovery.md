@@ -69,7 +69,10 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 
 - Native tools (including from providers) appear in `tools/list`
 - Discoverable tools are hidden but searchable via `tool_search`
-- `tool_search` and `execute_tool` appear if any discoverable tools exist
+- `tool_search` and `execute_tool` appear if any discoverable tools exist for
+  the request (static, from a remote server, or from that request's providers),
+  and are callable only then; otherwise they are unknown tools, like any tool
+  `tools/list` doesn't show
 
 ### Show-All Mode (for MCP chaining)
 
@@ -99,11 +102,10 @@ http.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 
 **Behavior:**
 
-- ALL tools (native and discoverable) appear in `tools/list`
-- `tool_search` searches both native and discoverable tools
-- `execute_tool` is the always-safe way to call a tool returned by `tool_search`
-- Tools that are also present in `tools/list` may still be called directly
-- All tools remain callable
+- ALL tools (native and discoverable) appear in `tools/list` and are called
+  directly
+- `tool_search` and `execute_tool` are left out of `tools/list`, so they are
+  unknown tools in this mode
 
 **When to use:**
 

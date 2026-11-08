@@ -343,7 +343,15 @@ func (s *Server) handleModernRequest(w http.ResponseWriter, r *http.Request, req
 		}
 	}
 
+	// A request missing a required _meta field is malformed: -32602 with
+	// HTTP 400, whatever its headers say. HeaderMismatch is for a header
+	// that disagrees with a value the body does carry.
 	metaVersion, _ := meta[metaKeyProtocolVersion].(string)
+	if metaVersion == "" {
+		s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeInvalidParams,
+			"Invalid params", map[string]any{"details": metaKeyProtocolVersion + " is required in _meta"})
+		return
+	}
 	headerVersion, msg := modernHeaderValue(r, headerProtocolVersion)
 	if msg != "" {
 		s.writeModernProtocolError(w, req.ID, http.StatusBadRequest, ErrorCodeHeaderMismatch, msg, nil)
@@ -512,9 +520,16 @@ func (s *Server) modernShape(method string, capture *modernResponseCapture, perU
 		return capturedResponse{status: capture.status, header: capture.header, body: capture.body.Bytes()}
 	}
 
+	status := capture.status
 	if errRaw, ok := raw["error"].(map[string]any); ok {
-		if code, ok := errRaw["code"].(float64); ok && isForeignReservedErrorCode(int(code)) {
+		code, _ := errRaw["code"].(float64)
+		switch {
+		case isForeignReservedErrorCode(int(code)):
 			raw["error"] = remapReservedErrorCode(int(code), errRaw)
+		case int(code) == ErrorCodeMissingRequiredClientCapability:
+			// MissingRequiredClientCapabilityError MUST be sent with
+			// HTTP 400 on Streamable HTTP.
+			status = http.StatusBadRequest
 		}
 	}
 
@@ -542,7 +557,7 @@ func (s *Server) modernShape(method string, capture *modernResponseCapture, perU
 	header := http.Header{}
 	header.Set("Content-Type", "application/json; charset=utf-8")
 	header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	return capturedResponse{status: capture.status, header: header, body: body.Bytes()}
+	return capturedResponse{status: status, header: header, body: body.Bytes()}
 }
 
 // isForeignReservedErrorCode reports whether code lies in the range the

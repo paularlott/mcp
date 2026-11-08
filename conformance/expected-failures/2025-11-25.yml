@@ -1,0 +1,20 @@
+# Expected failures for the official MCP conformance suite at 2025-11-25.
+# See ../README.md. Every entry is an optional capability the library does
+# not implement; a listed scenario that starts passing fails the run, so
+# remove its entry when the feature lands.
+server:
+  # Logging utility (logging/setLevel, notifications/message)
+  - logging-set-level
+  - tools-call-with-logging
+  # Completion utility (completion/complete)
+  - completion-complete
+  # Progress notifications during a tool call
+  - tools-call-with-progress
+  # Server-to-client requests: sampling and elicitation
+  - tools-call-sampling
+  - tools-call-elicitation
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+  # Resource subscriptions
+  - resources-subscribe
+  - resources-unsubscribe

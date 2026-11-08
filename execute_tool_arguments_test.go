@@ -129,7 +129,7 @@ func TestExecuteToolWithoutParameters(t *testing.T) {
 // Server.CallTool callers still get a *ToolError with the invalid-params
 // code for arguments the tool can't take.
 func TestExecuteToolDirectCallError(t *testing.T) {
-	s := NewServer("test", "1.0")
+	s := discoveryServer()
 	_, err := s.CallTool(context.Background(), ExecuteToolName, map[string]any{"name": "x", "args": map[string]any{}})
 	var toolErr *ToolError
 	if !errors.As(err, &toolErr) || toolErr.Code != ErrorCodeInvalidParams {
@@ -140,10 +140,20 @@ func TestExecuteToolDirectCallError(t *testing.T) {
 // tool_search checks its arguments too: a misspelt query must not list
 // every tool as if it had been omitted.
 func TestToolSearchRefusesUnknownArguments(t *testing.T) {
-	s := NewServer("test", "1.0")
+	s := discoveryServer()
 	_, err := s.CallTool(context.Background(), ToolSearchName, map[string]any{"q": "lookup"})
 	var toolErr *ToolError
 	if !errors.As(err, &toolErr) || !strings.Contains(toolErr.Message, "q") {
 		t.Fatalf("want an error naming q, got %v", err)
 	}
+}
+
+// discoveryServer has one discoverable tool, so tool_search and execute_tool
+// are listed and callable.
+func discoveryServer() *Server {
+	s := NewServer("test", "1.0")
+	s.RegisterTool(NewTool("hidden", "A hidden tool").Discoverable("hidden"), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("hidden"), nil
+	})
+	return s
 }

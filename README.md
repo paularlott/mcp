@@ -5,7 +5,7 @@ A Go library for building [Model Context Protocol (MCP)](https://modelcontextpro
 ## Features
 
 - **HTTP & Stdio Transports**: Serve the same tools over HTTP or newline-delimited JSON-RPC on stdin/stdout, and consume remote servers over either
-- **Simple API**: Fluent interface for defining tools and parameters
+- **Simple API**: Fluent interface for defining tools and parameters, including display titles and behaviour hints (`ReadOnly()`, `Destructive()`, `Idempotent()`, `OpenWorld()`)
 - **Type Safety**: Strongly typed parameter access with automatic conversion
 - **Rich Responses**: Support for text, image, audio, resource, and structured content
 - **Resources**: Serve addressable data by URI (`resources/list`, `resources/read`, resource templates), including per-user/session resources via `ResourceProvider`
@@ -69,6 +69,29 @@ func main() {
     log.Fatal(http.ListenAndServe(":8000", nil))
 }
 ```
+
+### Titles and Behaviour Hints
+
+A tool can carry a display title and the spec's behaviour hints, which
+clients use to decide, for example, whether to ask the user before a call:
+
+```go
+mcp.NewTool("delete_file", "Delete a file", mcp.String("path", "File path", mcp.Required())).
+    Title("Delete file").
+    Destructive(true).
+    OpenWorld(false)
+
+mcp.NewTool("get_weather", "Current weather").
+    ReadOnly().
+    Idempotent()
+```
+
+`ReadOnly()` sets `readOnlyHint`, `Destructive(bool)` sets `destructiveHint`,
+`Idempotent()` sets `idempotentHint`, `OpenWorld(bool)` sets `openWorldHint`,
+and `Annotations(mcp.ToolAnnotations{...})` sets them all at once. Unset hints
+take the spec's defaults: not read-only, possibly destructive, not
+idempotent, open world. They are hints only — clients must treat them as
+untrusted, so what a tool may really do has to be enforced by the server.
 
 ## Transports
 
@@ -217,6 +240,13 @@ Run tests to ensure everything works:
 
 ```bash
 go test ./...
+```
+
+The library is also tested against the official MCP conformance suite for
+every protocol revision it speaks; see [conformance/](conformance/README.md):
+
+```bash
+conformance/run.sh
 ```
 
 View specific test categories:

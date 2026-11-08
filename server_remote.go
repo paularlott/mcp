@@ -536,6 +536,12 @@ func (s *Server) searchRemoteServers(ctx context.Context, query string, maxResul
 			if desc, ok := raw["description"].(string); ok {
 				result.Description = desc
 			}
+			if title, ok := raw["title"].(string); ok {
+				result.Title = title
+			}
+			if ann, ok := raw["annotations"]; ok {
+				result.Annotations = toolAnnotationsFromRaw(ann)
+			}
 			if score, ok := raw["score"].(float64); ok {
 				result.Score = score
 			}

@@ -296,6 +296,21 @@ remote call) and don't know its concrete type, wrap it with
 `mcp.NewToolResponseAuto(v)`, which returns a `*mcp.ToolResponse` as-is, wraps a
 `string` as text, and JSON-encodes anything else.
 
+Errors follow the same rules as a registered tool's handler — see
+[How tools/call Reports Errors](error-handling.md#how-toolscall-reports-errors).
+
+## Argument Validation
+
+Before `ExecuteTool` runs, the server checks the call's arguments against the
+`InputSchema` the tool had in `GetTools`, exactly as for a registered tool
+(see [Argument Validation](error-handling.md#argument-validation)): quoted
+numbers and booleans are converted to the declared type, and arguments that
+still don't fit the schema come back as a tool execution error without
+calling `ExecuteTool`. The MCP spec requires servers to validate all tool
+inputs, so make each `InputSchema` describe what the tool really accepts. A
+tool with no `InputSchema` takes any arguments and is listed as
+`{"type": "object"}`.
+
 ## Security
 
 - **Providers are per-request**: created fresh with the authenticated user/tenant each time

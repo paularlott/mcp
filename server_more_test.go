@@ -78,21 +78,45 @@ func TestUnknownMethod(t *testing.T) {
 	}
 }
 
+// A *ToolError a handler returns follows the spec's split for tools/call: a
+// server error is a JSON-RPC error with its code; invalid params and an
+// application code are tool execution errors (isError) carrying the message.
 func TestToolErrorMapping(t *testing.T) {
 	s := NewServer("s", "1")
-	s.RegisterTool(NewTool("fail", "", String("x", "", Required())), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
-		return nil, NewToolErrorInvalidParams("bad")
-	})
-	body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: ToolCallParams{Name: "fail", Arguments: map[string]any{"x": "y"}}}
-	b, _ := json.Marshal(body)
-	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
-	var rpc MCPResponse
-	_ = json.NewDecoder(rr.Body).Decode(&rpc)
-	if rpc.Error == nil || rpc.Error.Code != ErrorCodeInvalidParams || rpc.Error.Message == "" {
-		t.Fatalf("expected mapped tool error, got %+v", rpc.Error)
+	for name, err := range map[string]error{
+		"invalid":  NewToolErrorInvalidParams("bad"),
+		"custom":   NewToolError(1001, "file too large", map[string]any{"max": 10}),
+		"internal": NewToolErrorInternal("store unavailable"),
+		"server":   NewToolError(-32001, "overloaded", nil),
+	} {
+		err := err
+		s.RegisterTool(NewTool(name, "", String("x", "", Required())), func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+			return nil, err
+		})
+	}
+	call := func(name string) (rpc struct {
+		Result *ToolResult `json:"result"`
+		Error  *MCPError   `json:"error"`
+	}) {
+		body := MCPRequest{JSONRPC: "2.0", ID: 1, Method: "tools/call", Params: ToolCallParams{Name: name, Arguments: map[string]any{"x": "y"}}}
+		b, _ := json.Marshal(body)
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(b))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		http.HandlerFunc(s.HandleRequest).ServeHTTP(rr, req)
+		_ = json.NewDecoder(rr.Body).Decode(&rpc)
+		return rpc
+	}
+	for name, text := range map[string]string{"invalid": "bad", "custom": "file too large"} {
+		rpc := call(name)
+		if rpc.Error != nil || rpc.Result == nil || !rpc.Result.IsError || len(rpc.Result.Content) != 1 || rpc.Result.Content[0].Text != text {
+			t.Errorf("%s: want an isError result %q, got result=%+v error=%+v", name, text, rpc.Result, rpc.Error)
+		}
+	}
+	for name, code := range map[string]int{"internal": ErrorCodeInternalError, "server": -32001} {
+		if rpc := call(name); rpc.Error == nil || rpc.Error.Code != code || rpc.Result != nil {
+			t.Errorf("%s: want JSON-RPC error %d, got result=%+v error=%+v", name, code, rpc.Result, rpc.Error)
+		}
 	}
 }
 

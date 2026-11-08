@@ -1,0 +1,23 @@
+# Expected failures for the official MCP conformance suite at 2026-07-28.
+# See ../README.md. Every entry is an optional capability the library does
+# not implement; a listed scenario that starts passing fails the run, so
+# remove its entry when the feature lands.
+server:
+  # Completion utility (completion/complete)
+  - completion-complete
+  # Progress notifications during a tool call
+  - tools-call-with-progress
+  # Multi round-trip requests: InputRequiredResult for elicitation,
+  # sampling and roots (SEP-2322)
+  - input-required-result-basic-elicitation
+  - input-required-result-basic-sampling
+  - input-required-result-basic-list-roots
+  - input-required-result-request-state
+  - input-required-result-multiple-input-requests
+  - input-required-result-multi-round
+  - input-required-result-non-tool-request
+  - input-required-result-result-type
+  - input-required-result-tampered-state
+  - input-required-result-capability-check
+  - input-required-result-missing-input-response
+  - input-required-result-ignore-extra-params

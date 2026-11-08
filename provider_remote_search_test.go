@@ -137,7 +137,9 @@ func TestRemoteToolSearch_NotInListButSearchable(t *testing.T) {
 }
 
 func TestRemoteToolSearch_NativeRemoteToolsAlsoSearchable(t *testing.T) {
-	// Native-visibility remote tools appear in tools/list AND are searchable.
+	// Native-visibility remote tools appear in tools/list AND are searchable
+	// (tool_search is listed, and so callable, because the host also has a
+	// discoverable tool).
 	ts := newRemoteWithTools(func(s *Server) {
 		s.RegisterTool(NewTool("list_repos", "List repositories"), echoTool("ok"))
 	})
@@ -150,6 +152,7 @@ func TestRemoteToolSearch_NativeRemoteToolsAlsoSearchable(t *testing.T) {
 		Visibility: ToolVisibilityNative,
 	}))
 	host := NewServer("host", "1")
+	host.RegisterTool(NewTool("local_hidden", "A local discoverable tool").Discoverable(), echoTool("ok"))
 	ctx := WithToolProviders(context.Background(), p)
 
 	inList := false

@@ -1,6 +1,10 @@
 package mcp
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
 
 // MCP JSON-RPC Error Codes
 // These are standard JSON-RPC 2.0 error codes used by the MCP protocol.
@@ -18,14 +22,14 @@ const (
 	// Used internally when an unknown MCP method is called.
 	ErrorCodeMethodNotFound = -32601
 
-	// ErrorCodeInvalidParams indicates invalid method parameters.
-	// Use this in tool handlers when required parameters are missing or invalid.
-	// Prefer using NewToolErrorInvalidParams() helper.
+	// ErrorCodeInvalidParams indicates invalid method parameters. From a
+	// tool handler (NewToolErrorInvalidParams) it is an input validation
+	// error, which tools/call reports as a tool execution error (isError).
 	ErrorCodeInvalidParams = -32602
 
 	// ErrorCodeInternalError indicates an internal JSON-RPC error.
-	// Use this in tool handlers for unexpected server-side errors.
-	// Prefer using NewToolErrorInternal() helper.
+	// Use this in tool handlers for unexpected server-side errors; tools/call
+	// sends it as a protocol error. Prefer using NewToolErrorInternal() helper.
 	ErrorCodeInternalError = -32603
 
 	// ErrorCodeImplementationErrorStart is the start of JSON-RPC's
@@ -64,22 +68,29 @@ const (
 	ErrorCodeUnsupportedProtocolVersion = -32022
 )
 
-// ToolError represents an MCP protocol error that can be returned from tool handlers.
-// When returned from a ToolHandler, the error code and message are sent to the client
-// in the JSON-RPC error response.
+// ToolError is an error with a JSON-RPC code, message and data.
 //
-// Returning one in a tool handler or provider:
+// How tools/call reports one a tool handler or provider returns follows the
+// MCP tools spec, whose only protocol errors for tools/call are an unknown
+// tool, a request that fails the CallToolRequest schema, and a server error.
+// A handler runs only after the request has parsed and its tool was found,
+// so:
 //
-//	func myHandler(ctx context.Context, req *mcp.ToolRequest) (*mcp.ToolResponse, error) {
-//	    name, err := req.String("name")
-//	    if err != nil {
-//	        return nil, mcp.NewToolErrorInvalidParams("name parameter is required")
-//	    }
-//	    // ... process request
-//	}
+//   - a server error — ErrorCodeInternalError (NewToolErrorInternal) or a
+//     code in JSON-RPC's server error range, -32000 to -32099, which includes
+//     MissingRequiredClientCapability (NewToolErrorMissingClientCapability) —
+//     is sent as a JSON-RPC error with its code, message and data;
+//   - any other code — ErrorCodeInvalidParams (NewToolErrorInvalidParams) for
+//     bad input, or an application code (NewToolError) — is a tool execution
+//     error: the result carries the message with isError set, so the model
+//     can read it and correct the call. Data is not sent.
 //
-// Detecting one as a caller (middleware, tests, custom transports) — use
-// errors.As, which also unwraps wrapped errors, to recover the code/message/data:
+// A *ToolError relayed from a remote server's tools/call (RegisterRemoteServer)
+// is sent as that server sent it.
+//
+// Server.CallTool returns the *ToolError itself in every case. Detecting one
+// as a caller (middleware, tests, custom transports) — use errors.As, which
+// also unwraps wrapped errors, to recover the code/message/data:
 //
 //	resp, err := server.CallTool(ctx, name, args)
 //	var toolErr *mcp.ToolError
@@ -91,18 +102,20 @@ type ToolError struct {
 	Message string
 	Data    any
 
-	// invalidArguments marks the arguments failing the tool's input
-	// schema: tools/call reports it as a tool execution error.
-	invalidArguments bool
+	// relayed marks an error a remote server sent for a tools/call this
+	// server forwarded: tools/call passes it on as it came.
+	relayed bool
 }
 
 func (e *ToolError) Error() string {
 	return fmt.Sprintf("MCP Error %d: %s", e.Code, e.Message)
 }
 
-// NewToolErrorInvalidParams creates an error for invalid or missing parameters.
-// Use this when a required parameter is missing, has the wrong type, or fails validation.
-// This returns ErrorCodeInvalidParams (-32602).
+// NewToolErrorInvalidParams creates an error for invalid or missing parameters
+// (ErrorCodeInvalidParams, -32602). The server already checks arguments
+// against the tool's inputSchema; use this for a check the schema can't
+// express. tools/call reports it as a tool execution error (isError), the
+// spec's class for input validation errors.
 func NewToolErrorInvalidParams(message string) error {
 	return &ToolError{
 		Code:    ErrorCodeInvalidParams,
@@ -110,9 +123,10 @@ func NewToolErrorInvalidParams(message string) error {
 	}
 }
 
-// NewToolErrorInternal creates an error for internal server errors.
-// Use this for unexpected failures like database errors, network issues, etc.
-// This returns ErrorCodeInternalError (-32603).
+// NewToolErrorInternal creates an error for internal server errors
+// (ErrorCodeInternalError, -32603), which tools/call sends as a protocol
+// error. A failure the model could act on — an upstream API error, a
+// business rule — is better returned as NewToolResponseError.
 func NewToolErrorInternal(message string) error {
 	return &ToolError{
 		Code:    ErrorCodeInternalError,
@@ -120,12 +134,30 @@ func NewToolErrorInternal(message string) error {
 	}
 }
 
-// NewToolError creates a custom MCP protocol error with a specific code.
-// Reserve it for genuine protocol-level failures; a failure of the tool's own
-// work (an upstream API error, a business rule, bad input values) should be
-// a tool execution error — return NewToolResponseError, or simply a plain
-// error, which the server reports inside the result with isError set so the
-// model can read it and self-correct.
+// NewToolErrorMissingClientCapability is the spec's
+// MissingRequiredClientCapabilityError (-32021): the call needs client
+// capabilities the request did not declare. A server MUST NOT rely on a
+// capability the client has not declared; a handler that needs one checks
+// [ClientCapabilitiesFromContext] and returns this error naming the missing
+// capabilities (for example "sampling"). tools/call sends it as a JSON-RPC
+// error with data.requiredCapabilities set to a ClientCapabilities object
+// ({"sampling": {}}), with HTTP 400 on the 2026-07-28 Streamable HTTP wire.
+func NewToolErrorMissingClientCapability(capabilities ...string) error {
+	required := make(map[string]any, len(capabilities))
+	for _, c := range capabilities {
+		required[c] = map[string]any{}
+	}
+	return &ToolError{
+		Code:    ErrorCodeMissingRequiredClientCapability,
+		Message: "Missing required client capability: " + strings.Join(capabilities, ", "),
+		Data:    map[string]any{"requiredCapabilities": required},
+	}
+}
+
+// NewToolError creates an error with a specific JSON-RPC code. Returned from
+// a tool handler, an application code is a tool execution error: tools/call
+// reports the message with isError set (see ToolError), and only a server
+// error code (-32603, or -32000 to -32099) is sent as a JSON-RPC error.
 //
 // Pick application-specific codes outside -32768..-32000: 2026-07-28
 // reserves -32020..-32099 for the protocol (a Modern client is never sent a
@@ -145,4 +177,21 @@ func NewToolError(code int, message string, data any) error {
 		Message: message,
 		Data:    data,
 	}
+}
+
+// isServerErrorCode reports whether code is a JSON-RPC server error: the
+// internal error, or the implementation-defined server error range.
+func isServerErrorCode(code int) bool {
+	return code == ErrorCodeInternalError || (code <= ErrorCodeImplementationErrorStart && code >= ErrorCodeImplementationErrorEnd)
+}
+
+// relayedError marks the *ToolError in err, if any, as relayed from a remote
+// server's tools/call, so tools/call passes it on as it came. The client
+// creates a fresh *ToolError for each response, so marking it is safe.
+func relayedError(err error) error {
+	var toolErr *ToolError
+	if errors.As(err, &toolErr) {
+		toolErr.relayed = true
+	}
+	return err
 }

@@ -11,13 +11,15 @@ import (
 
 // SearchResult represents a tool found via search
 type SearchResult struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Score       float64        `json:"score"`
-	InputSchema any            `json:"inputSchema,omitempty"`
-	Keywords    []string       `json:"keywords,omitempty"`
-	Meta        map[string]any `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui.resourceUri
-	Icons       []Icon         `json:"icons,omitempty"`
+	Name        string           `json:"name"`
+	Title       string           `json:"title,omitempty"`
+	Description string           `json:"description"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+	Score       float64          `json:"score"`
+	InputSchema any              `json:"inputSchema,omitempty"`
+	Keywords    []string         `json:"keywords,omitempty"`
+	Meta        map[string]any   `json:"_meta,omitempty"` // Extension metadata, e.g. MCP Apps' ui.resourceUri
+	Icons       []Icon           `json:"icons,omitempty"`
 }
 
 // internalRegistry implements ToolRegistry and provides tool search functionality
@@ -50,7 +52,9 @@ func (r *internalRegistry) RegisterTool(tool *ToolBuilder, handler ToolHandler, 
 
 	mcpTool := &MCPTool{
 		Name:        tool.Name(),
+		Title:       tool.title,
 		Description: tool.Description(),
+		Annotations: tool.toolAnnotations(),
 		InputSchema: schema,
 		Meta:        tool.meta,
 		Icons:       tool.icons,
@@ -131,7 +135,9 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 		if score > 0 {
 			results = append(results, SearchResult{
 				Name:        dt.tool.Name,
+				Title:       dt.tool.Title,
 				Description: dt.tool.Description,
+				Annotations: dt.tool.Annotations,
 				Score:       score,
 				InputSchema: dt.tool.InputSchema,
 				Keywords:    dt.keywords,
@@ -156,7 +162,9 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 		if score > 0 {
 			results = append(results, SearchResult{
 				Name:        tool.Name,
+				Title:       tool.Title,
 				Description: tool.Description,
+				Annotations: tool.Annotations,
 				Score:       score,
 				InputSchema: tool.InputSchema,
 				Keywords:    tool.Keywords,
@@ -181,7 +189,9 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 		if score > 0 {
 			results = append(results, SearchResult{
 				Name:        tool.Name,
+				Title:       tool.Title,
 				Description: tool.Description,
+				Annotations: tool.Annotations,
 				Score:       score,
 				InputSchema: tool.InputSchema,
 				Keywords:    tool.Keywords,
@@ -341,51 +351,4 @@ func containsWord(text, query string) bool {
 		}
 	}
 	return false
-}
-
-// validateRequiredParameters checks a call's arguments against the tool's
-// whole inputSchema (validateJSONSchema): required properties, every
-// property's type and constraints, nested objects and arrays, enums and
-// additionalProperties. A violation is a malformed request (-32602) that
-// never reaches the handler, as the tools spec's "validate all tool
-// inputs" asks; the error names the offending argument.
-func validateRequiredParameters(inputSchema any, args map[string]any) error {
-	if _, ok := inputSchema.(map[string]any); !ok {
-		return nil
-	}
-	value := map[string]any{}
-	for k, v := range args {
-		value[k] = v
-	}
-	if err := validateJSONSchema(inputSchema, value); err != nil {
-		msg := err.Error()
-		if se, ok := err.(schemaError); ok && se.path == "" {
-			msg = "arguments " + se.msg
-		} else if ok {
-			msg = "parameter " + se.path + " " + se.msg
-		}
-		return invalidArguments(msg, pathParameter(err))
-	}
-	return nil
-}
-
-// invalidArguments is the error for a tool call whose arguments the tool
-// can't take: a *ToolError (-32602) to callers of Server.CallTool, which
-// tools/call reports as a tool execution error (isError), as the spec asks
-// of input validation errors, so the model can correct the call.
-func invalidArguments(msg, parameter string) error {
-	return &ToolError{Code: ErrorCodeInvalidParams, Message: msg, Data: map[string]any{"parameter": parameter}, invalidArguments: true}
-}
-
-// pathParameter is the top-level argument name a schema error refers to.
-func pathParameter(err error) string {
-	se, ok := err.(schemaError)
-	if !ok || se.path == "" {
-		return ""
-	}
-	name := se.path
-	if i := strings.IndexAny(name, ".["); i > 0 {
-		name = name[:i]
-	}
-	return name
 }

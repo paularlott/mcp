@@ -1,0 +1,5 @@
+# Expected failures for the official MCP conformance suite at 2025-03-26.
+# See ../README.md. Every entry is an optional capability the library does
+# not implement; a listed scenario that starts passing fails the run, so
+# remove its entry when the feature lands.
+server: []

@@ -12,6 +12,8 @@ type ToolBuilder struct {
 	keywords     []string       // Keywords for discovery search
 	meta         map[string]any // Extension metadata (_meta on the tools/list descriptor)
 	icons        []Icon         // Visual identifiers shown on the tools/list descriptor
+	title        string         // Human-readable display name (2025-06-18+)
+	annotations  *ToolAnnotations
 }
 
 type paramDef struct {
@@ -237,6 +239,75 @@ func (t *ToolBuilder) Icons(icons ...Icon) *ToolBuilder {
 	return t
 }
 
+// Title sets the tool's human-readable display name, shown by clients in
+// place of its name (the spec's Tool.title, 2025-06-18+).
+func (t *ToolBuilder) Title(title string) *ToolBuilder {
+	t.title = title
+	return t
+}
+
+// Annotations sets the tool's behaviour hints (the spec's
+// Tool.annotations) in one go, replacing any set before; ReadOnly,
+// Destructive, Idempotent and OpenWorld set them one at a time.
+//
+// The hints tell a client how careful to be, for example whether to ask the
+// user before a call. They are only hints: clients MUST treat them as
+// untrusted unless the server is trusted, so what a tool may actually do
+// must be enforced by the server.
+func (t *ToolBuilder) Annotations(annotations ToolAnnotations) *ToolBuilder {
+	t.annotations = &annotations
+	return t
+}
+
+// ReadOnly marks the tool as not modifying its environment (readOnlyHint).
+func (t *ToolBuilder) ReadOnly() *ToolBuilder {
+	t.hints().ReadOnlyHint = boolHint(true)
+	return t
+}
+
+// Destructive states whether the tool may perform destructive updates
+// (destructiveHint), as opposed to only additive ones. Clients assume a
+// tool that is not read-only may be destructive unless told otherwise.
+func (t *ToolBuilder) Destructive(destructive bool) *ToolBuilder {
+	t.hints().DestructiveHint = boolHint(destructive)
+	return t
+}
+
+// Idempotent marks the tool as having no additional effect when called
+// again with the same arguments (idempotentHint).
+func (t *ToolBuilder) Idempotent() *ToolBuilder {
+	t.hints().IdempotentHint = boolHint(true)
+	return t
+}
+
+// OpenWorld states whether the tool interacts with an open world of
+// external entities, such as the web, or a closed domain such as a local
+// store (openWorldHint). Clients assume an open world unless told otherwise.
+func (t *ToolBuilder) OpenWorld(openWorld bool) *ToolBuilder {
+	t.hints().OpenWorldHint = boolHint(openWorld)
+	return t
+}
+
+func (t *ToolBuilder) hints() *ToolAnnotations {
+	if t.annotations == nil {
+		t.annotations = &ToolAnnotations{}
+	}
+	return t.annotations
+}
+
+func boolHint(b bool) *bool { return &b }
+
+// toolAnnotations returns a copy of the tool's annotations, or nil when none
+// were set, so a registered tool's descriptor is never changed by later
+// builder calls.
+func (t *ToolBuilder) toolAnnotations() *ToolAnnotations {
+	if t.annotations == nil {
+		return nil
+	}
+	a := *t.annotations
+	return &a
+}
+
 // ToMCPTool converts the ToolBuilder to an MCPTool struct.
 // This is useful for tool providers that use the fluent API to build tools
 // but need to return MCPTool structs from their GetTools method.
@@ -250,7 +321,9 @@ func (t *ToolBuilder) ToMCPTool() MCPTool {
 
 	tool := MCPTool{
 		Name:        t.name,
+		Title:       t.title,
 		Description: t.Description(),
+		Annotations: t.toolAnnotations(),
 		InputSchema: t.buildSchema(),
 		Meta:        t.meta,
 		Icons:       t.icons,

@@ -2,7 +2,7 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -227,32 +227,10 @@ func TestProviderIntegration_ShowAllMode(t *testing.T) {
 		t.Error("expected response from calculate")
 	}
 
-	// Test 4: Discoverable tools should be searchable
-	searchResp, err := server.CallTool(ctxShowAll, ToolSearchName, map[string]any{
-		"query":       "",
-		"max_results": 100,
-	})
-	if err != nil {
-		t.Fatalf("tool_search failed: %v", err)
-	}
-
-	var results []SearchResult
-	if len(searchResp.Content) > 0 {
-		if err := json.Unmarshal([]byte(searchResp.Content[0].Text), &results); err != nil {
-			t.Fatalf("failed to parse search results: %v", err)
-		}
-
-		// Only discoverable tools should be in search results
-		foundSearchDocs = false
-		for _, result := range results {
-			if result.Name == "search_docs" {
-				foundSearchDocs = true
-			}
-		}
-
-		if !foundSearchDocs {
-			t.Error("discoverable tool 'search_docs' should be searchable")
-		}
+	// Test 4: tools/list leaves the discovery tools out in show-all mode
+	// (every tool is listed), so they are unknown tools here.
+	if _, err := server.CallTool(ctxShowAll, ToolSearchName, map[string]any{"query": ""}); !errors.Is(err, ErrUnknownTool) {
+		t.Fatalf("tool_search in show-all mode: got %v, want ErrUnknownTool", err)
 	}
 }
 
