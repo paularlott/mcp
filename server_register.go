@@ -187,32 +187,6 @@ func (s *Server) UnregisterTool(name string) bool {
 	return true
 }
 
-// rebuildNativeToolCacheLocked rebuilds the native tool cache from all native tools.
-// Must be called with s.mu held.
-func (s *Server) rebuildNativeToolCacheLocked() {
-	s.nativeToolCache = make([]MCPTool, 0)
-	for _, tool := range s.tools {
-		if tool.Visibility == ToolVisibilityNative {
-			toolItem := MCPTool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.Schema,
-				Meta:        tool.Meta,
-				Icons:       tool.Icons,
-			}
-			if tool.OutputSchema != nil {
-				toolItem.OutputSchema = tool.OutputSchema
-			}
-			s.nativeToolCache = append(s.nativeToolCache, toolItem)
-		}
-	}
-
-	// Sort for consistent ordering
-	sort.Slice(s.nativeToolCache, func(i, j int) bool {
-		return s.nativeToolCache[i].Name < s.nativeToolCache[j].Name
-	})
-}
-
 // ToolRegistration pairs a tool builder with its handler for batch registration.
 type ToolRegistration struct {
 	Tool    *ToolBuilder

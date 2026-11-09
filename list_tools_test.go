@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -217,4 +218,64 @@ func TestListToolsWithContext_DeduplicatesWithStatic(t *testing.T) {
 			t.Error("expected static tool to take precedence over provider tool")
 		}
 	}
+}
+
+// TestListTools_PreservesTitleAndAnnotations guards against two copies that
+// rebuilt each MCPTool field by field and silently dropped the title and the
+// behaviour hints (readOnlyHint, destructiveHint, ...): Client.ListTools'
+// namespacing pass, and RefreshTools' copy of a federating server's own tools.
+// A client deciding whether to ask before a call relies on those hints.
+func TestListTools_PreservesTitleAndAnnotations(t *testing.T) {
+	ok := func(ctx context.Context, req *ToolRequest) (*ToolResponse, error) {
+		return NewToolResponseText("ok"), nil
+	}
+	remote := NewServer("remote", "0.0.1")
+	remote.RegisterTool(NewTool("delete_user", "Delete a user").Title("Delete user").Destructive(true).Idempotent(), ok)
+	ts := httptest.NewServer(http.HandlerFunc(remote.HandleRequest))
+	defer ts.Close()
+	deleteHints := &ToolAnnotations{DestructiveHint: boolHint(true), IdempotentHint: boolHint(true)}
+
+	check := func(t *testing.T, tools []MCPTool, name, title string, want *ToolAnnotations) {
+		t.Helper()
+		for _, tool := range tools {
+			if tool.Name != name {
+				continue
+			}
+			if tool.Title != title {
+				t.Errorf("%s: title = %q, want %q", name, tool.Title, title)
+			}
+			if !reflect.DeepEqual(tool.Annotations, want) {
+				t.Errorf("%s: annotations = %+v, want %+v", name, tool.Annotations, want)
+			}
+			return
+		}
+		t.Fatalf("%s not listed in %+v", name, tools)
+	}
+
+	t.Run("client with a namespace", func(t *testing.T) {
+		client := NewClient(ts.URL, nil, "remote")
+		if err := client.Initialize(context.Background()); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		tools, err := client.ListTools(context.Background())
+		if err != nil {
+			t.Fatalf("ListTools: %v", err)
+		}
+		check(t, tools, "remote__delete_user", "Delete user", deleteHints)
+	})
+
+	t.Run("federating server", func(t *testing.T) {
+		hub := NewServer("hub", "0.0.1")
+		hub.RegisterTool(NewTool("get_user", "Get a user").Title("Get user").ReadOnly().OpenWorld(false), ok)
+		if err := hub.RegisterRemoteServer(NewClient(ts.URL, nil, "remote")); err != nil {
+			t.Fatalf("RegisterRemoteServer: %v", err)
+		}
+		// RefreshTools rebuilds the hub's list, its own tools included.
+		if err := hub.RefreshTools(context.Background()); err != nil {
+			t.Fatalf("RefreshTools: %v", err)
+		}
+		tools := hub.ListToolsWithContext(context.Background())
+		check(t, tools, "get_user", "Get user", &ToolAnnotations{ReadOnlyHint: boolHint(true), OpenWorldHint: boolHint(false)})
+		check(t, tools, "remote__delete_user", "Delete user", deleteHints)
+	})
 }

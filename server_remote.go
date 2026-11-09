@@ -393,7 +393,9 @@ func (s *Server) RefreshTools(ctx context.Context) error {
 	for _, tool := range localNativeTools {
 		toolItem := MCPTool{
 			Name:        tool.Name,
+			Title:       tool.Title,
 			Description: tool.Description,
+			Annotations: tool.Annotations,
 			InputSchema: tool.Schema,
 			Meta:        tool.Meta,
 			Icons:       tool.Icons,

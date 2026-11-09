@@ -761,14 +761,8 @@ func (c *Client) ListTools(ctx context.Context) ([]MCPTool, error) {
 				continue
 			}
 		}
-		namespacedTools = append(namespacedTools, MCPTool{
-			Name:         c.namespace + tool.Name,
-			Description:  tool.Description,
-			InputSchema:  tool.InputSchema,
-			OutputSchema: tool.OutputSchema,
-			Meta:         tool.Meta,
-			Icons:        tool.Icons,
-		})
+		tool.Name = c.namespace + tool.Name // everything else (title, annotations, ...) as the server sent it
+		namespacedTools = append(namespacedTools, tool)
 	}
 
 	c.mu.Lock()
