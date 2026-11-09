@@ -567,9 +567,18 @@ clientID, err := mcp.RegisterOAuthClient(ctx, meta.RegistrationEndpoint,
 // resource=meta.Resource in both requests ...
 
 auth := mcp.NewOAuth2RefreshTokenAuth(meta.TokenEndpoint, clientID,
-    accessToken, refreshToken, mcp.WithResource(meta.Resource))
+    accessToken, refreshToken, mcp.WithResource(meta.Resource),
+    mcp.WithTokenUpdate(func(access, refresh string) {
+        saveTokens(access, refresh) // keep these in place of the ones you started with
+    }))
 client := mcp.NewClient("https://api.example.com/mcp", auth, "namespace")
 ```
+
+The access token is used until it expires or the server refuses it with
+401; the client then refreshes it and sends the request again. Many
+authorization servers rotate the refresh token on each refresh and refuse
+the old one (some end the whole grant when it comes back), so if you keep
+tokens across restarts, store the ones `WithTokenUpdate` gives you.
 
 `RegisterOAuthClientWithClient` takes your own `*http.Client`. A
 registration answered with anything but 2xx is an error naming the server's

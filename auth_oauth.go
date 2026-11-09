@@ -726,6 +726,7 @@ type OAuth2Option func(*oauth2Options)
 
 type oauth2Options struct {
 	resource string
+	onToken  func(accessToken, refreshToken string)
 }
 
 // WithResource sends resource as the resource parameter (RFC 8707) in token requests, so tokens are issued for that
@@ -734,13 +735,28 @@ func WithResource(resource string) OAuth2Option {
 	return func(o *oauth2Options) { o.resource = resource }
 }
 
-// OAuth2Auth implements OAuth2 authentication backed by an oauth2.TokenSource.
+// WithTokenUpdate calls fn with each token the provider gets from the token endpoint, so the caller can store it in
+// place of the one it started with. An authorization server that rotates refresh tokens refuses the old one once a new
+// one is issued (and may end the whole grant when it is presented again), so a caller that keeps tokens across
+// restarts must store the new refresh token. fn runs outside the provider's lock; refreshToken is the one to use next
+// (the old one when the server did not rotate it).
+func WithTokenUpdate(fn func(accessToken, refreshToken string)) OAuth2Option {
+	return func(o *oauth2Options) { o.onToken = fn }
+}
+
+// OAuth2Auth implements OAuth2 authentication backed by a token endpoint.
 // Supports both client credentials (machine-to-machine) and refresh token
 // (user-delegated, e.g. PKCE) flows.
+//
+// A token is used until it expires (by its expires_in) or the MCP server
+// refuses it with 401 (a token whose expiry is unknown, such as a stored one,
+// or one revoked early): the client then gets a new one and sends the request
+// again.
 type OAuth2Auth struct {
-	source oauth2.TokenSource
-	token  *oauth2.Token
-	mu     sync.RWMutex
+	source  oauth2.TokenSource // gets a new token each time it is called
+	onToken func(accessToken, refreshToken string)
+	token   *oauth2.Token
+	mu      sync.RWMutex
 }
 
 // NewOAuth2Auth creates an OAuth2 provider using the client credentials flow.
@@ -760,45 +776,44 @@ func NewOAuth2Auth(clientID, clientSecret, tokenURL string, scopes []string, opt
 		cfg.EndpointParams = url.Values{"resource": {o.resource}}
 	}
 	return &OAuth2Auth{
-		source: cfg.TokenSource(context.Background()),
+		source:  tokenSourceFunc(func() (*oauth2.Token, error) { return cfg.Token(context.Background()) }),
+		onToken: o.onToken,
 	}
 }
 
 // NewOAuth2RefreshTokenAuth creates an OAuth2 provider from an existing
 // access + refresh token pair (e.g. obtained via browser-based PKCE flow).
-// clientID is the dynamically registered client ID. accessToken may be empty.
+// clientID is the dynamically registered client ID. accessToken may be empty;
+// when given it is used until the server refuses it, then refreshed.
 func NewOAuth2RefreshTokenAuth(tokenURL, clientID, accessToken, refreshToken string, opts ...OAuth2Option) *OAuth2Auth {
 	var o oauth2Options
 	for _, opt := range opts {
 		opt(&o)
 	}
-	initial := &oauth2.Token{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-	}
-	if o.resource != "" {
-		source := &resourceRefreshTokenSource{
+	a := &OAuth2Auth{
+		source: &refreshTokenSource{
 			client:       http.DefaultClient,
 			tokenURL:     tokenURL,
 			clientID:     clientID,
 			resource:     o.resource,
 			refreshToken: refreshToken,
-		}
-		return &OAuth2Auth{source: oauth2.ReuseTokenSource(initial, source)}
+		},
+		onToken: o.onToken,
 	}
-	cfg := &oauth2.Config{
-		ClientID: clientID,
-		Endpoint: oauth2.Endpoint{TokenURL: tokenURL, AuthStyle: oauth2.AuthStyleInParams},
+	if accessToken != "" {
+		a.token = &oauth2.Token{AccessToken: accessToken, RefreshToken: refreshToken}
 	}
-	return &OAuth2Auth{
-		source: oauth2.ReuseTokenSource(initial, cfg.TokenSource(context.Background(), initial)),
-	}
+	return a
 }
 
-// resourceRefreshTokenSource refreshes a token with the resource parameter, which golang.org/x/oauth2's refresh
-// cannot send: grant_type=refresh_token with client_id in the parameters, keeping the refresh token when the response
-// does not rotate it.
-type resourceRefreshTokenSource struct {
+type tokenSourceFunc func() (*oauth2.Token, error)
+
+func (f tokenSourceFunc) Token() (*oauth2.Token, error) { return f() }
+
+// refreshTokenSource gets a token with the refresh token grant, client_id in the parameters (a public client), and the
+// resource parameter when it has one (golang.org/x/oauth2's refresh cannot send it), keeping the refresh token when the
+// response does not rotate it.
+type refreshTokenSource struct {
 	client   *http.Client
 	tokenURL string
 	clientID string
@@ -808,7 +823,7 @@ type resourceRefreshTokenSource struct {
 	refreshToken string
 }
 
-func (s *resourceRefreshTokenSource) Token() (*oauth2.Token, error) {
+func (s *refreshTokenSource) Token() (*oauth2.Token, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.refreshToken == "" {
@@ -817,7 +832,9 @@ func (s *resourceRefreshTokenSource) Token() (*oauth2.Token, error) {
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {s.refreshToken},
-		"resource":      {s.resource},
+	}
+	if s.resource != "" {
+		form.Set("resource", s.resource)
 	}
 	// A token endpoint that hangs must not hold every caller (GetAuthHeader
 	// serialises refreshes), so the request is bounded.
@@ -840,6 +857,7 @@ func (o *OAuth2Auth) GetAuthHeader() (string, error) {
 	o.mu.RUnlock()
 
 	if !valid {
+		var fresh *oauth2.Token
 		o.mu.Lock()
 		if o.token == nil || !o.token.Valid() {
 			t, err := o.source.Token()
@@ -847,13 +865,33 @@ func (o *OAuth2Auth) GetAuthHeader() (string, error) {
 				o.mu.Unlock()
 				return "", fmt.Errorf("failed to get oauth2 token: %w", err)
 			}
-			o.token = t
+			o.token, fresh = t, t
 		}
 		token = o.token
 		o.mu.Unlock()
+		if fresh != nil && o.onToken != nil {
+			o.onToken(fresh.AccessToken, fresh.RefreshToken)
+		}
 	}
 
 	return fmt.Sprintf("Bearer %s", token.AccessToken), nil
+}
+
+// respondToChallenge implements challengeResponder: a 401 for the token in use
+// drops it, so the retry gets a new one; a 401 for a token already replaced
+// (another request refreshed it meanwhile) is retried with the new one; the
+// client retries a request at most maxAuthorizationRetries times. A 403 is left
+// to the caller: a new token of the same grant would not change it.
+func (o *OAuth2Auth) respondToChallenge(_ context.Context, _ string, status int, _ []string, sentAuthorization string) (bool, error) {
+	if status != http.StatusUnauthorized {
+		return false, nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.token != nil && sentAuthorization == "Bearer "+o.token.AccessToken {
+		o.token = nil
+	}
+	return true, nil
 }
 
 // clientCheckingRedirects returns a copy of client (http.DefaultClient when
