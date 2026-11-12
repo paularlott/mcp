@@ -202,7 +202,7 @@ func (s *Server) SetSessionManager(manager SessionManager) {
 // never change, so each is built once (toolSearchDef, executeToolDef) rather
 // than on every tools/list or call.
 func toolSearchTool() *ToolBuilder {
-	return NewTool(ToolSearchName, "Search the tools available on this MCP server, including ones hidden from the initial tool list, by name, description, or keyword. Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Call execute_tool on this MCP server with the exact name to execute a match. Omit query to list all tools available on this server.",
+	return NewTool(ToolSearchName, "Search the tools available on this MCP server, including ones hidden from the initial tool list, by name, description, or keyword. Search once, with words for every part of the task (for example 'chart sales by month' finds both the data and the chart tools). Returns matching tools with their names, descriptions, input schemas, and relevance scores (0.0 to 1.0, where 1.0 is an exact match and higher scores indicate better relevance). Each result's input schema is complete, so call execute_tool on this MCP server with the exact name and those parameters straight away; search again only if none of the results fits. Omit query to list all tools available on this server.",
 		String("query", "Search query to find relevant tools (searches name, description, and keywords). Omit to list all tools available on this server."),
 		Number("max_results", "Maximum number of results to return (default: 5)"),
 	)
