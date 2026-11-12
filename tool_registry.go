@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/paularlott/cli/fuzzy"
 )
@@ -119,144 +121,367 @@ func (r *internalRegistry) SearchWithAdditionalTools(ctx context.Context, query 
 	}
 	r.mu.RUnlock()
 
-	var results []SearchResult
-	queryLower := strings.ToLower(strings.TrimSpace(query))
-	listAll := queryLower == ""
+	// Every tool is a candidate once: registered tools first, then the
+	// providers' discoverable tools, then the listed tools.
+	var candidates []SearchResult
 	seen := make(map[string]bool)
-
-	// Search registered tools (statically registered discoverable tools)
-	for _, dt := range toolsCopy {
-		var score float64
-		if listAll {
-			score = 1.0
-		} else {
-			score = calculateScore(queryLower, dt.tool.Name, dt.tool.Description, dt.keywords)
-		}
-		if score > 0 {
-			results = append(results, SearchResult{
-				Name:        dt.tool.Name,
-				Title:       dt.tool.Title,
-				Description: dt.tool.Description,
-				Annotations: dt.tool.Annotations,
-				Score:       score,
-				InputSchema: dt.tool.InputSchema,
-				Keywords:    dt.keywords,
-				Meta:        dt.tool.Meta,
-				Icons:       dt.tool.Icons,
-			})
-			seen[dt.tool.Name] = true
-		}
-	}
-
-	// Search additional tools (discoverable tools from providers)
-	for _, tool := range additionalTools {
+	add := func(tool *MCPTool, keywords []string) {
 		if seen[tool.Name] {
-			continue
+			return
 		}
-		var score float64
-		if listAll {
-			score = 1.0
-		} else {
-			score = calculateScore(queryLower, tool.Name, tool.Description, tool.Keywords)
-		}
-		if score > 0 {
-			results = append(results, SearchResult{
-				Name:        tool.Name,
-				Title:       tool.Title,
-				Description: tool.Description,
-				Annotations: tool.Annotations,
-				Score:       score,
-				InputSchema: tool.InputSchema,
-				Keywords:    tool.Keywords,
-				Meta:        tool.Meta,
-				Icons:       tool.Icons,
-			})
-			seen[tool.Name] = true
-		}
+		seen[tool.Name] = true
+		candidates = append(candidates, SearchResult{
+			Name:        tool.Name,
+			Title:       tool.Title,
+			Description: tool.Description,
+			Annotations: tool.Annotations,
+			InputSchema: tool.InputSchema,
+			Keywords:    keywords,
+			Meta:        tool.Meta,
+			Icons:       tool.Icons,
+		})
+	}
+	registeredNames := make([]string, 0, len(toolsCopy))
+	for name := range toolsCopy {
+		registeredNames = append(registeredNames, name)
+	}
+	sort.Strings(registeredNames)
+	for _, name := range registeredNames {
+		dt := toolsCopy[name]
+		add(dt.tool, dt.keywords)
+	}
+	for i := range additionalTools {
+		add(&additionalTools[i], additionalTools[i].Keywords)
+	}
+	for i := range listedTools {
+		add(&listedTools[i], listedTools[i].Keywords)
 	}
 
-	// Search listed tools
-	for _, tool := range listedTools {
-		if seen[tool.Name] {
-			continue
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	var results []SearchResult
+	if queryLower == "" {
+		for _, c := range candidates {
+			c.Score = 1.0
+			results = append(results, c)
 		}
-		var score float64
-		if listAll {
-			score = 1.0
-		} else {
-			score = calculateScore(queryLower, tool.Name, tool.Description, tool.Keywords)
+		sortSearchResults(results)
+		if maxResults > 0 && len(results) > maxResults {
+			results = results[:maxResults]
 		}
-		if score > 0 {
-			results = append(results, SearchResult{
-				Name:        tool.Name,
-				Title:       tool.Title,
-				Description: tool.Description,
-				Annotations: tool.Annotations,
-				Score:       score,
-				InputSchema: tool.InputSchema,
-				Keywords:    tool.Keywords,
-				Meta:        tool.Meta,
-				Icons:       tool.Icons,
-			})
-			seen[tool.Name] = true
-		}
+		return results
 	}
 
-	// Sort by score descending, then by name
+	return rankSearchCandidates(queryLower, candidates, maxResults)
+}
+
+func sortSearchResults(results []SearchResult) {
 	sort.Slice(results, func(i, j int) bool {
 		if results[i].Score != results[j].Score {
 			return results[i].Score > results[j].Score
 		}
 		return results[i].Name < results[j].Name
 	})
-
-	if maxResults > 0 && len(results) > maxResults {
-		results = results[:maxResults]
-	}
-
-	return results
 }
 
 // GetTool retrieves a tool by name
 
 // CallTool executes a tool by name
 
-// Search scoring functions
+// Search scoring
+//
+// A query is reduced to its meaningful words (searchTerms): stopwords such as
+// "the", "by" or "who" are dropped and each word is stemmed, so "visualising"
+// matches "visualize" and "opportunities" matches "opportunity". Each word is
+// scored against each tool with the match ladder in calculateSingleWordScore
+// (name, then keywords, then description).
+//
+// The word scores are combined as a root mean square, weighted by how rare
+// each word is among the candidate tools (inverse document frequency):
+//
+//   - A word most tools match, such as "created" or "list", says little about
+//     which tool is wanted; a word few tools match, such as "chart" or
+//     "invoice", says a lot. Without this weighting, a tool whose long
+//     description contains several generic query words outranks the one tool
+//     named after the subject of the query.
+//   - The root mean square favours strong matches: a name or keyword match on
+//     one word counts for more than description mentions of two, so detailed
+//     descriptions are not rewarded for their length.
+//   - A word no candidate matches at all is left out, rather than counted as a
+//     miss against every tool.
+//
+// Finally, the best tool for each strongly matched word (a name or keyword
+// match) is kept in the results even when the combined score would cut it, so
+// a query with two intents - "chart opportunities by value" - returns a tool
+// for each.
 
+// strongWordMatch is the lowest per-word score from a name or keyword match.
+const strongWordMatch = 0.85
+
+func rankSearchCandidates(queryLower string, candidates []SearchResult, maxResults int) []SearchResult {
+	terms := searchTerms(queryLower)
+	texts := make([]searchText, len(candidates))
+	for i, c := range candidates {
+		texts[i] = newSearchText(c.Name, c.Description, c.Keywords)
+	}
+
+	// matches[i][j]: how well candidate i matches term j.
+	matches := make([][]float64, len(candidates))
+	docFreq := make([]int, len(terms))
+	for i := range candidates {
+		matches[i] = make([]float64, len(terms))
+		for j, term := range terms {
+			matches[i][j] = texts[i].wordScore(term)
+			if matches[i][j] > 0 {
+				docFreq[j]++
+			}
+		}
+	}
+
+	weights := make([]float64, len(terms))
+	var totalWeight float64
+	for j := range terms {
+		if docFreq[j] == 0 {
+			continue
+		}
+		weights[j] = math.Log(1 + float64(len(candidates))/float64(docFreq[j]))
+		totalWeight += weights[j]
+	}
+
+	queryAsName := strings.Join(strings.Fields(queryLower), "_")
+	var results []SearchResult
+	for i, c := range candidates {
+		var score float64
+		if texts[i].nameLower == queryLower || texts[i].nameLower == queryAsName {
+			score = 1.0
+		} else if totalWeight > 0 {
+			// Root mean square of the weighted word scores: a strong match on a
+			// word counts for more than two weak ones, so a description that
+			// merely mentions several query words does not outrank a name or
+			// keyword match. A one-word query scores its match as it stands.
+			for j := range terms {
+				score += weights[j] * matches[i][j] * matches[i][j]
+			}
+			score = math.Sqrt(score / totalWeight)
+		}
+		if score > 0 {
+			c.Score = score
+			results = append(results, c)
+		}
+	}
+	sortSearchResults(results)
+
+	if maxResults <= 0 || len(results) <= maxResults {
+		return results
+	}
+
+	// The best tool for each strongly matched word stays in the results.
+	position := make(map[string]int, len(results))
+	for i, r := range results {
+		position[r.Name] = i
+	}
+	required := make(map[string]bool)
+	for j := range terms {
+		if weights[j] == 0 {
+			continue
+		}
+		best, bestMatch, bestScore := "", 0.0, 0.0
+		for i, c := range candidates {
+			m := matches[i][j]
+			if m < strongWordMatch {
+				continue
+			}
+			if _, ok := position[c.Name]; !ok {
+				continue
+			}
+			score := results[position[c.Name]].Score
+			if m > bestMatch || (m == bestMatch && score > bestScore) {
+				best, bestMatch, bestScore = c.Name, m, score
+			}
+		}
+		if best != "" {
+			required[best] = true
+		}
+	}
+
+	top := append([]SearchResult(nil), results[:maxResults]...)
+	inTop := make(map[string]bool, len(top))
+	for _, r := range top {
+		inTop[r.Name] = true
+	}
+	for _, r := range results[maxResults:] {
+		if !required[r.Name] {
+			continue
+		}
+		// Replace the lowest-scoring result that is not itself required.
+		for k := len(top) - 1; k >= 0; k-- {
+			if !required[top[k].Name] {
+				inTop[top[k].Name] = false
+				top[k] = r
+				inTop[r.Name] = true
+				break
+			}
+		}
+	}
+	sortSearchResults(top)
+	return top
+}
+
+// calculateScore scores one tool against a query on its own, with every query
+// word weighted equally: there are no other tools to weigh the words against.
 func calculateScore(queryLower, name, description string, keywords []string) float64 {
 	nameLower := strings.ToLower(name)
-	descLower := strings.ToLower(description)
-
 	if nameLower == queryLower {
 		return 1.0
 	}
 
-	queryWords := strings.Fields(queryLower)
-	if len(queryWords) <= 1 {
-		return calculateSingleWordScore(queryLower, nameLower, descLower, keywords)
-	}
-
-	var totalScore float64
-	matchedWords := 0
-
-	for _, word := range queryWords {
-		wordScore := calculateSingleWordScore(word, nameLower, descLower, keywords)
-		if wordScore > 0 {
-			matchedWords++
-			totalScore += wordScore
-		}
-	}
-
-	if matchedWords == 0 {
+	terms := searchTerms(queryLower)
+	if len(terms) == 0 {
 		return 0
 	}
+	text := newSearchText(name, description, keywords)
+	var total float64
+	for _, term := range terms {
+		total += text.wordScore(term)
+	}
+	// Unmatched words count as 0, so a partial match scores in proportion to
+	// how much of the query it covers, without a further penalty.
+	return total / float64(len(terms))
+}
 
-	// Average across ALL query words: unmatched words contribute 0, which
-	// naturally penalises partial matches in proportion to how much of the
-	// query was understood. No additional ratio multiplier is applied — that
-	// would double-count the miss. A clean full match returns its true
-	// average without an artificial penalty.
-	return totalScore / float64(len(queryWords))
+// searchText is a tool's searchable text, as written and stemmed.
+type searchText struct {
+	nameLower    string
+	descLower    string
+	keywords     []string
+	stemName     string
+	stemDesc     string
+	stemKeywords []string
+}
+
+func newSearchText(name, description string, keywords []string) searchText {
+	t := searchText{
+		nameLower: strings.ToLower(name),
+		descLower: strings.ToLower(description),
+		keywords:  keywords,
+	}
+	nameParts := nameTokens(t.nameLower)
+	for i, part := range nameParts {
+		nameParts[i] = stemWord(part)
+	}
+	t.stemName = strings.Join(nameParts, "_")
+	t.stemDesc = strings.Join(stemWords(splitWords(t.descLower)), " ")
+	t.stemKeywords = make([]string, len(keywords))
+	for i, kw := range keywords {
+		t.stemKeywords[i] = strings.Join(stemWords(strings.Fields(strings.ToLower(kw))), " ")
+	}
+	return t
+}
+
+// wordScore is the better of the word's match as written and its stem's match
+// against the stemmed text.
+func (t searchText) wordScore(word string) float64 {
+	score := calculateSingleWordScore(word, t.nameLower, t.descLower, t.keywords)
+	if stem := stemWord(word); stem != "" {
+		score = max(score, calculateSingleWordScore(stem, t.stemName, t.stemDesc, t.stemKeywords))
+	}
+	return score
+}
+
+// searchStopwords are words that say nothing about which tool is wanted.
+var searchStopwords = map[string]bool{
+	"a": true, "an": true, "the": true, "of": true, "for": true, "to": true, "in": true, "on": true,
+	"at": true, "by": true, "with": true, "from": true, "and": true, "or": true, "is": true, "are": true,
+	"was": true, "were": true, "be": true, "been": true, "am": true, "do": true, "does": true, "did": true,
+	"i": true, "me": true, "my": true, "we": true, "our": true, "us": true, "you": true, "your": true,
+	"it": true, "its": true, "this": true, "that": true, "these": true, "those": true, "there": true,
+	"what": true, "which": true, "who": true, "whom": true, "whose": true, "how": true, "when": true,
+	"where": true, "why": true, "can": true, "could": true, "would": true, "should": true, "will": true,
+	"please": true, "into": true, "about": true, "any": true, "some": true, "all": true, "just": true,
+}
+
+// searchTerms is the query's meaningful words: lowercased, split on spaces and
+// punctuation, without stopwords or repeats. A query made only of stopwords
+// keeps its words.
+func searchTerms(queryLower string) []string {
+	words := splitWords(queryLower)
+	var terms []string
+	seen := make(map[string]bool)
+	for _, w := range words {
+		if searchStopwords[w] || seen[w] {
+			continue
+		}
+		seen[w] = true
+		terms = append(terms, w)
+	}
+	if len(terms) == 0 {
+		for _, w := range words {
+			if !seen[w] {
+				seen[w] = true
+				terms = append(terms, w)
+			}
+		}
+	}
+	return terms
+}
+
+// splitWords splits lowercased text into words on anything but letters and
+// digits, keeping underscores so a tool name in a query stays one word.
+func splitWords(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
+	})
+}
+
+func stemWords(words []string) []string {
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if s := stemWord(w); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// stemWord reduces an English word to a stem shared by its common forms, so
+// "opportunities"/"opportunity", "visualise"/"visualizing" and
+// "created"/"creates"/"create" compare equal. It is deliberately light: it
+// only has to make a word and its variants agree, not produce a real word.
+func stemWord(w string) string {
+	if len(w) <= 3 || strings.ContainsAny(w, "0123456789_") {
+		return w
+	}
+	// British -ise spellings to -ize.
+	for _, pair := range [][2]string{{"isation", "ization"}, {"ising", "izing"}, {"ised", "ized"}, {"ises", "izes"}, {"ise", "ize"}} {
+		if strings.HasSuffix(w, pair[0]) && len(w) > len(pair[0])+2 {
+			w = strings.TrimSuffix(w, pair[0]) + pair[1]
+			break
+		}
+	}
+	switch {
+	case strings.HasSuffix(w, "ies") && len(w) > 4:
+		w = strings.TrimSuffix(w, "ies") + "y"
+	case strings.HasSuffix(w, "sses"):
+		w = strings.TrimSuffix(w, "es")
+	case strings.HasSuffix(w, "ss"), strings.HasSuffix(w, "us"), strings.HasSuffix(w, "is"):
+		// class, status, analysis
+	case strings.HasSuffix(w, "s"):
+		w = strings.TrimSuffix(w, "s")
+	}
+	for _, suffix := range []string{"ing", "ed"} {
+		if strings.HasSuffix(w, suffix) && len(w)-len(suffix) >= 4 {
+			w = strings.TrimSuffix(w, suffix)
+			// running -> run, planned -> plan
+			if n := len(w); n >= 2 && w[n-1] == w[n-2] && !strings.ContainsRune("lsz", rune(w[n-1])) {
+				w = w[:n-1]
+			}
+			break
+		}
+	}
+	// create/created/creating all end as "creat".
+	if strings.HasSuffix(w, "e") && len(w) > 4 {
+		w = strings.TrimSuffix(w, "e")
+	}
+	return w
 }
 
 func calculateSingleWordScore(word, nameLower, descLower string, keywords []string) float64 {
